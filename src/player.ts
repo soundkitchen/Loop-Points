@@ -1,4 +1,4 @@
-// ループ区間つきの再生。ゲームと同じく AudioBufferSourceNode の loop / loopStart / loopEnd で鳴らす
+// ループ区間つきの再生。書き出した値を使う側と同じく AudioBufferSourceNode の loop / loopStart / loopEnd で鳴らす
 export class LoopPlayer {
   readonly gain: GainNode;
   private src: AudioBufferSourceNode | null = null;

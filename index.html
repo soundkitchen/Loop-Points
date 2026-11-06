@@ -3,7 +3,8 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Icarus Loop Points</title>
+    <title>Loop Points</title>
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%230e1216'/%3E%3Cpath d='M10 16h1M13 11v10M16 7v18M19 11v10M22 16h-1' stroke='%235fa8d3' stroke-width='2' stroke-linecap='round'/%3E%3Cpath d='M6 5v22' stroke='%234cd98a' stroke-width='3' stroke-linecap='round'/%3E%3Cpath d='M26 5v22' stroke='%23ff8a4c' stroke-width='3' stroke-linecap='round'/%3E%3C/svg%3E" />
     <style>
       :root { color-scheme: dark; --fg: #d8dee6; --dim: #8b95a3; --line: #2a313b; --panel: #171c23; --start: #4cd98a; --end: #ff8a4c; }
       html, body { margin: 0; background: #0e1216; color: var(--fg); font: 13px/1.5 system-ui, sans-serif; }
@@ -40,7 +41,7 @@
   </head>
   <body>
     <header>
-      <h1>ループポイント</h1>
+      <h1>Loop Points</h1>
       <button id="open-audio">音源を開く</button>
       <input id="audio-input" type="file" multiple accept=".mp3,.wav,.ogg,.opus,.m4a,.aac,.flac" hidden />
       <select id="file" hidden></select>
@@ -59,7 +60,7 @@
       <canvas id="overview"></canvas>
 
       <div class="row">
-        <button id="play-intro" title="イントロを 1 回流してからループ区間を繰り返す (ゲームでの鳴り方)">▶ 頭から</button>
+        <button id="play-intro" title="イントロを 1 回流してからループ区間を繰り返す">▶ 頭から</button>
         <button id="play-seam" title="ループの終わりの少し前から再生して、つなぎ目をすぐ聴く">▶ つなぎ目の手前から</button>
         <label><input id="preroll" type="number" min="0.5" step="0.5" value="3" /> 秒前</label>
         <button id="play-cursor">▶ カーソルから</button>
