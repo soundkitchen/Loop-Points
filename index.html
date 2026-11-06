@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Icarus Loop Points</title>
+    <style>
+      :root { color-scheme: dark; --fg: #d8dee6; --dim: #8b95a3; --line: #2a313b; --panel: #171c23; --start: #4cd98a; --end: #ff8a4c; }
+      html, body { margin: 0; background: #0e1216; color: var(--fg); font: 13px/1.5 system-ui, sans-serif; }
+      header { display: flex; align-items: center; gap: 12px; padding: 10px 16px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+      header h1 { font-size: 14px; margin: 0; font-weight: 600; }
+      .spacer { flex: 1; }
+      .dim { color: var(--dim); }
+      main { padding: 12px 16px 24px; display: flex; flex-direction: column; gap: 12px; }
+      canvas { display: block; width: 100%; border-radius: 4px; touch-action: none; }
+      #wave { height: 300px; }
+      #overview { height: 44px; cursor: pointer; }
+      button, select, input { font: inherit; color: var(--fg); background: #222933; border: 1px solid #343d49; border-radius: 4px; padding: 4px 10px; }
+      button { cursor: pointer; }
+      button:hover { background: #2b3440; }
+      button:disabled { opacity: 0.4; cursor: default; }
+      button.primary { background: #2d5f86; border-color: #3b76a3; }
+      input[type=number] { width: 7em; padding: 3px 6px; font-family: ui-monospace, monospace; }
+      input[type=checkbox] { vertical-align: middle; }
+      .row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+      .mono { font-family: ui-monospace, monospace; }
+      .markers { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+      @media (max-width: 760px) { .markers { grid-template-columns: 1fr; } }
+      .marker { background: var(--panel); border: 1px solid var(--line); border-left: 3px solid var(--c); border-radius: 4px; padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; }
+      .marker h2 { margin: 0; font-size: 13px; color: var(--c); display: flex; align-items: center; gap: 8px; }
+      .marker button { padding: 2px 8px; }
+      #status.dirty { color: #ffcf66; }
+      details { color: var(--dim); }
+      details ul { margin: 6px 0; padding-left: 20px; }
+      kbd { font-family: ui-monospace, monospace; border: 1px solid #3a4350; border-radius: 3px; padding: 0 4px; }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>ループポイント</h1>
+      <select id="file"></select>
+      <span id="info" class="dim mono"></span>
+      <span class="spacer"></span>
+      <span id="status" class="dim"></span>
+      <button id="save" class="primary" disabled>保存</button>
+    </header>
+    <main>
+      <canvas id="wave"></canvas>
+      <canvas id="overview"></canvas>
+
+      <div class="row">
+        <button id="play-intro" title="イントロを 1 回流してからループ区間を繰り返す (ゲームでの鳴り方)">▶ 頭から</button>
+        <button id="play-seam" title="ループの終わりの少し前から再生して、つなぎ目をすぐ聴く">▶ つなぎ目の手前から</button>
+        <label><input id="preroll" type="number" min="0.5" step="0.5" value="3" /> 秒前</label>
+        <button id="play-cursor">▶ カーソルから</button>
+        <button id="stop">■ 停止</button>
+        <span id="time" class="mono dim"></span>
+        <span class="spacer"></span>
+        <label class="dim">音量 <input id="volume" type="range" min="0" max="1" step="0.01" value="0.8" /></label>
+      </div>
+
+      <div class="markers" id="markers"></div>
+
+      <div class="row">
+        <span class="dim">ループの長さ</span>
+        <span id="length" class="mono"></span>
+        <span class="spacer"></span>
+        <label><input id="snap" type="checkbox" checked /> ドラッグでゼロクロスに吸着</label>
+        <button id="fit">全体を表示</button>
+      </div>
+
+      <details>
+        <summary>操作</summary>
+        <ul>
+          <li>波形の <b>開始</b>・<b>終了</b> の線をドラッグして動かす。何もない所をドラッグするとスクロール、クリックするとカーソルを置く</li>
+          <li>縦のホイール(トラックパッドのピンチ)で拡大縮小、横のスクロールで左右に移動。下の全体表示をクリック・ドラッグしてもその場所へ移動する</li>
+          <li>数値の入力と微調整のボタンは、吸着せずにその位置へ置く。「◀ 0」「0 ▶」で前後のゼロクロスへ移る</li>
+          <li><kbd>Space</kbd> でカーソルから再生 / 停止。再生中にループ区間を動かすと、止めずにそのまま反映される(再生位置が区間の外に出たら開始点から鳴らし直す)</li>
+          <li>「保存」で <code>sounds/loops.json</code> に書き込む</li>
+        </ul>
+      </details>
+    </main>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

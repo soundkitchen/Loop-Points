@@ -1,0 +1,7 @@
+node_modules/
+dist/
+.wrangler/
+.DS_Store
+
+# 動作確認用の音源。公開リポジトリには入れない
+sounds/
