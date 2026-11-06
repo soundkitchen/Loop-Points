@@ -49,6 +49,7 @@
       <span id="status" class="dim"></span>
       <button id="open-json">JSON を読み込む</button>
       <input id="json-input" type="file" accept=".json" hidden />
+      <button id="save" class="primary" hidden></button>
       <button id="copy" disabled>JSON をコピー</button>
       <button id="download" class="primary" disabled>JSON を書き出す</button>
     </header>
@@ -86,7 +87,8 @@
           <li>数値の入力と微調整のボタンは、吸着せずにその位置へ置く。「◀ 0」「0 ▶」で前後のゼロクロスへ移る</li>
           <li><kbd>Space</kbd> でカーソルから再生 / 停止。再生中にループ区間を動かすと、止めずにそのまま反映される(再生位置が区間の外に出たら開始点から鳴らし直す)</li>
           <li>音源と JSON は、ボタンで選ぶか、ページのどこかにドロップして読み込む。複数の音源を読み込むと、上のセレクトで切り替えられる。音源はアップロードされない</li>
-          <li>「JSON を書き出す」で <code>loops.json</code> をダウンロードする。「JSON をコピー」でクリップボードに写す。どちらも、読み込んだ JSON にある音源の項目も含めて書き出す</li>
+          <li>「JSON を書き出す」は、Chrome や Edge などでは保存先を選んで保存し、そのほかのブラウザでは <code>loops.json</code> をダウンロードする。「JSON をコピー」でクリップボードに写す。どちらも、読み込んだ JSON にある音源の項目も含めて書き出す</li>
+          <li>Chrome や Edge などでは、読み込んだ、または保存した JSON に「上書き保存」できる。読み込んだあとにファイルが変更されていたら確認を出す</li>
           <li>JSON の <code>duration</code> と音源の長さが違うと警告を出す</li>
         </ul>
       </details>

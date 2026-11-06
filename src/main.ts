@@ -1,3 +1,4 @@
+import { canWrite, fileAccessSupported, isAbort, pickJsonToOpen, pickJsonToSave, writeText } from './jsonFile';
 import { parseLoops, serializeLoops, type LoopMap } from './loops';
 import { LoopPlayer } from './player';
 import { mixdown, nearestZeroCross, nextZeroCross } from './samples';
@@ -28,6 +29,9 @@ let playhead: number | null = null;
 
 let loops: LoopMap = {};
 let saved: LoopMap = {};   // 読み込んだ、または最後に書き出した JSON の値
+// 上書き保存の対象。lastModified は外からの変更に気づくために控える。File System Access API が使えないときは常に null
+let jsonTarget: { handle: FileSystemFileHandle; lastModified: number } | null = null;
+let writing = false;       // 保存ダイアログを開いている間と書き込み中。この間は保存も JSON の読み込みもしない
 
 const sr = () => buffer?.sampleRate ?? 44100;
 const clamp = (v: number, lo: number, hi: number) => Math.min(Math.max(v, lo), hi);
@@ -143,11 +147,19 @@ function updateStatus() {
   const hasLoops = Object.keys(loops).length > 0;
   $('status').textContent = dirty ? '未書き出しの変更があります' : hasLoops ? '変更なし' : '';
   $('status').classList.toggle('dirty', dirty);
-  $<HTMLButtonElement>('download').disabled = !hasLoops;
+  const save = $<HTMLButtonElement>('save');
+  const download = $<HTMLButtonElement>('download');
+  save.hidden = jsonTarget === null;
+  save.textContent = jsonTarget ? `上書き保存 (${jsonTarget.handle.name})` : '';
+  save.disabled = !hasLoops || writing;
+  download.disabled = !hasLoops || writing;
+  download.classList.toggle('primary', jsonTarget === null);
   $<HTMLButtonElement>('copy').disabled = !hasLoops;
 }
 
-async function loadLoops(file: File) {
+// handle を渡すと、そのファイルを上書き保存の対象にする。渡さなければ対象をなくす
+// (前の対象を残すと、読み込んだものとは別のファイルを上書きしてしまう)
+async function loadLoops(file: File, handle: FileSystemFileHandle | null = null) {
   let parsed: LoopMap;
   try {
     parsed = parseLoops(await file.text());
@@ -155,9 +167,14 @@ async function loadLoops(file: File) {
     alert(`${file.name} を読めませんでした (${e})`);
     return;
   }
+  if (writing) {
+    alert(`保存中なので ${file.name} を読み込みませんでした`);
+    return;
+  }
   if (isDirty() && !confirm(`未書き出しの変更を破棄して ${file.name} を読み込みますか?`)) return;
   saved = parsed;
   loops = structuredClone(parsed);
+  jsonTarget = handle && { handle, lastModified: file.lastModified };
   applyLoop();
   updateStatus();
 }
@@ -168,7 +185,44 @@ function markExported(sent: LoopMap) {
   updateStatus();
 }
 
+async function whileWriting(task: () => Promise<void>) {
+  writing = true;
+  updateStatus();
+  try {
+    await task();
+  } catch (e) {
+    if (!isAbort(e)) alert(`JSON を保存できませんでした (${e})`);
+  } finally {
+    writing = false;
+    updateStatus();
+  }
+}
+
+$('save').addEventListener('click', () => void whileWriting(async () => {
+  const target = jsonTarget!;
+  const fileName = target.handle.name;
+  if (!(await canWrite(target.handle))) {
+    alert(`${fileName} への書き込みが許可されませんでした`);
+    return;
+  }
+  const current = await target.handle.getFile();
+  if (current.lastModified !== target.lastModified && !confirm(`${fileName} は読み込んだあとに変更されています。上書きしますか?`)) return;
+  const sent = structuredClone(loops);
+  target.lastModified = await writeText(target.handle, serializeLoops(sent));
+  markExported(sent);
+}));
+
 $('download').addEventListener('click', () => {
+  if (fileAccessSupported) {
+    void whileWriting(async () => {
+      const handle = await pickJsonToSave(jsonTarget?.handle.name ?? 'loops.json');
+      const sent = structuredClone(loops);
+      const lastModified = await writeText(handle, serializeLoops(sent));
+      jsonTarget = { handle, lastModified };
+      markExported(sent);
+    });
+    return;
+  }
   const url = URL.createObjectURL(new Blob([serializeLoops(loops)], { type: 'application/json' }));
   const a = document.createElement('a');
   a.href = url;
@@ -252,13 +306,21 @@ function updateFileList() {
   select.hidden = files.size === 0;
 }
 
+// ドロップで受け取ったハンドルから、名前の合うファイルのものを探す。取れないものは無視する
+async function findFileHandle(handles: Promise<FileSystemHandle | null>[], fileName: string) {
+  for (const r of await Promise.allSettled(handles)) {
+    if (r.status === 'fulfilled' && r.value?.kind === 'file' && r.value.name === fileName) return r.value as FileSystemFileHandle;
+  }
+  return null;
+}
+
 // 音源と JSON をまとめて受け取る。JSON を先に読むので、一緒に渡した音源には JSON の値が反映される
-async function addFiles(list: File[]) {
+async function addFiles(list: File[], handles: Promise<FileSystemHandle | null>[] = []) {
   const audio = list.filter((f) => AUDIO_EXT.test(f.name)).sort((a, b) => (a.name < b.name ? -1 : 1));
   const json = list.filter((f) => JSON_EXT.test(f.name));
   const ignored = list.filter((f) => !AUDIO_EXT.test(f.name) && !JSON_EXT.test(f.name));
   if (json.length > 1) alert('JSON は 1 つずつ読み込んでください。JSON は読み込みませんでした');
-  else if (json.length === 1) await loadLoops(json[0]);
+  else if (json.length === 1) await loadLoops(json[0], await findFileHandle(handles, json[0].name));
   if (audio.length > 0) {
     // 同じ名前の音源は新しいファイルで置き換える
     for (const f of audio) files.set(f.name, f);
@@ -272,16 +334,30 @@ async function addFiles(list: File[]) {
 const select = $<HTMLSelectElement>('file');
 select.addEventListener('change', () => void open(select.value));
 
-// 「音源を開く」「JSON を読み込む」のボタンから、隠してあるファイル選択を開く
-for (const [buttonId, inputId] of [['open-audio', 'audio-input'], ['open-json', 'json-input']]) {
-  const input = $<HTMLInputElement>(inputId);
-  $(buttonId).addEventListener('click', () => input.click());
+// ボタンから、隠してあるファイル選択を開く
+const audioInput = $<HTMLInputElement>('audio-input');
+const jsonInput = $<HTMLInputElement>('json-input');
+for (const input of [audioInput, jsonInput]) {
   input.addEventListener('change', () => {
     const picked = [...(input.files ?? [])];
     input.value = '';   // 同じファイルをもう一度選んでも change が起きるように空にする
     void addFiles(picked);
   });
 }
+$('open-audio').addEventListener('click', () => audioInput.click());
+$('open-json').addEventListener('click', async () => {
+  if (!fileAccessSupported) {
+    jsonInput.click();
+    return;
+  }
+  // 上書き保存できるよう、ハンドルが取れる方法で開く
+  try {
+    const handle = await pickJsonToOpen();
+    await loadLoops(await handle.getFile(), handle);
+  } catch (e) {
+    if (!isAbort(e)) alert(`JSON を読めませんでした (${e})`);
+  }
+});
 
 // ページのどこにドロップしてもよい
 const hasFiles = (e: DragEvent) => e.dataTransfer?.types.includes('Files') ?? false;
@@ -297,7 +373,11 @@ addEventListener('drop', (e) => {
   if (!hasFiles(e)) return;
   e.preventDefault();
   document.body.classList.remove('dragging');
-  void addFiles([...(e.dataTransfer?.files ?? [])]);
+  // DataTransfer はこのイベントの間しか読めないので、ここで受け取っておく
+  const handles = fileAccessSupported
+    ? [...(e.dataTransfer?.items ?? [])].filter((i) => i.kind === 'file').map((i) => i.getAsFileSystemHandle())
+    : [];
+  void addFiles([...(e.dataTransfer?.files ?? [])], handles);
 });
 
 // ---- 再生 ----
