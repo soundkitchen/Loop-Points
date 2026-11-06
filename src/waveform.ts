@@ -12,21 +12,24 @@ export interface WaveState {
 const RULER = 20;        // 上の目盛りの高さ (CSS px)
 const HIT = 7;           // マーカーをつかめる距離 (CSS px)
 const MAX_PX_PER_SAMPLE = 64;
-const COLOR = {
-  bg: '#12161c',
-  ruler: '#1b2129',
-  tick: '#56606d',
-  label: '#8b95a3',
-  zero: '#2c343f',
-  wave: '#5fa8d3',
-  waveOut: '#35556b',    // ループ区間の外
-  region: 'rgba(95, 168, 211, 0.10)',
-  start: '#4cd98a',
-  end: '#ff8a4c',
-  cursor: '#e6e6e6',
-  playhead: '#ffd84c',
-  view: 'rgba(255, 255, 255, 0.14)',
+// Canvas の色は index.html の CSS 変数で決める。テーマが変わったら refreshColors で読み直す
+const COLOR_VARS = {
+  bg: '--wave-bg',
+  ruler: '--wave-ruler',
+  tick: '--wave-tick',
+  label: '--wave-label',
+  zero: '--wave-zero',
+  wave: '--wave-in',
+  waveOut: '--wave-out',    // ループ区間の外
+  region: '--wave-region',
+  start: '--start',
+  end: '--end',
+  cursor: '--wave-cursor',
+  playhead: '--wave-playhead',
+  view: '--wave-view',
+  flagText: '--wave-flag-text',
 };
+const COLOR = {} as Record<keyof typeof COLOR_VARS, string>;
 
 // 目盛りの間隔の候補 (秒)
 const TICK_STEPS = [0.0001, 0.0002, 0.0005, 0.001, 0.002, 0.005, 0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1, 2, 5, 10, 15, 30, 60];
@@ -116,6 +119,15 @@ export class WaveformView {
   }
 
   private get width() { return this.canvas.clientWidth; }
+
+  // CSS 変数から色を読み直し、波形を描き直す
+  refreshColors() {
+    const style = getComputedStyle(document.documentElement);
+    for (const [key, cssVar] of Object.entries(COLOR_VARS)) {
+      COLOR[key as keyof typeof COLOR_VARS] = style.getPropertyValue(cssVar).trim();
+    }
+    this.dirty = this.overviewDirty = true;
+  }
 
   setData(data: Float32Array, sampleRate: number) {
     this.data = data;
@@ -307,7 +319,7 @@ export class WaveformView {
       // 旗は開始なら右、終了なら左に出して、区間の内側を向ける
       const fx = label === '開始' ? X(s) : X(s) - tw;
       g.fillRect(fx, 0, tw, ruler);
-      g.fillStyle = '#0b0e12';
+      g.fillStyle = COLOR.flagText;
       g.fillText(label, fx + 4 * dpr, ruler / 2);
     }
     if (st.playhead !== null) line(st.playhead, COLOR.playhead, 1.5);

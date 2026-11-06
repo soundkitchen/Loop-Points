@@ -2,6 +2,7 @@ import { canWrite, fileAccessSupported, isAbort, pickJsonToOpen, pickJsonToSave,
 import { parseLoops, serializeLoops, type LoopMap } from './loops';
 import { LoopPlayer } from './player';
 import { mixdown, nearestZeroCross, nextZeroCross } from './samples';
+import { setupTheme } from './theme';
 import { WaveformView, formatTime, type Marker } from './waveform';
 
 // 音源ごとのループポイントを決めるビューア。音源はブラウザ内で読み、決めた値は JSON に書き出す
@@ -45,6 +46,7 @@ const isDirty = () => Object.entries(loops).some(([k, p]) =>
   p.loopStart !== saved[k]?.loopStart || p.loopEnd !== saved[k]?.loopEnd || p.duration !== saved[k]?.duration);
 
 const view = new WaveformView($<HTMLCanvasElement>('wave'), $<HTMLCanvasElement>('overview'), () => ({ start, end, cursor, playhead }));
+setupTheme(() => view.refreshColors());
 
 // ---- ループポイント ----
 

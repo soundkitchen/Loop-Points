@@ -5,9 +5,40 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Loop Points</title>
     <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%230e1216'/%3E%3Cpath d='M10 16h1M13 11v10M16 7v18M19 11v10M22 16h-1' stroke='%235fa8d3' stroke-width='2' stroke-linecap='round'/%3E%3Cpath d='M6 5v22' stroke='%234cd98a' stroke-width='3' stroke-linecap='round'/%3E%3Cpath d='M26 5v22' stroke='%23ff8a4c' stroke-width='3' stroke-linecap='round'/%3E%3C/svg%3E" />
+    <script>
+      // 最初の描画の前にテーマを決めて、ちらつきを防ぐ。選択の扱いは src/theme.ts と合わせる
+      (() => {
+        let choice = null;
+        try { choice = localStorage.getItem('loop-points-theme'); } catch { /* 読めなければシステムに合わせる */ }
+        document.documentElement.dataset.theme = choice === 'light' || choice === 'dark' ? choice
+          : matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      })();
+    </script>
     <style>
-      :root { color-scheme: dark; --fg: #d8dee6; --dim: #8b95a3; --line: #2a313b; --panel: #171c23; --start: #4cd98a; --end: #ff8a4c; }
-      html, body { margin: 0; background: #0e1216; color: var(--fg); font: 13px/1.5 system-ui, sans-serif; }
+      /* 配色。--wave- で始まるものと --start、--end は src/waveform.ts が Canvas の描画で読む */
+      :root[data-theme=dark] {
+        color-scheme: dark;
+        --bg: #0e1216; --fg: #d8dee6; --dim: #8b95a3; --line: #2a313b; --panel: #171c23;
+        --control: #222933; --control-border: #343d49; --control-hover: #2b3440;
+        --primary: #2d5f86; --primary-border: #3b76a3; --primary-fg: #d8dee6;
+        --warn: #ffcf66; --warn-border: #6b5720; --overlay: rgba(14, 18, 22, 0.85); --kbd-border: #3a4350;
+        --start: #4cd98a; --end: #ff8a4c;
+        --wave-bg: #12161c; --wave-ruler: #1b2129; --wave-tick: #56606d; --wave-label: #8b95a3; --wave-zero: #2c343f;
+        --wave-in: #5fa8d3; --wave-out: #35556b; --wave-region: rgba(95, 168, 211, 0.10);
+        --wave-cursor: #e6e6e6; --wave-playhead: #ffd84c; --wave-view: rgba(255, 255, 255, 0.14); --wave-flag-text: #0b0e12;
+      }
+      :root[data-theme=light] {
+        color-scheme: light;
+        --bg: #f5f7fa; --fg: #1f2730; --dim: #5a6573; --line: #d5dbe3; --panel: #ffffff;
+        --control: #ffffff; --control-border: #c3cbd6; --control-hover: #e9edf2;
+        --primary: #2a6a9c; --primary-border: #215681; --primary-fg: #ffffff;
+        --warn: #8a5a00; --warn-border: #d9b55a; --overlay: rgba(245, 247, 250, 0.85); --kbd-border: #c3cbd6;
+        --start: #0f8a53; --end: #c2500f;
+        --wave-bg: #ffffff; --wave-ruler: #eef1f5; --wave-tick: #9aa5b1; --wave-label: #5a6573; --wave-zero: #d5dbe3;
+        --wave-in: #2f7fb5; --wave-out: #a9c4d8; --wave-region: rgba(47, 127, 181, 0.10);
+        --wave-cursor: #1f2730; --wave-playhead: #b87f00; --wave-view: rgba(0, 0, 0, 0.18); --wave-flag-text: #ffffff;
+      }
+      html, body { margin: 0; background: var(--bg); color: var(--fg); font: 13px/1.5 system-ui, sans-serif; }
       header { display: flex; align-items: center; gap: 12px; padding: 10px 16px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
       header h1 { font-size: 14px; margin: 0; font-weight: 600; }
       .spacer { flex: 1; }
@@ -16,11 +47,17 @@
       canvas { display: block; width: 100%; border-radius: 4px; touch-action: none; }
       #wave { height: 300px; }
       #overview { height: 44px; cursor: pointer; }
-      button, select, input { font: inherit; color: var(--fg); background: #222933; border: 1px solid #343d49; border-radius: 4px; padding: 4px 10px; }
+      button, select, input { font: inherit; color: var(--fg); background: var(--control); border: 1px solid var(--control-border); border-radius: 4px; padding: 4px 10px; }
       button { cursor: pointer; }
-      button:hover { background: #2b3440; }
+      button:hover { background: var(--control-hover); }
       button:disabled { opacity: 0.4; cursor: default; }
-      button.primary { background: #2d5f86; border-color: #3b76a3; }
+      button.primary { background: var(--primary); border-color: var(--primary-border); color: var(--primary-fg); }
+      #theme { display: inline-flex; }
+      #theme button { display: flex; padding: 5px 8px; border-radius: 0; margin-left: -1px; color: var(--dim); }
+      #theme button:first-child { border-radius: 4px 0 0 4px; margin-left: 0; }
+      #theme button:last-child { border-radius: 0 4px 4px 0; }
+      #theme button[aria-pressed=true] { position: relative; background: var(--primary); border-color: var(--primary-border); color: var(--primary-fg); }
+      #theme svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
       input[type=number] { width: 7em; padding: 3px 6px; font-family: ui-monospace, monospace; }
       input[type=checkbox] { vertical-align: middle; }
       .row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
@@ -30,13 +67,13 @@
       .marker { background: var(--panel); border: 1px solid var(--line); border-left: 3px solid var(--c); border-radius: 4px; padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; }
       .marker h2 { margin: 0; font-size: 13px; color: var(--c); display: flex; align-items: center; gap: 8px; }
       .marker button { padding: 2px 8px; }
-      #status.dirty { color: #ffcf66; }
-      #warning { color: #ffcf66; border: 1px solid #6b5720; border-radius: 4px; padding: 6px 10px; }
+      #status.dirty { color: var(--warn); }
+      #warning { color: var(--warn); border: 1px solid var(--warn-border); border-radius: 4px; padding: 6px 10px; }
       #warning:empty { display: none; }
-      body.dragging::after { content: '音源や JSON をドロップ'; position: fixed; inset: 8px; display: flex; align-items: center; justify-content: center; font-size: 18px; background: rgba(14, 18, 22, 0.85); border: 2px dashed #3b76a3; border-radius: 8px; pointer-events: none; }
+      body.dragging::after { content: '音源や JSON をドロップ'; position: fixed; inset: 8px; display: flex; align-items: center; justify-content: center; font-size: 18px; background: var(--overlay); border: 2px dashed var(--primary-border); border-radius: 8px; pointer-events: none; }
       details { color: var(--dim); }
       details ul { margin: 6px 0; padding-left: 20px; }
-      kbd { font-family: ui-monospace, monospace; border: 1px solid #3a4350; border-radius: 3px; padding: 0 4px; }
+      kbd { font-family: ui-monospace, monospace; border: 1px solid var(--kbd-border); border-radius: 3px; padding: 0 4px; }
     </style>
   </head>
   <body>
@@ -53,6 +90,17 @@
       <button id="save" class="primary" hidden></button>
       <button id="copy" disabled>JSON をコピー</button>
       <button id="download" class="primary" disabled>JSON を書き出す</button>
+      <div id="theme" role="group" aria-label="テーマ">
+        <button data-theme-choice="system" title="システム" aria-label="システム" aria-pressed="false">
+          <svg viewBox="0 0 16 16" aria-hidden="true"><rect x="1.5" y="2.5" width="13" height="9" rx="1" /><path d="M5.5 14h5M8 11.5V14" /></svg>
+        </button>
+        <button data-theme-choice="light" title="ライト" aria-label="ライト" aria-pressed="false">
+          <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="3" /><path d="M8 1v1.5M8 13.5V15M1 8h1.5M13.5 8H15M3.05 3.05l1.06 1.06M11.89 11.89l1.06 1.06M3.05 12.95l1.06-1.06M11.89 4.11l1.06-1.06" /></svg>
+        </button>
+        <button data-theme-choice="dark" title="ダーク" aria-label="ダーク" aria-pressed="false">
+          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M13.5 9.5A6 6 0 0 1 6.5 2.5a6 6 0 1 0 7 7z" /></svg>
+        </button>
+      </div>
     </header>
     <main>
       <div id="warning"></div>
