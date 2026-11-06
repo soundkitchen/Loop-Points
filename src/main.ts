@@ -14,11 +14,15 @@ const MARKER_ZOOM = 0.02;    // 「拡大」で表示する幅 (秒)
 const DURATION_TOLERANCE = 0.001;
 const AUDIO_EXT = /\.(mp3|wav|ogg|opus|m4a|aac|flac)$/i;
 const JSON_EXT = /\.json$/i;
+// ダウンロード用の Blob URL を残す時間 (ミリ秒)。すぐに破棄すると、ブラウザが読む前に消えて失敗することがある
+const BLOB_URL_LIFETIME = 60_000;
 
 const ctx = new AudioContext();
 const player = new LoopPlayer(ctx);
 const files = new Map<string, File>();   // 読み込んだ音源。キーはファイル名で、JSON の項目と対応する
-const decoded = new Map<string, { source: File; buffer: AudioBuffer; mono: Float32Array }>();
+type Decoded = { source: File; buffer: AudioBuffer; mono: Float32Array };
+const decoded = new Map<string, Decoded>();
+const decoding = new Map<File, Promise<Decoded>>();   // デコード中の音源。同じファイルを二重にデコードしない
 
 // 開いている音源。位置はサンプル
 let name = '';
@@ -37,9 +41,8 @@ const sr = () => buffer?.sampleRate ?? 44100;
 const clamp = (v: number, lo: number, hi: number) => Math.min(Math.max(v, lo), hi);
 // 秒は小数 6 桁で持つ。1 サンプル (44.1kHz で約 23µs) より細かいので、サンプルに戻しても同じ位置になる
 const round6 = (v: number) => Math.round(v * 1e6) / 1e6;
-// 区間を変えたかどうか。duration は開いただけでも埋まるので、比べない
 const isDirty = () => Object.entries(loops).some(([k, p]) =>
-  p.loopStart !== saved[k]?.loopStart || p.loopEnd !== saved[k]?.loopEnd);
+  p.loopStart !== saved[k]?.loopStart || p.loopEnd !== saved[k]?.loopEnd || p.duration !== saved[k]?.duration);
 
 const view = new WaveformView($<HTMLCanvasElement>('wave'), $<HTMLCanvasElement>('overview'), () => ({ start, end, cursor, playhead }));
 
@@ -49,7 +52,7 @@ function setMarker(m: Marker, s: number) {
   if (!buffer) return;
   if (m === 'start') start = clamp(Math.round(s), 0, end - 1);
   else end = clamp(Math.round(s), start + 1, buffer.length);
-  loops[name] = { loopStart: round6(start / sr()), loopEnd: round6(end / sr()), duration: round6(buffer.duration) };
+  loops[name] = { ...loops[name], loopStart: round6(start / sr()), loopEnd: round6(end / sr()), duration: round6(buffer.duration) };
   player.setLoop(start / sr(), end / sr());
   updatePanel();
 }
@@ -58,8 +61,11 @@ function setMarker(m: Marker, s: number) {
 function applyLoop() {
   if (!buffer) return;
   const p = loops[name];
-  // 古い JSON の項目は、音源を開いた時点で duration を補う
-  if (p && p.duration === undefined) p.duration = round6(buffer.duration);
+  // 古い JSON の項目は、音源を開いた時点で duration を補う。開いただけで未書き出しにならないよう saved にも入れる
+  if (p && p.duration === undefined) {
+    p.duration = round6(buffer.duration);
+    if (saved[name]) saved[name].duration = p.duration;
+  }
   start = p ? clamp(Math.round(p.loopStart * sr()), 0, buffer.length - 1) : 0;
   end = p ? clamp(Math.round(p.loopEnd * sr()), start + 1, buffer.length) : buffer.length;
   player.setLoop(start / sr(), end / sr());
@@ -228,20 +234,20 @@ $('download').addEventListener('click', () => {
   a.href = url;
   a.download = 'loops.json';
   a.click();
-  setTimeout(() => URL.revokeObjectURL(url));
+  setTimeout(() => URL.revokeObjectURL(url), BLOB_URL_LIFETIME);
+  // ダウンロードの成否はページから分からないので、押した時点で書き出し済みとする
   markExported(structuredClone(loops));
 });
 
+// クリップボードはすぐ上書きされるので、コピーしても書き出し済みとはしない
 $('copy').addEventListener('click', async () => {
   const button = $<HTMLButtonElement>('copy');
-  const sent = structuredClone(loops);
   try {
-    await navigator.clipboard.writeText(serializeLoops(sent));
+    await navigator.clipboard.writeText(serializeLoops(loops));
   } catch (e) {
     alert(`コピーできませんでした (${e})`);
     return;
   }
-  markExported(sent);
   button.textContent = 'コピーしました';
   setTimeout(() => { button.textContent = 'JSON をコピー'; }, 1500);
 });
@@ -252,43 +258,59 @@ addEventListener('beforeunload', (e) => {
 
 // ---- 音源の読み込み ----
 
-let opening = '';   // 読み込み中の音源。読み込み中に別の音源へ切り替えたかを見分ける
+let openToken = 0;   // 最後に呼んだ open を見分ける。読み込み中に別の音源へ切り替えたら、前の open は何もしない
 
-async function open(file: string) {
+function decode(file: string, source: File): Promise<Decoded> {
+  let pending = decoding.get(source);
+  if (!pending) {
+    pending = (async () => {
+      try {
+        const b = await ctx.decodeAudioData(await source.arrayBuffer());
+        const d = { source, buffer: b, mono: mixdown(b) };
+        // デコード中に同じ名前のファイルで置き換えられていたら、古い結果は残さない
+        if (files.get(file) === source) decoded.set(file, d);
+        return d;
+      } catch (e) {
+        // 開けなかったファイルは一覧に残さない。同じ名前の置き換えに失敗したときは、前のファイルに戻す
+        if (files.get(file) === source) {
+          const old = decoded.get(file);
+          if (old) files.set(file, old.source);
+          else files.delete(file);
+          updateFileList();
+        }
+        throw e;
+      } finally {
+        decoding.delete(source);
+      }
+    })();
+    decoding.set(source, pending);
+  }
+  return pending;
+}
+
+async function open(file: string): Promise<'opened' | 'failed' | 'superseded'> {
   player.stop();
   playhead = null;
-  opening = file;
+  const token = ++openToken;
   // 読み込みが終わるまでは、前の音源のマーカーを動かしたり鳴らしたりできないようにする
   // (name は読み込めてから変える。先に変えると、前の音源の位置が新しい音源の項目に入る)
   buffer = null;
   $('info').textContent = '読み込み中…';
   const source = files.get(file)!;
-  let d = decoded.get(file);
-  if (d?.source !== source) {
-    try {
-      const b = await ctx.decodeAudioData(await source.arrayBuffer());
-      // デコード中に同じ名前のファイルで置き換えられていたら、古い結果は使わない
-      if (files.get(file) !== source) return;
-      d = { source, buffer: b, mono: mixdown(b) };
-      decoded.set(file, d);
-    } catch (e) {
-      if (files.get(file) !== source) return;
-      // 開けなかったファイルは一覧に残さない。同じ名前の置き換えに失敗したときは、前のファイルに戻す
-      const old = decoded.get(file);
-      if (old) files.set(file, old.source);
-      else files.delete(file);
-      updateFileList();
-      if (opening !== file) return;
-      // 開けなかったら前の音源に戻す
-      opening = name;
-      const prev = decoded.get(name);
-      if (prev) { buffer = prev.buffer; mono = prev.mono; applyLoop(); }
-      $<HTMLSelectElement>('file').value = name;
-      $('info').textContent = `${file} を開けませんでした (${e})` + (name ? `。${name} のままです` : '');
-      return;
-    }
+  const cached = decoded.get(file);
+  let d: Decoded;
+  try {
+    d = cached?.source === source ? cached : await decode(file, source);
+  } catch (e) {
+    if (token !== openToken) return 'superseded';
+    // 開けなかったら前の音源に戻す
+    const prev = decoded.get(name);
+    if (prev) { buffer = prev.buffer; mono = prev.mono; applyLoop(); }
+    select.value = name;
+    $('info').textContent = `${file} を開けませんでした (${e})` + (name ? `。${name} のままです` : '');
+    return 'failed';
   }
-  if (opening !== file) return;
+  if (token !== openToken) return 'superseded';
   name = file;
   buffer = d.buffer;
   mono = d.mono;
@@ -296,6 +318,7 @@ async function open(file: string) {
   $('info').textContent = `${buffer.sampleRate} Hz · ${buffer.numberOfChannels}ch · ${formatTime(buffer.duration)} (${buffer.length} サンプル)`;
   view.setData(mono, buffer.sampleRate);
   applyLoop();
+  return 'opened';
 }
 
 // 一覧を作り直す。選択が消えないよう、呼ぶ側で必要なら選び直す
@@ -325,8 +348,17 @@ async function addFiles(list: File[], handles: Promise<FileSystemHandle | null>[
     // 同じ名前の音源は新しいファイルで置き換える
     for (const f of audio) files.set(f.name, f);
     updateFileList();
-    select.value = audio[0].name;
-    await open(audio[0].name);
+    // 開ける音源が見つかるまで順に試す
+    const failed: string[] = [];
+    let result: Awaited<ReturnType<typeof open>> = 'failed';
+    for (const f of audio) {
+      select.value = f.name;
+      result = await open(f.name);
+      if (result !== 'failed') break;
+      failed.push(f.name);
+    }
+    // 最後の失敗だけは open が画面に出しているので、それ以外にもあれば伝える
+    if (result !== 'superseded' && failed.length > (result === 'opened' ? 0 : 1)) alert(`開けませんでした: ${failed.join(', ')}`);
   }
   if (ignored.length > 0) alert(`音源でも JSON でもないので読み込みませんでした: ${ignored.map((f) => f.name).join(', ')}`);
 }
@@ -375,7 +407,7 @@ addEventListener('drop', (e) => {
   document.body.classList.remove('dragging');
   // DataTransfer はこのイベントの間しか読めないので、ここで受け取っておく
   const handles = fileAccessSupported
-    ? [...(e.dataTransfer?.items ?? [])].filter((i) => i.kind === 'file').map((i) => i.getAsFileSystemHandle())
+    ? [...(e.dataTransfer?.items ?? [])].filter((i) => i.kind === 'file').map((i) => i.getAsFileSystemHandle?.() ?? Promise.resolve(null))
     : [];
   void addFiles([...(e.dataTransfer?.files ?? [])], handles);
 });

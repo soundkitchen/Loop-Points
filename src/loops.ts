@@ -8,6 +8,7 @@ export interface LoopPoints {
 export type LoopMap = Record<string, LoopPoints>;
 
 // JSON を読んで形を確かめる。ファイル名ごとに loopStart < loopEnd (秒) を持つ。おかしな項目があれば全体を読まない
+// 知らないフィールドは残す。上書き保存で、ほかのツールが足した情報を消さないようにするため
 export function parseLoops(text: string): LoopMap {
   const v: unknown = JSON.parse(text);
   if (typeof v !== 'object' || v === null || Array.isArray(v)) throw new Error('ファイル名ごとのオブジェクトではありません');
@@ -16,9 +17,10 @@ export function parseLoops(text: string): LoopMap {
     if (typeof loopStart !== 'number' || typeof loopEnd !== 'number' || !Number.isFinite(loopStart) || !Number.isFinite(loopEnd) || loopStart < 0 || loopStart >= loopEnd) {
       throw new Error(`${name} の loopStart / loopEnd が正しくありません`);
     }
-    if (duration === undefined) return [name, { loopStart, loopEnd }];
-    if (typeof duration !== 'number' || !Number.isFinite(duration) || duration <= 0) throw new Error(`${name} の duration が正しくありません`);
-    return [name, { loopStart, loopEnd, duration }];
+    if (duration !== undefined && (typeof duration !== 'number' || !Number.isFinite(duration) || duration <= 0)) {
+      throw new Error(`${name} の duration が正しくありません`);
+    }
+    return [name, p as LoopPoints];
   }));
 }
 

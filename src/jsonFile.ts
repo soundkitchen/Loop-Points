@@ -11,7 +11,7 @@ declare global {
     requestPermission(descriptor: { mode: 'readwrite' }): Promise<PermissionState>;
   }
   interface DataTransferItem {
-    getAsFileSystemHandle(): Promise<FileSystemHandle | null>;
+    getAsFileSystemHandle?(): Promise<FileSystemHandle | null>;
   }
 }
 
@@ -40,7 +40,13 @@ export async function canWrite(handle: FileSystemFileHandle): Promise<boolean> {
 // 書き込んで、書き込み後の最終更新日時を返す。close するまで元のファイルは変わらない
 export async function writeText(handle: FileSystemFileHandle, text: string): Promise<number> {
   const writable = await handle.createWritable();
-  await writable.write(text);
-  await writable.close();
+  try {
+    await writable.write(text);
+    await writable.close();
+  } catch (e) {
+    // 開いたままだと一時ファイルとロックが残る。abort の失敗より、元の失敗を伝える
+    await writable.abort().catch(() => {});
+    throw e;
+  }
   return (await handle.getFile()).lastModified;
 }
