@@ -351,11 +351,12 @@ async function addFiles(list: File[], handles: Promise<FileSystemHandle | null>[
     // 開ける音源が見つかるまで順に試す
     const failed: string[] = [];
     let result: Awaited<ReturnType<typeof open>> = 'failed';
-    for (const f of audio) {
-      select.value = f.name;
-      result = await open(f.name);
+    // 別のフォルダの同名ファイルは files で 1 つにまとまるので、名前ごとに 1 回だけ試す
+    for (const fileName of new Set(audio.map((f) => f.name))) {
+      select.value = fileName;
+      result = await open(fileName);
       if (result !== 'failed') break;
-      failed.push(f.name);
+      failed.push(fileName);
     }
     // 最後の失敗だけは open が画面に出しているので、それ以外にもあれば伝える
     if (result !== 'superseded' && failed.length > (result === 'opened' ? 0 : 1)) alert(`開けませんでした: ${failed.join(', ')}`);
