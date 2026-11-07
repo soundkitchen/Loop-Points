@@ -1,0 +1,10 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "loop-points",
+  "account_id": "0e2e715776826600c858207cf8644363",
+  "compatibility_date": "2026-11-07",
+  // サーバー側の処理はない。ビルドした静的ファイルだけを配信する
+  "assets": {
+    "directory": "./dist"
+  }
+}
