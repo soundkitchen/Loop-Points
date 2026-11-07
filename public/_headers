@@ -1,0 +1,4 @@
+# Cloudflare Workers の静的アセットに付けるヘッダー
+# connect-src 'none' で外部への通信を止める。index.html の style 要素のために style-src は 'unsafe-inline' を許可する
+/*
+  Content-Security-Policy: default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src data:; connect-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'

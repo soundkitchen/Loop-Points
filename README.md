@@ -6,7 +6,7 @@
 
 ## 動かす
 
-Node.js `^20.19.0` または `>=22.12.0` が必要です(Vite 8 の要件)。Wrangler は Node.js 22 以上を要求するので、デプロイには `>=22.12.0` が必要です。
+Node.js `^24.22.1` または `>=26.12.1` が必要です(それぞれのセキュリティ更新を適用したバージョン以降)。
 
 ```sh
 npm install
@@ -106,12 +106,14 @@ Cloudflare Workers の静的アセットとして `dist/` を配信します。�
 
 ```sh
 npx wrangler login   # 初回のみ
-npm run build
-npx wrangler dev     # dist/ を Workers のランタイムで配信して、手元で確認する
+npx wrangler dev     # ビルドして、Workers のランタイムで手元に配信する
 npm run deploy       # ビルドして、Cloudflare にデプロイする
 ```
 
-`wrangler.jsonc` の `account_id` は、デプロイ先の Cloudflare アカウントです。fork して自分のアカウントにデプロイするときは、書き換えてください。
+- `wrangler dev` と `wrangler deploy` は、実行の前に `npm run build` を実行します
+- `wrangler.jsonc` の `account_id` は、デプロイ先の Cloudflare アカウントです。fork して自分のアカウントにデプロイするときは、書き換えてください
+- デプロイすると、`loop-points.<サブドメイン>.workers.dev` を誰でも開けます。音源はサーバーに送りません
+- `public/_headers` の CSP で、外部への通信と他サイトへの埋め込みをブラウザに止めさせます。ページの遷移など、CSP で止められない経路もあります。CSP が付くのは Cloudflare と `wrangler dev` の配信だけで、`npm run dev` には付きません
 
 ## ライセンス
 

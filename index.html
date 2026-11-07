@@ -5,15 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Loop Points</title>
     <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%230e1216'/%3E%3Cpath d='M10 16h1M13 11v10M16 7v18M19 11v10M22 16h-1' stroke='%235fa8d3' stroke-width='2' stroke-linecap='round'/%3E%3Cpath d='M6 5v22' stroke='%234cd98a' stroke-width='3' stroke-linecap='round'/%3E%3Cpath d='M26 5v22' stroke='%23ff8a4c' stroke-width='3' stroke-linecap='round'/%3E%3C/svg%3E" />
-    <script>
-      // 最初の描画の前にテーマを決めて、ちらつきを防ぐ。選択の扱いは src/theme.ts と合わせる
-      (() => {
-        let choice = null;
-        try { choice = localStorage.getItem('loop-points-theme'); } catch { /* 読めなければシステムに合わせる */ }
-        document.documentElement.dataset.theme = choice === 'light' || choice === 'dark' ? choice
-          : matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
-      })();
-    </script>
+    <script src="/theme-init.js"></script>
     <style>
       /* 配色。--wave- で始まるものと --start、--end は src/waveform.ts が Canvas の描画で読む */
       :root[data-theme=dark] {

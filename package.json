@@ -7,11 +7,14 @@
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
-    "deploy": "npm run build && wrangler deploy"
+    "deploy": "wrangler deploy"
+  },
+  "engines": {
+    "node": "^24.22.1 || >=26.12.1"
   },
   "devDependencies": {
     "typescript": "^7.0.2",
-    "vite": "^8.3.1",
+    "vite": "^8.3.6",
     "wrangler": "^4.158.0"
   }
 }
