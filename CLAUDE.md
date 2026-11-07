@@ -22,7 +22,7 @@
 1. リポジトリの整理(完了)
 2. ブラウザ内で完結させる(完了): ファイル選択とドラッグ&ドロップ、JSON の読み込みと書き出し、`duration` の記録と不一致の警告、API の削除
 3. プロトタイプ固有の記述の整理とドキュメント更新(完了): タイトル、文言、コメント、パッケージ名、ポート番号、favicon、README
-4. Cloudflare へのデプロイ設定(設定は完了、デプロイは未実施): `wrangler.jsonc`、`npm run deploy`。実際のデプロイはユーザーの指示を受けてから行う
+4. Cloudflare へのデプロイ(完了): `wrangler.jsonc`、`npm run deploy`。公開 URL は https://loop-points.soundkitchen.workers.dev/ 。以後のデプロイも、ユーザーの指示を受けてから行う
 
 ## 手元だけにあるファイル
 
