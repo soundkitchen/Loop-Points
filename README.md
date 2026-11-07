@@ -106,6 +106,8 @@ src.start(0, 0);   // 頭から鳴らすと、イントロを 1 回流してか�
 
 Cloudflare Workers の静的アセットとして `dist/` を配信します。サーバー側の処理はありません。設定は `wrangler.jsonc` にあります。
 
+公開版は、`main` に push すると [Workers Builds](https://developers.cloudflare.com/workers/ci-cd/builds/) が自動でデプロイします。ドキュメントだけの変更では動きません。手元で確認したり、手動でデプロイしたりするときは、次のコマンドを使います。
+
 ```sh
 npx wrangler login   # 初回のみ
 npx wrangler dev     # ビルドして、Workers のランタイムで手元に配信する
@@ -113,6 +115,7 @@ npm run deploy       # ビルドして、Cloudflare にデプロイする
 ```
 
 - `wrangler dev` と `wrangler deploy` は、実行の前に `npm run build` を実行します
+- Workers Builds の設定はリポジトリに含まれません。fork で自動デプロイを使うときは、Cloudflare のダッシュボードでリポジトリを接続し、ビルドコマンドに `npm run build` を指定してください
 - `wrangler.jsonc` の `account_id` は、デプロイ先の Cloudflare アカウントです。fork して自分のアカウントにデプロイするときは、書き換えてください
 - デプロイすると、`loop-points.<サブドメイン>.workers.dev` を誰でも開けます。音源はサーバーに送りません
 - `public/_headers` の CSP で、外部への通信と他サイトへの埋め込みをブラウザに止めさせます。ページの遷移など、CSP で止められない経路もあります。CSP が付くのは Cloudflare と `wrangler dev` の配信だけで、`npm run dev` には付きません
