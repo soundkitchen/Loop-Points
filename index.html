@@ -24,7 +24,7 @@
         --warn: #ffcf66; --warn-border: #6b5720; --overlay: rgba(14, 18, 22, 0.85); --kbd-border: #3a4350;
         --start: #4cd98a; --end: #ff8a4c;
         --wave-bg: #12161c; --wave-ruler: #1b2129; --wave-tick: #56606d; --wave-label: #8b95a3; --wave-zero: #2c343f;
-        --wave-in: #5fa8d3; --wave-out: #35556b; --wave-region: rgba(95, 168, 211, 0.10);
+        --wave-in: #5fa8d3; --wave-out: #35556b; --wave-overview: #35556b; --wave-region: rgba(95, 168, 211, 0.10);
         --wave-cursor: #e6e6e6; --wave-playhead: #ffd84c; --wave-view: rgba(255, 255, 255, 0.14); --wave-flag-text: #0b0e12;
       }
       :root[data-theme=light] {
@@ -33,9 +33,9 @@
         --control: #ffffff; --control-border: #c3cbd6; --control-hover: #e9edf2;
         --primary: #2a6a9c; --primary-border: #215681; --primary-fg: #ffffff;
         --warn: #8a5a00; --warn-border: #d9b55a; --overlay: rgba(245, 247, 250, 0.85); --kbd-border: #c3cbd6;
-        --start: #0f8a53; --end: #c2500f;
+        --start: #0d8450; --end: #c2500f;
         --wave-bg: #ffffff; --wave-ruler: #eef1f5; --wave-tick: #9aa5b1; --wave-label: #5a6573; --wave-zero: #d5dbe3;
-        --wave-in: #2f7fb5; --wave-out: #a9c4d8; --wave-region: rgba(47, 127, 181, 0.10);
+        --wave-in: #2f7fb5; --wave-out: #a9c4d8; --wave-overview: #4f8fbb; --wave-region: rgba(47, 127, 181, 0.10);
         --wave-cursor: #1f2730; --wave-playhead: #b87f00; --wave-view: rgba(0, 0, 0, 0.18); --wave-flag-text: #ffffff;
       }
       html, body { margin: 0; background: var(--bg); color: var(--fg); font: 13px/1.5 system-ui, sans-serif; }
@@ -57,7 +57,8 @@
       #theme button:first-child { border-radius: 4px 0 0 4px; margin-left: 0; }
       #theme button:last-child { border-radius: 0 4px 4px 0; }
       #theme button[aria-pressed=true] { position: relative; background: var(--primary); border-color: var(--primary-border); color: var(--primary-fg); }
-      #theme svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+      /* クリックの対象をボタンにする。アイコンが対象になると src/main.ts のフォーカスを外す処理が効かない */
+      #theme svg { pointer-events: none; width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
       input[type=number] { width: 7em; padding: 3px 6px; font-family: ui-monospace, monospace; }
       input[type=checkbox] { vertical-align: middle; }
       .row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }

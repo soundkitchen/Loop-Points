@@ -435,13 +435,16 @@ applyVolume();
 // ボタン・チェックボックス・スライダーにフォーカスが残ると、Space でそれが押されるので外す
 const isToggle = (t: EventTarget | null) =>
   t instanceof HTMLButtonElement || (t instanceof HTMLInputElement && (t.type === 'checkbox' || t.type === 'range'));
+// テーマのボタンは再生と関係がないので、キーボードで操作したときはボタンとして扱う
+const isThemeButton = (t: EventTarget | null) => t instanceof Element && t.closest('#theme') !== null;
 document.addEventListener('click', (e) => {
-  if (isToggle(e.target)) (e.target as HTMLElement).blur();
+  const fromKeyboard = e.detail === 0;
+  if (isToggle(e.target) && !(fromKeyboard && isThemeButton(e.target))) (e.target as HTMLElement).blur();
 });
 addEventListener('keydown', (e) => {
   // 数値の欄とセレクトでは Space を文字入力などに使うので横取りしない
   const typing = (e.target instanceof HTMLInputElement && !isToggle(e.target)) || e.target instanceof HTMLSelectElement;
-  if (e.code !== 'Space' || typing) return;
+  if (e.code !== 'Space' || typing || isThemeButton(e.target)) return;
   e.preventDefault();
   if (e.repeat) return;   // 長押しのキーリピートで再生と停止を繰り返さない
   if (player.playing) player.stop();

@@ -43,5 +43,11 @@ export function setupTheme(onChange: () => void) {
   media.addEventListener('change', () => {
     if (choice === 'system') apply();
   });
+  // 別のタブでの選択に合わせる。key が null なのはストレージ全体が消されたとき
+  addEventListener('storage', (e) => {
+    if (e.key !== STORAGE_KEY && e.key !== null) return;
+    choice = readChoice();
+    apply();
+  });
   apply();
 }

@@ -21,6 +21,7 @@ const COLOR_VARS = {
   zero: '--wave-zero',
   wave: '--wave-in',
   waveOut: '--wave-out',    // ループ区間の外
+  overview: '--wave-overview',
   region: '--wave-region',
   start: '--start',
   end: '--end',
@@ -29,7 +30,11 @@ const COLOR_VARS = {
   view: '--wave-view',
   flagText: '--wave-flag-text',
 };
-const COLOR = {} as Record<keyof typeof COLOR_VARS, string>;
+
+function readColors() {
+  const style = getComputedStyle(document.documentElement);
+  return Object.fromEntries(Object.entries(COLOR_VARS).map(([key, cssVar]) => [key, style.getPropertyValue(cssVar).trim()])) as Record<keyof typeof COLOR_VARS, string>;
+}
 
 // 目盛りの間隔の候補 (秒)
 const TICK_STEPS = [0.0001, 0.0002, 0.0005, 0.001, 0.002, 0.005, 0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1, 2, 5, 10, 15, 30, 60];
@@ -92,6 +97,7 @@ export class WaveformView {
   onMarkerDrag?: (m: Marker, sample: number, samplesPerPx: number) => void;
   onCursor?: (sample: number) => void;
 
+  private color = readColors();
   private data: Float32Array = new Float32Array(0);
   private sampleRate = 44100;
   private viewStart = 0;         // 左端のサンプル
@@ -122,10 +128,7 @@ export class WaveformView {
 
   // CSS 変数から色を読み直し、波形を描き直す
   refreshColors() {
-    const style = getComputedStyle(document.documentElement);
-    for (const [key, cssVar] of Object.entries(COLOR_VARS)) {
-      COLOR[key as keyof typeof COLOR_VARS] = style.getPropertyValue(cssVar).trim();
-    }
+    this.color = readColors();
     this.dirty = this.overviewDirty = true;
   }
 
@@ -234,13 +237,13 @@ export class WaveformView {
     c.height = this.canvas.height;
     const g = c.getContext('2d')!;
     const w = c.width, h = c.height, ruler = RULER * dpr;
-    g.fillStyle = COLOR.bg;
+    g.fillStyle = this.color.bg;
     g.fillRect(0, 0, w, h);
-    g.fillStyle = COLOR.ruler;
+    g.fillStyle = this.color.ruler;
     g.fillRect(0, 0, w, ruler);
-    g.fillStyle = COLOR.zero;
+    g.fillStyle = this.color.zero;
     g.fillRect(0, Math.round(ruler + (h - ruler) / 2), w, 1);
-    const inLoop = (i: number) => (i >= start && i < end ? COLOR.wave : COLOR.waveOut);
+    const inLoop = (i: number) => (i >= start && i < end ? this.color.wave : this.color.waveOut);
     drawWave(g, this.data, this.viewStart, this.spp / dpr, w, ruler, h - ruler, inLoop);
 
     // 目盛り: ラベル同士が 90px 以上離れる、いちばん細かい間隔
@@ -252,9 +255,9 @@ export class WaveformView {
     g.textBaseline = 'middle';
     for (let t = Math.ceil(t0 / step) * step; t <= t1; t += step) {
       const x = Math.round(((t - t0) / secPerPx) * dpr);
-      g.fillStyle = COLOR.tick;
+      g.fillStyle = this.color.tick;
       g.fillRect(x, ruler - 6 * dpr, 1, 6 * dpr);
-      g.fillStyle = COLOR.label;
+      g.fillStyle = this.color.label;
       g.fillText(formatTime(t, digits), x + 4 * dpr, ruler / 2 - 1 * dpr);
     }
   }
@@ -264,9 +267,9 @@ export class WaveformView {
     c.width = this.overview.width;
     c.height = this.overview.height;
     const g = c.getContext('2d')!;
-    g.fillStyle = COLOR.bg;
+    g.fillStyle = this.color.bg;
     g.fillRect(0, 0, c.width, c.height);
-    drawWave(g, this.data, 0, this.data.length / Math.max(1, c.width), c.width, 0, c.height, () => COLOR.waveOut);
+    drawWave(g, this.data, 0, this.data.length / Math.max(1, c.width), c.width, 0, c.height, () => this.color.overview);
   }
 
   // 毎フレーム呼ぶ。重い波形は cache から写し、マーカーと再生位置だけ描き足す
@@ -296,7 +299,7 @@ export class WaveformView {
     g.drawImage(this.cache, 0, 0);
     const X = (s: number) => Math.round(this.sampleToX(s) * dpr);
 
-    g.fillStyle = COLOR.region;
+    g.fillStyle = this.color.region;
     g.fillRect(X(st.start), ruler, X(st.end) - X(st.start), h - ruler);
 
     const line = (s: number, color: string, width: number, dash: number[] = []) => {
@@ -309,8 +312,8 @@ export class WaveformView {
       g.stroke();
       g.setLineDash([]);
     };
-    line(st.cursor, COLOR.cursor, 1, [4, 4]);
-    for (const [s, color, label] of [[st.start, COLOR.start, '開始'], [st.end, COLOR.end, '終了']] as const) {
+    line(st.cursor, this.color.cursor, 1, [4, 4]);
+    for (const [s, color, label] of [[st.start, this.color.start, '開始'], [st.end, this.color.end, '終了']] as const) {
       line(s, color, 2);
       g.fillStyle = color;
       g.font = `bold ${11 * dpr}px system-ui, sans-serif`;
@@ -319,10 +322,10 @@ export class WaveformView {
       // 旗は開始なら右、終了なら左に出して、区間の内側を向ける
       const fx = label === '開始' ? X(s) : X(s) - tw;
       g.fillRect(fx, 0, tw, ruler);
-      g.fillStyle = COLOR.flagText;
+      g.fillStyle = this.color.flagText;
       g.fillText(label, fx + 4 * dpr, ruler / 2);
     }
-    if (st.playhead !== null) line(st.playhead, COLOR.playhead, 1.5);
+    if (st.playhead !== null) line(st.playhead, this.color.playhead, 1.5);
   }
 
   private drawOverview(st: WaveState) {
@@ -330,20 +333,20 @@ export class WaveformView {
     const w = this.overview.width, h = this.overview.height;
     const X = (s: number) => Math.round((s / this.data.length) * w);
     g.drawImage(this.overviewCache, 0, 0);
-    g.fillStyle = COLOR.region;
+    g.fillStyle = this.color.region;
     g.fillRect(X(st.start), 0, X(st.end) - X(st.start), h);
-    g.fillStyle = COLOR.start;
+    g.fillStyle = this.color.start;
     g.fillRect(X(st.start), 0, 2, h);
-    g.fillStyle = COLOR.end;
+    g.fillStyle = this.color.end;
     g.fillRect(X(st.end) - 2, 0, 2, h);
     if (st.playhead !== null) {
-      g.fillStyle = COLOR.playhead;
+      g.fillStyle = this.color.playhead;
       g.fillRect(X(st.playhead), 0, 1, h);
     }
     // 上の波形に表示している範囲
-    g.strokeStyle = COLOR.view;
+    g.strokeStyle = this.color.view;
     g.lineWidth = 2;
-    g.fillStyle = COLOR.view;
+    g.fillStyle = this.color.view;
     const vx = X(this.viewStart), vw = Math.max(2, X(this.viewStart + this.width * this.spp) - vx);
     g.globalAlpha = 0.35;
     g.fillRect(vx, 0, vw, h);
