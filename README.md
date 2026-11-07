@@ -116,7 +116,7 @@ npm run deploy       # ビルドして、Cloudflare にデプロイする
 
 - `wrangler dev` と `wrangler deploy` は、実行の前に `npm run build` を実行します
 - 手動でデプロイするときは、レビュー前の内容を公開しないように、`main` で実行してください
-- Workers Builds の設定はリポジトリに含まれません。fork で自動デプロイを使うときは、`wrangler.jsonc` の `name` と `account_id` を接続先の Worker に合わせ、Cloudflare のダッシュボードでリポジトリを接続して、ビルドコマンドに `npm run build` を指定してください
+- Workers Builds の設定はリポジトリに含まれません。fork で自動デプロイを使うときは、`wrangler.jsonc` の `name` と `account_id` を接続先の Worker に合わせ、Cloudflare のダッシュボードでリポジトリを接続してください。ビルドコマンドは空欄のままで構いません
 - `wrangler.jsonc` の `account_id` は、デプロイ先の Cloudflare アカウントです。fork して自分のアカウントにデプロイするときは、書き換えてください
 - デプロイすると、`loop-points.<サブドメイン>.workers.dev` を誰でも開けます。音源はサーバーに送りません
 - `public/_headers` の CSP で、外部への通信と他サイトへの埋め込みをブラウザに止めさせます。ページの遷移など、CSP で止められない経路もあります。CSP が付くのは Cloudflare と `wrangler dev` の配信だけで、`npm run dev` には付きません
