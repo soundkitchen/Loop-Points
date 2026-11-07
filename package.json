@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
-    "deploy": "wrangler deploy"
+    "deploy": "npm run build && wrangler deploy"
   },
   "engines": {
     "node": "^24.22.1 || >=26.12.1"

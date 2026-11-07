@@ -6,10 +6,6 @@
   // 誰でも開ける URL で公開する。バージョンごとのプレビュー URL は使わない
   "workers_dev": true,
   "preview_urls": false,
-  // wrangler dev と wrangler deploy の前にビルドして、古い dist/ を配信しないようにする
-  "build": {
-    "command": "npm run build"
-  },
   // サーバー側の処理はない。ビルドした静的ファイルだけを配信する
   "assets": {
     "directory": "./dist"
