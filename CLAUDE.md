@@ -9,9 +9,9 @@
 | 名前 | 画面タイトルは `Loop Points`、GitHub リポジトリは `Loop-Points`、`package.json` の `name` と Cloudflare の Worker 名は `loop-points` |
 | 処理の場所 | ブラウザ内で完結させる。音源はアップロードしない |
 | デプロイ先 | Cloudflare(Workers の静的アセット)。アカウントは `Privates` で、`wrangler.jsonc` の `account_id` に書く。公開 URL は https://loop-points.soundkitchen.workers.dev/ で、誰でも開ける。`public/_headers` で CSP を付ける |
-| デプロイの方法 | `main` への push で Workers Builds が自動でデプロイするので、マージがデプロイの判断になる。手動のデプロイ(`npm run deploy`)はユーザーの指示を受けてから行う |
-| Workers Builds の設定 | ダッシュボードにあり、リポジトリには残らない。ブランチは `main`、ビルドコマンドは `npm run build`(Workers Builds は `wrangler.jsonc` の `build.command` を使わない)、デプロイコマンドは `npx wrangler deploy`、パスは `/`、プレビュービルドとビルドキャッシュはオフ。Build watch paths の include は `src/*`、`public/*`、`index.html`、`package.json`、`package-lock.json`、`tsconfig.json`、`wrangler.jsonc` |
-| Node | `^24.22.1 \|\| >=26.12.1`。それぞれのセキュリティ更新を適用したバージョン以降とし、`package.json` の `engines` に書く |
+| デプロイの方法 | `main` への push のたびに Workers Builds が自動でデプロイするので、マージがデプロイの判断になる。マージ前のビルドの確認はない。失敗しても公開版は前のバージョンのままで、失敗はダッシュボードの Deployments タブのビルド履歴で確認する。手動のデプロイ(`npm run deploy`)はユーザーの指示を受けてから `main` で行う |
+| Workers Builds の設定 | ダッシュボードにあり、リポジトリには残らない。ブランチは `main`、ビルドコマンドは `npm run build`、デプロイコマンドは `npx wrangler deploy`、パスは `/`、プレビュービルドとビルドキャッシュはオフ、Build watch paths は既定(すべて) |
+| Node | `^24.22.1 \|\| >=26.12.1`。それぞれのセキュリティ更新を適用したバージョン以降とし、`package.json` の `engines` に書く。Workers Builds のビルドは `.node-version` で固定し、セキュリティ更新に合わせて上げる |
 | 対象ユーザー | 自分やチーム |
 | JSON の形式 | ファイル名ごとの `loopStart` / `loopEnd`(秒)に `duration`(デコード後の長さ・秒)を加える。`duration` がない JSON も読める |
 | JSON の書き出し | クリップボードへのコピーはどのブラウザでもできる。Chromium 系は File System Access API で、保存先を選ぶ書き出しと、読み込んだ(ボタンでもドロップでも)または保存したファイルへの上書き保存ができる。外から変更されていたら確認を出す。それ以外のブラウザは `loops.json` のダウンロードで、成否は判定できないので押した時点で書き出し済みとする。コピーしても書き出し済みとはしない。保存はファイル全体の置き換えで、保存先の既存の内容には重ねない。読み込んだ JSON の知らないフィールドは残す |
