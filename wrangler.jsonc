@@ -1,0 +1,17 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "loop-points",
+  "account_id": "0e2e715776826600c858207cf8644363",
+  "compatibility_date": "2026-11-07",
+  // 誰でも開ける URL で公開する。バージョンごとのプレビュー URL は使わない
+  "workers_dev": true,
+  "preview_urls": false,
+  // wrangler dev と wrangler deploy の前にビルドして、古い dist/ を配信しないようにする
+  "build": {
+    "command": "npm run build"
+  },
+  // サーバー側の処理はない。ビルドした静的ファイルだけを配信する
+  "assets": {
+    "directory": "./dist"
+  }
+}

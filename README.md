@@ -6,7 +6,7 @@
 
 ## 動かす
 
-Node.js `^20.19.0` または `>=22.12.0` が必要です(Vite 8 の要件)。
+Node.js `^24.22.1` または `>=26.12.1` が必要です(それぞれのセキュリティ更新を適用したバージョン以降)。
 
 ```sh
 npm install
@@ -99,6 +99,21 @@ src.start(0, 0);   // 頭から鳴らすと、イントロを 1 回流してか�
 
 - **mp3 の先頭と末尾の無音**: mp3 にはエンコーダが入れる数十ミリ秒の無音があります。長さの情報(LAME ヘッダ)があるファイルは、取り除くかどうかがブラウザのデコーダによって違い、同じ秒でも位置がずれることがあります。ずれるときは WAV に書き出してください。Ogg / Opus も候補ですが、ブラウザによってはデコードできないことがあります
 - **サンプルレート**: `decodeAudioData` はデコードしたあと、`AudioContext` のサンプルレートに変換します。ゼロクロスは変換後の波形で探すので、別のサンプルレートで鳴らすと、ゼロクロスからわずかにずれることがあります
+
+## デプロイ
+
+Cloudflare Workers の静的アセットとして `dist/` を配信します。サーバー側の処理はありません。設定は `wrangler.jsonc` にあります。
+
+```sh
+npx wrangler login   # 初回のみ
+npx wrangler dev     # ビルドして、Workers のランタイムで手元に配信する
+npm run deploy       # ビルドして、Cloudflare にデプロイする
+```
+
+- `wrangler dev` と `wrangler deploy` は、実行の前に `npm run build` を実行します
+- `wrangler.jsonc` の `account_id` は、デプロイ先の Cloudflare アカウントです。fork して自分のアカウントにデプロイするときは、書き換えてください
+- デプロイすると、`loop-points.<サブドメイン>.workers.dev` を誰でも開けます。音源はサーバーに送りません
+- `public/_headers` の CSP で、外部への通信と他サイトへの埋め込みをブラウザに止めさせます。ページの遷移など、CSP で止められない経路もあります。CSP が付くのは Cloudflare と `wrangler dev` の配信だけで、`npm run dev` には付きません
 
 ## ライセンス
 

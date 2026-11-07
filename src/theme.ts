@@ -1,4 +1,4 @@
-// 配色の切り替え。選択はブラウザに保存する。最初の描画の前の決定は index.html のスクリプトが行う
+// 配色の切り替え。選択はブラウザに保存する。最初の描画の前の決定は public/theme-init.js が行う
 type ThemeChoice = 'system' | 'light' | 'dark';
 
 const STORAGE_KEY = 'loop-points-theme';
