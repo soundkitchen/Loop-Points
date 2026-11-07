@@ -2,6 +2,7 @@ import { canWrite, fileAccessSupported, isAbort, pickJsonToOpen, pickJsonToSave,
 import { parseLoops, serializeLoops, type LoopMap } from './loops';
 import { LoopPlayer } from './player';
 import { mixdown, nearestZeroCross, nextZeroCross } from './samples';
+import { setupTheme } from './theme';
 import { WaveformView, formatTime, type Marker } from './waveform';
 
 // 音源ごとのループポイントを決めるビューア。音源はブラウザ内で読み、決めた値は JSON に書き出す
@@ -45,6 +46,7 @@ const isDirty = () => Object.entries(loops).some(([k, p]) =>
   p.loopStart !== saved[k]?.loopStart || p.loopEnd !== saved[k]?.loopEnd || p.duration !== saved[k]?.duration);
 
 const view = new WaveformView($<HTMLCanvasElement>('wave'), $<HTMLCanvasElement>('overview'), () => ({ start, end, cursor, playhead }));
+setupTheme(() => view.refreshColors());
 
 // ---- ループポイント ----
 
@@ -433,13 +435,16 @@ applyVolume();
 // ボタン・チェックボックス・スライダーにフォーカスが残ると、Space でそれが押されるので外す
 const isToggle = (t: EventTarget | null) =>
   t instanceof HTMLButtonElement || (t instanceof HTMLInputElement && (t.type === 'checkbox' || t.type === 'range'));
+// テーマのボタンは再生と関係がないので、キーボードで操作したときはボタンとして扱う
+const isThemeButton = (t: EventTarget | null) => t instanceof Element && t.closest('#theme') !== null;
 document.addEventListener('click', (e) => {
-  if (isToggle(e.target)) (e.target as HTMLElement).blur();
+  const fromKeyboard = e.detail === 0;
+  if (isToggle(e.target) && !(fromKeyboard && isThemeButton(e.target))) (e.target as HTMLElement).blur();
 });
 addEventListener('keydown', (e) => {
   // 数値の欄とセレクトでは Space を文字入力などに使うので横取りしない
   const typing = (e.target instanceof HTMLInputElement && !isToggle(e.target)) || e.target instanceof HTMLSelectElement;
-  if (e.code !== 'Space' || typing) return;
+  if (e.code !== 'Space' || typing || isThemeButton(e.target)) return;
   e.preventDefault();
   if (e.repeat) return;   // 長押しのキーリピートで再生と停止を繰り返さない
   if (player.playing) player.stop();
