@@ -1,4 +1,4 @@
-import { OUT_FORMATS, croppedName, formatOf, type OutFormat } from './cropFormat';
+import { OUT_FORMATS, croppedName, extFormat, formatOf, type OutFormat } from './cropFormat';
 import { canWrite, fileAccessSupported, isAbort, pickAudioToSave, pickJsonToOpen, pickJsonToSave, writeContent } from './jsonFile';
 import { parseLoops, serializeLoops, type LoopMap, type LoopPoints } from './loops';
 import { LoopPlayer } from './player';
@@ -520,18 +520,21 @@ $('export-crop').addEventListener('click', () => void whileWriting('音源を書
   const suggested = croppedName(name, format);
   // 保存先の選択はクリックの直後でないと拒否されるので、エンコードより先に開く
   const handle = fileAccessSupported ? await pickAudioToSave(suggested, info) : null;
-  // 拡張子と中身が食い違うと、開き直したときに形式を読み違える。ゲームエンジンも拡張子で形式を決める
-  if (handle && !handle.name.toLowerCase().endsWith(info.ext)) {
-    alert(`${info.description} の拡張子は ${info.ext} です。${handle.name} には保存しませんでした。名前を直して、もう一度書き出してください`);
-    return;
-  }
   // ダイアログを開いている間に変わらないよう、ここで控える
   const source = files.get(name)!, audio = buffer, from = crop.start, to = crop.end;
   const sourceLoop = loops[name], rate = audio.sampleRate, loopStart = (start - from) / rate, loopEnd = (end - from) / rate;
+  // 拡張子と中身が食い違うと、開き直したときやゲームエンジンで形式を読み違えるので、選んだ名前の拡張子の形式で書く。
+  // 書き出しを止めると、保存先を選んだ時点で Chromium が作った空のファイル (既存のファイルなら空にしたもの) が残る
+  let written = format;
+  const named = handle && extFormat(handle.name);
+  if (named && named !== format && audio.numberOfChannels <= OUT_FORMATS[named].maxChannels) written = named;
   const { renderCrop } = await import('./cropRender');
-  const blob = await renderCrop(source, audio, from, to, format);
+  const blob = await renderCrop(source, audio, from, to, written);
   if (handle) await writeContent(handle, blob);
   else downloadBlob(blob, suggested);
+  if (handle && named !== written) {
+    alert(`${handle.name} に ${OUT_FORMATS[written].description} で保存しました。拡張子が ${OUT_FORMATS[written].ext} でないので、開くときに形式を読み違えることがあります`);
+  }
   await openCropped(new File([blob], handle?.name ?? suggested, { type: blob.type }), !handle, sourceLoop, loopStart, loopEnd);
 }));
 
