@@ -35,7 +35,7 @@ ffmpeg でデコードした PCM を、元ファイルのデコード結果と�
 ### ffmpeg の挙動で分かったこと
 
 - 先頭でスキップされるサンプル数 = LAME タグの `delay` + 529(デコーダ遅延)
-- 末尾の削除には Xing の `frames` フィールドと LAME タグの `padding` を使う
+- 末尾の削除には Xing の `frames` フィールドと LAME タグの `padding` を使う。デコーダ出力上の終わり = `frames * spf - padding + 529`
 - LAME タグのエンコーダ名が `LAME` / `Lavf` / `Lavc` のどれかで始まらないと、delay / padding を無視する
 - 入力をパイプで渡すとファイルサイズが分からず、末尾の padding が効かない(ファイルなら効く)
 
@@ -72,7 +72,7 @@ ffmpeg でデコードした PCM を、元ファイルのデコード結果と�
 3. 先頭に Info フレームを付ける
    - フレームヘッダは元ストリームと同じ設定(padding ビットなし)
    - Xing 部: `Info` タグ、フラグは frames / bytes / TOC / quality の 4 つすべて(LAME タグが標準位置の +120 に来るようにするため)
-     - frames: `F`(Info フレーム自身は数えない。ffmpeg は `frames * spf - padding` で音声の終わりを求めるので、`F + 1` にすると末尾が 1152 サンプルずれる)
+     - frames: `F`(Info フレーム自身は数えない。ffmpeg はデコーダ出力上の音声の終わりを `frames * spf - padding + 529` とするので、`F + 1` にすると末尾が 1152 サンプルずれる)
      - bytes: Info フレームと連結した `F` フレームの合計バイト数(前に付ける ID3v2 タグは含めない)
      - TOC: CBR なので線形(`i` 番目に `floor(i * 256 / 100)`)
      - quality: 0
