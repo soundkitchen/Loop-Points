@@ -24,8 +24,11 @@ function scanFrames(mp3: Uint8Array) {
   let offset = 0, frames = 0;
   const bitrates = new Set<number>();
   while (offset < mp3.length) {
-    if (mp3[offset] !== 0xff || (mp3[offset + 1] & 0xfe) !== 0xfa) throw new Error(`mp3 のフレームが不正です (${offset} バイト目)`);
     const bitrate = mp3[offset + 2] >> 4;
+    // 長さが決まらないフレーム (free format、不正なビットレートやレート) があると先に進めない
+    if (mp3[offset] !== 0xff || (mp3[offset + 1] & 0xfe) !== 0xfa || bitrate === 0 || bitrate === 15 || ((mp3[offset + 2] >> 2) & 3) === 3) {
+      throw new Error(`mp3 のフレームが不正です (${offset} バイト目)`);
+    }
     bitrates.add(bitrate);
     offset += frameBytes(bitrate, (mp3[offset + 2] >> 2) & 3) + ((mp3[offset + 2] >> 1) & 1);
     frames++;
@@ -35,6 +38,7 @@ function scanFrames(mp3: Uint8Array) {
 
 // samples は元の PCM のサンプル数。mp3 はエンコーダの出力そのもの (MPEG1 Layer III のフレームだけ) を渡す
 export function addInfoTag(mp3: Uint8Array, samples: number): Uint8Array {
+  if (mp3.length === 0) throw new Error('mp3 のフレームがありません');
   const { frames, constant } = scanFrames(mp3);
   const padding = frames * FRAME_SAMPLES - samples - ENCODER_DELAY;
   if (padding < 0 || padding > 0xfff) throw new Error(`mp3 の詰め物の長さが不正です (${padding})`);
@@ -43,7 +47,9 @@ export function addInfoTag(mp3: Uint8Array, samples: number): Uint8Array {
   const sideInfo = channelBits >> 6 === 3 ? SIDE_INFO.mono : SIDE_INFO.stereo;
   // タグが収まるビットレートのフレームにする
   let bitrate = mp3[2] >> 4;
-  while (frameBytes(bitrate, rateIndex) < 4 + sideInfo + XING_BYTES + LAME_BYTES) bitrate++;
+  while (frameBytes(bitrate, rateIndex) < 4 + sideInfo + XING_BYTES + LAME_BYTES) {
+    if (++bitrate >= BITRATES.length) throw new Error('mp3 のタグが収まりません');
+  }
   const size = frameBytes(bitrate, rateIndex);
 
   const frame = new Uint8Array(size);

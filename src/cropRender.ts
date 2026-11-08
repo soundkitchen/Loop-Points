@@ -6,6 +6,7 @@ import { sampleRateOf } from './sampleRate';
 import { encodeWav16, parseWav, sliceWav } from './wav';
 
 const MP3_RATES = [32000, 44100, 48000];   // Info タグを書ける MPEG1 のレート
+const WAV_HEAD_BYTES = 1 << 20;            // WAV のヘッダを探す範囲。data の前に大きなチャンクがあれば、全体を読む
 
 // mp3 にできないレートは、近い系列のレートに変換する
 const mp3Rate = (rate: number) => (MP3_RATES.includes(rate) ? rate : rate % 11025 === 0 ? 44100 : 48000);
@@ -13,18 +14,24 @@ const mp3Rate = (rate: number) => (MP3_RATES.includes(rate) ? rate : rate % 1102
 // start 以上 end 未満 (decoded のサンプル) を書き出す。デコードは AudioContext のレートに変換されているので、
 // 元のレートが分かるときはそのレートで元のファイルをデコードし直し、音を変換しないで済むようにする
 export async function renderCrop(source: File, decoded: AudioBuffer, start: number, end: number, format: OutFormat): Promise<Blob> {
-  const bytes = await source.arrayBuffer();
-  const toRate = (s: number, rate: number) => Math.round((s / decoded.sampleRate) * rate);
+  // rate のサンプルに直す。別々に丸めると短い範囲が 0 になるので、最低 1 サンプルは残す
+  const range = (rate: number, length: number): [number, number] => {
+    const a = Math.min(Math.round((start / decoded.sampleRate) * rate), length - 1);
+    return [a, Math.min(Math.max(Math.round((end / decoded.sampleRate) * rate), a + 1), length)];
+  };
 
   if (format === 'wav') {
-    const wav = parseWav(bytes);
-    if (wav) return sliceWav(source, wav, toRate(start, wav.sampleRate), toRate(end, wav.sampleRate));
+    // 切り出すのにヘッダしか要らないので、先頭だけを読む
+    const wav = parseWav(await source.slice(0, WAV_HEAD_BYTES).arrayBuffer(), source.size)
+      ?? (source.size > WAV_HEAD_BYTES ? parseWav(await source.arrayBuffer()) : null);
+    if (wav) return sliceWav(source, wav, ...range(wav.sampleRate, Math.floor(wav.dataBytes / wav.blockAlign)));
   }
 
+  const bytes = await source.arrayBuffer();
   const original = sampleRateOf(bytes) ?? decoded.sampleRate;
   const rate = format === 'mp3' ? mp3Rate(original) : original;
   const audio = rate === decoded.sampleRate ? decoded : await new OfflineAudioContext(decoded.numberOfChannels, 1, rate).decodeAudioData(bytes);
-  const a = toRate(start, rate), z = Math.min(toRate(end, rate), audio.length);
+  const [a, z] = range(rate, audio.length);
   const channels = Array.from({ length: audio.numberOfChannels }, (_, c) => audio.getChannelData(c).subarray(a, z));
 
   if (format === 'wav') return encodeWav16(channels, rate);

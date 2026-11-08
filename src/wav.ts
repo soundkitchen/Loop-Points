@@ -11,7 +11,8 @@ const FORMAT_PCM = 1, FORMAT_FLOAT = 3, FORMAT_EXTENSIBLE = 0xfffe;
 const ascii = (s: string) => Uint8Array.from(s, (c) => c.charCodeAt(0));
 
 // サンプルを 1 つずつ切り出せる PCM と float の WAV だけを読む。それ以外 (ADPCM など) は null を返し、呼ぶ側で再エンコードする
-export function parseWav(bytes: ArrayBuffer): WavLayout | null {
+// bytes はファイルの先頭だけでもよい。そのときは fileSize にファイル全体の大きさを渡す
+export function parseWav(bytes: ArrayBuffer, fileSize = bytes.byteLength): WavLayout | null {
   const d = new DataView(bytes);
   const tag = (o: number) => String.fromCharCode(d.getUint8(o), d.getUint8(o + 1), d.getUint8(o + 2), d.getUint8(o + 3));
   if (bytes.byteLength < 12 || tag(0) !== 'RIFF' || tag(8) !== 'WAVE') return null;
@@ -27,7 +28,7 @@ export function parseWav(bytes: ArrayBuffer): WavLayout | null {
       const blockAlign = f.getUint16(12, true);
       if ((format !== FORMAT_PCM && format !== FORMAT_FLOAT) || blockAlign === 0) return null;
       // ヘッダの長さが実際より長いファイルもあるので、ファイルの範囲に収める
-      return { fmt, sampleRate: f.getUint32(4, true), blockAlign, dataOffset: body, dataBytes: Math.min(size, bytes.byteLength - body) };
+      return { fmt, sampleRate: f.getUint32(4, true), blockAlign, dataOffset: body, dataBytes: Math.min(size, fileSize - body) };
     }
     o = body + size + (size & 1);   // チャンクは 2 バイト境界に揃っている
   }

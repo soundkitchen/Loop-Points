@@ -27,6 +27,8 @@ type Crop = { start: number; end: number };   // クロップの範囲 (サン�
 type Decoded = { source: File; buffer: AudioBuffer; mono: Float32Array; crop: Crop };
 const decoded = new Map<string, Decoded>();
 const decoding = new Map<File, Promise<Decoded>>();   // デコード中の音源。同じファイルを二重にデコードしない
+// クロップしてダウンロードで保存した音源。ブラウザが保存時に名前を変えることがあるので、開いている間は注意を出す
+const downloaded = new Set<string>();
 
 // 開いている音源。位置はサンプル
 let name = '';
@@ -152,13 +154,14 @@ const panels = MODE_MARKERS.loop.map((_, i) => {
 });
 
 function updatePanel() {
+  // 音源を開くまでは空欄にする
   MODE_MARKERS[mode].forEach((m, i) => {
     const s = positionOf(m);
-    panels[i].sec.value = (s / sr()).toFixed(6);
-    panels[i].samples.value = String(s);
+    panels[i].sec.value = buffer ? (s / sr()).toFixed(6) : '';
+    panels[i].samples.value = buffer ? String(s) : '';
   });
   const [a, z] = mode === 'crop' ? [crop.start, crop.end] : [start, end];
-  $('length').textContent = `${formatTime((z - a) / sr())} (${z - a} サンプル)`;
+  $('length').textContent = buffer ? `${formatTime((z - a) / sr())} (${z - a} サンプル)` : '';
   updateWarning();
   updateStatus();
 }
@@ -194,6 +197,9 @@ function updateWarning() {
   const mismatch = buffer !== null && want !== undefined && Math.abs(want - buffer.duration) > DURATION_TOLERANCE;
   const messages = [];
   if (mismatch) messages.push(`${name}: JSON の duration (${formatTime(want)}) と音源の長さ (${formatTime(buffer!.duration)}) が違います。別の音源か、デコードの差でループ位置がずれている可能性があります`);
+  if (downloaded.has(name)) {
+    messages.push(`${name} はダウンロードで保存しました。同じ名前のファイルがあると、ブラウザが「${name.replace(/(\.[^.]+)$/, ' (1)$1')}」のように名前を変えることがあります。その場合は、ファイル名を ${name} に直してください(JSON にはこの名前で書き出します)`);
+  }
   if (mode === 'crop' && cropCutsLoop()) messages.push('クロップの範囲がループ区間にかかっているので、書き出せません。線を区間の外へ動かすか、ループモードで区間を動かしてください');
   $('warning').textContent = messages.join('\n');
 }
@@ -408,7 +414,10 @@ async function addFiles(list: File[], handles: Promise<FileSystemHandle | null>[
   else if (json.length === 1) await loadLoops(json[0], await findFileHandle(handles, json[0].name));
   if (audio.length > 0) {
     // 同じ名前の音源は新しいファイルで置き換える
-    for (const f of audio) files.set(f.name, f);
+    for (const f of audio) {
+      files.set(f.name, f);
+      downloaded.delete(f.name);   // 保存されたファイルを開き直したので、名前は合っている
+    }
     updateFileList();
     // 開ける音源が見つかるまで順に試す
     const failed: string[] = [];
@@ -480,8 +489,10 @@ addEventListener('drop', (e) => {
 const outFormat = $<HTMLSelectElement>('out-format');
 
 // 書き出した音源を開く。ループを決めていた音源なら、前を切った分を引いた秒数で項目を作る。元の音源と項目は残す
-async function openCropped(out: File, sourceLoop: LoopPoints | undefined, loopStart: number, loopEnd: number) {
+async function openCropped(out: File, downloadedAs: boolean, sourceLoop: LoopPoints | undefined, loopStart: number, loopEnd: number) {
   files.set(out.name, out);
+  if (downloadedAs) downloaded.add(out.name);
+  else downloaded.delete(out.name);
   updateFileList();
   let d: Decoded;
   try {
@@ -509,6 +520,11 @@ $('export-crop').addEventListener('click', () => void whileWriting('音源を書
   const suggested = croppedName(name, format);
   // 保存先の選択はクリックの直後でないと拒否されるので、エンコードより先に開く
   const handle = fileAccessSupported ? await pickAudioToSave(suggested, info) : null;
+  // 拡張子と中身が食い違うと、開き直したときに形式を読み違える。ゲームエンジンも拡張子で形式を決める
+  if (handle && !handle.name.toLowerCase().endsWith(info.ext)) {
+    alert(`${info.description} の拡張子は ${info.ext} です。${handle.name} には保存しませんでした。名前を直して、もう一度書き出してください`);
+    return;
+  }
   // ダイアログを開いている間に変わらないよう、ここで控える
   const source = files.get(name)!, audio = buffer, from = crop.start, to = crop.end;
   const sourceLoop = loops[name], rate = audio.sampleRate, loopStart = (start - from) / rate, loopEnd = (end - from) / rate;
@@ -516,7 +532,7 @@ $('export-crop').addEventListener('click', () => void whileWriting('音源を書
   const blob = await renderCrop(source, audio, from, to, format);
   if (handle) await writeContent(handle, blob);
   else downloadBlob(blob, suggested);
-  await openCropped(new File([blob], handle?.name ?? suggested, { type: blob.type }), sourceLoop, loopStart, loopEnd);
+  await openCropped(new File([blob], handle?.name ?? suggested, { type: blob.type }), !handle, sourceLoop, loopStart, loopEnd);
 }));
 
 // ---- 再生 ----
