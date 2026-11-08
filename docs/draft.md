@@ -24,8 +24,8 @@
 - **リポジトリ**: このディレクトリ(クラウド同期フォルダ内)に git リポジトリを作る。
 - **Zig のバージョン**: 0.17.1。`.envrc`(direnv)で `~/Zig/0.17` を PATH に通す。
 - **テスト用の音声**: Lyria の実ファイル(`samples/`)は git に入れない。テストには lame で作った、Lyria と同じ構成(CBR 192kbps、Xing なし)の短い MP3 を使い、リポジトリに入れる。
-- **MP3 トリムで付ける LAME タグのエンコーダ名**: `LAMEK!LN`。`LAME` で始めるのは ffmpeg / Chrome に delay / padding を読ませるため。
-- **Safari 対応**: トリム結果に ID3v2 の `iTunSMPB` を付け、末尾に 1 フレーム余分に含める(詳細は [`lyria-mp3.md`](lyria-mp3.md))。Firefox の確認は後回し。
+- **MP3 トリムで付ける LAME タグのエンコーダ名**: `LAMEK!LN `(末尾の空白を含めて 9 バイト。LAME タグのこのフィールドは 9 バイト固定)。`LAME` で始めるのは ffmpeg / Chrome に delay / padding を読ませるため。
+- **Safari 対応**: トリム結果に ID3v2 の `iTunSMPB` を付け、末尾に 1 フレーム余分に含める(詳細は [`lyria-mp3.md`](lyria-mp3.md))。これで一致を確認したのは `decodeAudioData` だけで、`<audio>` 要素での再生は未確認。Firefox の確認も後回し。
 - **コア API**: [`architecture.md`](architecture.md) の方針で進める。
 
 ## 3. まだ決めていないこと(論点と、ここまでの見立て)
