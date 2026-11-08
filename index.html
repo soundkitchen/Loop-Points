@@ -67,11 +67,12 @@
       details { color: var(--dim); }
       details ul { margin: 6px 0; padding-left: 20px; }
       kbd { font-family: ui-monospace, monospace; border: 1px solid var(--kbd-border); border-radius: 3px; padding: 0 4px; }
-      /* 対象外のブラウザ。src/entry.ts が body に unsupported を付ける。ヘッダーはタイトルと配色の切り替えだけ残す */
-      #unsupported { display: none; padding: 24px 16px; }
-      #unsupported p { margin: 0; }
-      body.unsupported #unsupported { display: block; }
-      body.unsupported main, body.unsupported header > :not(h1, .spacer, #theme) { display: none; }
+      /* 本体が動くまでは、操作の部分を隠す。src/entry.ts が body に ready、unsupported、failed のどれかを付ける。
+         ヘッダーのタイトルと配色の切り替えは常に出す。波形の大きさを測れるよう、本体が動くまでは visibility で隠す */
+      body:not(.ready) main, body:not(.ready) header > :not(h1, .spacer, #theme) { visibility: hidden; }
+      body.unsupported main, body.failed main, body.unsupported header > :not(h1, .spacer, #theme), body.failed header > :not(h1, .spacer, #theme) { display: none; }
+      .notice { display: none; margin: 0; padding: 24px 16px; }
+      body.unsupported #unsupported, body.failed #load-failed { display: block; }
     </style>
   </head>
   <body>
@@ -99,9 +100,8 @@
         </button>
       </div>
     </header>
-    <section id="unsupported">
-      <p>このサービスは Chrome や Edge など File System Access API が利用できるブラウザでのみ利用できます。</p>
-    </section>
+    <p id="unsupported" class="notice">このサービスは Chrome や Edge など File System Access API が利用できるブラウザでのみ利用できます。</p>
+    <p id="load-failed" class="notice">読み込みに失敗しました。ページを再読み込みしてください。</p>
     <main>
       <div id="warning"></div>
       <canvas id="wave"></canvas>

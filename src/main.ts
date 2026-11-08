@@ -387,7 +387,7 @@ addEventListener('drop', (e) => {
   e.preventDefault();
   document.body.classList.remove('dragging');
   // DataTransfer はこのイベントの間しか読めないので、ここで受け取っておく
-  const handles = [...(e.dataTransfer?.items ?? [])].filter((i) => i.kind === 'file').map((i) => i.getAsFileSystemHandle?.() ?? Promise.resolve(null));
+  const handles = [...(e.dataTransfer?.items ?? [])].filter((i) => i.kind === 'file').map((i) => i.getAsFileSystemHandle());
   void addFiles([...(e.dataTransfer?.files ?? [])], handles);
 });
 

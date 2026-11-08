@@ -4,7 +4,7 @@
 
 音源はブラウザ内で処理し、アップロードしません。
 
-Chrome、Edge などの Chromium 系のブラウザで使えます。JSON を保存先に直接書き込むために [File System Access API](https://developer.mozilla.org/docs/Web/API/File_System_API) を使うので、この API のないブラウザ(Firefox、Safari、iPhone と iPad のすべてのブラウザなど)では、案内を表示して止まります。
+Chrome、Edge などの Chromium 系のブラウザで使えます。JSON を保存先に直接書き込むために [File System Access API](https://developer.mozilla.org/docs/Web/API/File_System_API) を使うので、この API のないブラウザ(Firefox、Safari、iPhone と iPad のすべてのブラウザなど)では、案内を表示して止まります。この API は HTTPS か `localhost` でしか使えないので、開発サーバーを別のマシンから `http://192.168.x.x` のように開くと、Chrome でも案内が出ます。
 
 公開版: https://loop-points.soundkitchen.workers.dev/
 
