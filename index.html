@@ -67,19 +67,27 @@
       details { color: var(--dim); }
       details ul { margin: 6px 0; padding-left: 20px; }
       kbd { font-family: ui-monospace, monospace; border: 1px solid var(--kbd-border); border-radius: 3px; padding: 0 4px; }
-      /* 本体が動くまでは、操作の部分を隠す。src/entry.ts が body に ready、unsupported、failed のどれかを付ける。
-         ヘッダーのタイトルと配色の切り替えは常に出す。波形の大きさを測れるよう、本体が動くまでは visibility で隠す */
-      body:not(.ready) main, body:not(.ready) header > :not(h1, .spacer, #theme) { visibility: hidden; }
-      body.unsupported main, body.failed main, body.unsupported header > :not(h1, .spacer, #theme), body.failed header > :not(h1, .spacer, #theme) { display: none; }
+      /* 音源を開くまでは、編集の部分を隠す。src/entry.ts が body に ready、unsupported、failed のどれかを付け、
+         src/main.ts が音源を開いたら loaded を付ける。ヘッダーのタイトルと配色の切り替えは常に出す。
+         本体が動いて音源を開くまでは、読み込みの案内 (#empty) を出す。波形の大きさは音源を開いて表示してから測る */
+      body:not(.loaded) main, body:not(.loaded) header > :not(h1, .spacer, #theme) { display: none; }
       .notice { display: none; margin: 0; padding: 24px 16px; }
       body.unsupported #unsupported, body.failed #load-failed { display: block; }
+      #empty { display: none; padding: 12px 16px 24px; }
+      body.ready:not(.loaded) #empty { display: block; }
+      .dropzone { min-height: 300px; box-sizing: border-box; padding: 32px 16px; border: 2px dashed var(--control-border); border-radius: 8px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; text-align: center; }
+      .dropzone p { margin: 0; }
+      .dropzone .lead { font-size: 18px; }
+      .dropzone .primary { font-size: 14px; padding: 6px 16px; }
+      #empty-json:empty, #empty-info:empty { display: none; }
     </style>
   </head>
   <body>
     <header>
       <h1>Loop Points</h1>
       <button id="open-audio">音源を開く</button>
-      <input id="audio-input" type="file" multiple accept=".mp3,.wav,.ogg,.opus,.m4a,.aac,.flac" hidden />
+      <!-- accept は src/main.ts が読み込める拡張子の一覧から付ける -->
+      <input id="audio-input" type="file" multiple hidden />
       <select id="file" hidden></select>
       <span id="info" class="dim mono"></span>
       <span class="spacer"></span>
@@ -102,6 +110,17 @@
     </header>
     <p id="unsupported" class="notice">このサービスは Chrome や Edge など File System Access API が利用できるブラウザでのみ利用できます。</p>
     <p id="load-failed" class="notice">読み込みに失敗しました。ページを再読み込みしてください。</p>
+    <section id="empty">
+      <div class="dropzone">
+        <p class="lead">音源をここにドロップ</p>
+        <p><button id="empty-open-audio" class="primary">音源を開く</button></p>
+        <p class="dim"><span id="audio-formats"></span>。複数をまとめて読み込めます</p>
+        <p class="dim">続きから作業するときは、JSON も一緒にドロップするか <button id="empty-open-json">JSON を読み込む</button></p>
+        <p id="empty-json"></p>
+        <p id="empty-info" class="dim"></p>
+        <p class="dim">音源はブラウザ内で処理し、アップロードしません</p>
+      </div>
+    </section>
     <main>
       <div id="warning"></div>
       <canvas id="wave"></canvas>
