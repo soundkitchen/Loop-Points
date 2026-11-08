@@ -36,7 +36,7 @@
 
 試作(16bit WAV を `*Io.Writer` に書くコア)を、テスト・CLI・`wasm32-freestanding` の 3 通りで動かして確認した。
 
-- `main` は `pub fn main(init: std.process.Init) !void` の形。`init` に `gpa` / `arena` / `io` / 引数 / 環境変数が入る。
+- `main` は `pub fn main(init: std.process.Init) !void` の形(終了コードを返すなら `!u8`。K!LN の CLI は `!u8`)。`init` に `gpa` / `arena` / `io` / 引数 / 環境変数が入る。
 - `std.Io.Reader` / `std.Io.Writer` はバッファを内部に持つ具体型(vtable 方式)。`Reader.fixed` / `Writer.fixed` / `Writer.Allocating` は OS なしで動き、wasm でもそのまま使える。
 - ファイルは `std.Io.Dir.cwd().readFileAlloc(io, path, gpa, limit)` で一括読み込み、`file.writer(io, &buf).interface` を `*Io.Writer` として書き出せる。
 - wasm では `std.heap.wasm_allocator` が使える。試作の wasm は ReleaseSmall で約 3KB。

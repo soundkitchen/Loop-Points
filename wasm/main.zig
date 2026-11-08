@@ -11,9 +11,11 @@ export fn kiln_alloc(len: usize) ?[*]u8 {
     return buf.ptr;
 }
 
-/// kiln_alloc で確保した領域を解放する
-export fn kiln_free(ptr: [*]u8, len: usize) void {
-    gpa.free(ptr[0..len]);
+/// kiln_alloc で確保した領域を解放する。kiln_alloc が失敗して返した 0(null)を
+/// 渡されても何もしない(ReleaseSmall では安全チェックがないため、ここで弾く)
+export fn kiln_free(ptr: ?[*]u8, len: usize) void {
+    const p = ptr orelse return;
+    gpa.free(p[0..len]);
 }
 
 /// バージョン文字列の先頭ポインタ(長さは kiln_version_len)

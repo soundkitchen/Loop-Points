@@ -16,14 +16,16 @@ pub fn main(init: std.process.Init) !u8 {
     var stdout_buffer: [1024]u8 = undefined;
     var stdout_writer: Io.File.Writer = .initStreaming(.stdout(), init.io, &stdout_buffer);
     const stdout = &stdout_writer.interface;
-    defer stdout.flush() catch {};
 
     if (args.len == 2 and std.mem.eql(u8, args[1], "--version")) {
         try stdout.print("kiln {s}\n", .{kiln.version});
+        // 書き込みの失敗(閉じたパイプなど)を終了コードに反映するため、flush のエラーは返す
+        try stdout.flush();
         return 0;
     }
     if (args.len == 2 and std.mem.eql(u8, args[1], "--help")) {
         try stdout.writeAll(usage);
+        try stdout.flush();
         return 0;
     }
 

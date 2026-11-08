@@ -5,11 +5,23 @@
  * @param {URL | string | BufferSource} source wasm の URL、またはバイト列
  */
 export async function load(source = new URL('./kiln.wasm', import.meta.url)) {
-  const bytes =
-    source instanceof URL || typeof source === 'string'
-      ? await (await fetch(source)).arrayBuffer()
-      : source;
-  const { instance } = await WebAssembly.instantiate(bytes, {});
+  let instance;
+  if (source instanceof URL || typeof source === 'string') {
+    const response = await fetch(source);
+    // 404 の HTML などを wasm として解釈して分かりにくいエラーにならないよう、先に確認する
+    if (!response.ok) {
+      throw new Error(`failed to fetch ${source}: ${response.status} ${response.statusText}`);
+    }
+    // ダウンロードしながらコンパイルする。サーバが application/wasm を返さない場合は
+    // instantiateStreaming が失敗するので、バイト列での読み込みに切り替える
+    try {
+      ({ instance } = await WebAssembly.instantiateStreaming(response.clone(), {}));
+    } catch {
+      ({ instance } = await WebAssembly.instantiate(await response.arrayBuffer(), {}));
+    }
+  } else {
+    ({ instance } = await WebAssembly.instantiate(source, {}));
+  }
   const e = instance.exports;
   const decoder = new TextDecoder();
 

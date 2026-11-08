@@ -8,12 +8,14 @@ pub fn build(b: *std.Build) void {
     // バージョンは build.zig.zon を唯一の出所にし、ビルドオプションとしてコアに渡す
     const options = b.addOptions();
     options.addOption([]const u8, "version", zon.version);
+    const options_mod = options.createModule();
 
     // コア(I/O を持たないライブラリ)。他のパッケージからも @import("kiln") で使える
     const kiln = b.addModule("kiln", .{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
-        .imports = &.{.{ .name = "build_options", .module = options.createModule() }},
+        .optimize = optimize,
+        .imports = &.{.{ .name = "build_options", .module = options_mod }},
     });
 
     // CLI
@@ -26,12 +28,14 @@ pub fn build(b: *std.Build) void {
             .imports = &.{.{ .name = "kiln", .module = kiln }},
         }),
     });
-    b.installArtifact(exe);
+    const install_exe = b.addInstallArtifact(exe, .{});
+    b.getInstallStep().dependOn(&install_exe.step);
 
+    // run は CLI のインストールにだけ依存させ、wasm のビルドを待たない
     const run_step = b.step("run", "CLI を実行する");
     const run_cmd = b.addRunArtifact(exe);
     run_step.dependOn(&run_cmd.step);
-    run_cmd.step.dependOn(b.getInstallStep());
+    run_cmd.step.dependOn(&install_exe.step);
     run_cmd.addPassthruArgs();
 
     // wasm(wasm32-freestanding)。-Dtarget とは無関係に常に wasm 向けにビルドする
@@ -41,7 +45,7 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("src/root.zig"),
         .target = wasm_target,
         .optimize = wasm_optimize,
-        .imports = &.{.{ .name = "build_options", .module = options.createModule() }},
+        .imports = &.{.{ .name = "build_options", .module = options_mod }},
     });
     const wasm = b.addExecutable(.{
         .name = "kiln",
