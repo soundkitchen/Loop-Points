@@ -1,0 +1,20 @@
+.{
+    // パッケージ名。`zig fetch --save` で取り込んだ側の dependencies のキーにもなる
+    .name = .kiln,
+    // セマンティックバージョン。build.zig がビルドオプションとしてコアの `kiln.version` に渡す
+    .version = "0.0.0",
+    // name と組み合わせてパッケージを一意に識別する値。zig が生成したもので、変更しない
+    .fingerprint = 0xe9273745d0f76af6, // Changing this has security and trust implications.
+    .minimum_zig_version = "0.17.1",
+    .dependencies = .{},
+    // パッケージに含めるファイル。build.zig が参照するものはすべて入れる
+    // (ここにないファイルは、zig fetch で取得した側には存在しない)
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+        "cli",
+        "wasm",
+        "README.md",
+    },
+}
