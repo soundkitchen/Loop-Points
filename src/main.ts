@@ -1,11 +1,13 @@
-import { canWrite, fileAccessSupported, isAbort, pickJsonToOpen, pickJsonToSave, writeText } from './jsonFile';
-import { parseLoops, serializeLoops, type LoopMap } from './loops';
+import { OUT_FORMATS, croppedName, formatOf, type OutFormat } from './cropFormat';
+import { canWrite, fileAccessSupported, isAbort, pickAudioToSave, pickJsonToOpen, pickJsonToSave, writeContent } from './jsonFile';
+import { parseLoops, serializeLoops, type LoopMap, type LoopPoints } from './loops';
 import { LoopPlayer } from './player';
 import { mixdown, nearestZeroCross, nextZeroCross } from './samples';
 import { setupTheme } from './theme';
-import { WaveformView, formatTime, type Marker } from './waveform';
+import { WaveformView, formatTime, type Marker, type Mode } from './waveform';
 
 // 音源ごとのループポイントを決めるビューア。音源はブラウザ内で読み、決めた値は JSON に書き出す
+// クロップモードでは音源の前後を切り落として、音源のファイルに書き出す
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 
 const SNAP_PX = 10;          // ドラッグ中、この距離 (CSS px) 以内のゼロクロスに吸着する
@@ -13,7 +15,7 @@ const ZERO_CROSS_LIMIT = 1;  // 「◀ 0」「0 ▶」で探す範囲 (秒)
 const MARKER_ZOOM = 0.02;    // 「拡大」で表示する幅 (秒)
 // duration の不一致とみなす差 (秒)。サンプルレートの違いによる丸めは無視し、mp3 の無音 (数十ミリ秒) の差は拾う
 const DURATION_TOLERANCE = 0.001;
-const AUDIO_EXT = /\.(mp3|wav|ogg|opus|m4a|aac|flac)$/i;
+const AUDIO_EXT = /\.(mp3|wav|ogg|opus|m4a|aac|flac|webm)$/i;
 const JSON_EXT = /\.json$/i;
 // ダウンロード用の Blob URL を残す時間 (ミリ秒)。すぐに破棄すると、ブラウザが読む前に消えて失敗することがある
 const BLOB_URL_LIFETIME = 60_000;
@@ -21,7 +23,8 @@ const BLOB_URL_LIFETIME = 60_000;
 const ctx = new AudioContext();
 const player = new LoopPlayer(ctx);
 const files = new Map<string, File>();   // 読み込んだ音源。キーはファイル名で、JSON の項目と対応する
-type Decoded = { source: File; buffer: AudioBuffer; mono: Float32Array };
+type Crop = { start: number; end: number };   // クロップの範囲 (サンプル)。音源ごとに持ち、ファイルを読み直すと全体に戻る
+type Decoded = { source: File; buffer: AudioBuffer; mono: Float32Array; crop: Crop };
 const decoded = new Map<string, Decoded>();
 const decoding = new Map<File, Promise<Decoded>>();   // デコード中の音源。同じファイルを二重にデコードしない
 
@@ -30,7 +33,9 @@ let name = '';
 let buffer: AudioBuffer | null = null;
 let mono: Float32Array = new Float32Array(0);
 let start = 0, end = 0, cursor = 0;
+let crop: Crop = { start: 0, end: 0 };
 let playhead: number | null = null;
+let mode: Mode = 'loop';
 
 let loops: LoopMap = {};
 let saved: LoopMap = {};   // 読み込んだ、または最後に書き出した JSON の値
@@ -42,16 +47,26 @@ const sr = () => buffer?.sampleRate ?? 44100;
 const clamp = (v: number, lo: number, hi: number) => Math.min(Math.max(v, lo), hi);
 // 秒は小数 6 桁で持つ。1 サンプル (44.1kHz で約 23µs) より細かいので、サンプルに戻しても同じ位置になる
 const round6 = (v: number) => Math.round(v * 1e6) / 1e6;
-const isDirty = () => Object.entries(loops).some(([k, p]) =>
+// 消した項目も変更に含める。クロップで同じ名前の音源を置き換えると、項目を消すことがある
+const isDirty = () => Object.keys(saved).some((k) => !(k in loops)) || Object.entries(loops).some(([k, p]) =>
   p.loopStart !== saved[k]?.loopStart || p.loopEnd !== saved[k]?.loopEnd || p.duration !== saved[k]?.duration);
+// ループを決めた音源で、クロップの範囲がループ区間にかかっているか。決めていない音源は全体が区間なので対象にしない
+const cropCutsLoop = () => loops[name] !== undefined && (crop.start > start || crop.end < end);
 
-const view = new WaveformView($<HTMLCanvasElement>('wave'), $<HTMLCanvasElement>('overview'), () => ({ start, end, cursor, playhead }));
+const view = new WaveformView($<HTMLCanvasElement>('wave'), $<HTMLCanvasElement>('overview'), () => ({ mode, start, end, cropStart: crop.start, cropEnd: crop.end, cursor, playhead }));
 setupTheme(() => view.refreshColors());
 
-// ---- ループポイント ----
+// ---- ループポイントとクロップの線 ----
 
 function setMarker(m: Marker, s: number) {
   if (!buffer) return;
+  if (m === 'cropStart' || m === 'cropEnd') {
+    if (m === 'cropStart') crop.start = clamp(Math.round(s), 0, crop.end - 1);
+    else crop.end = clamp(Math.round(s), crop.start + 1, buffer.length);
+    player.stop();   // 鳴らしている範囲と線がずれないよう、止める
+    updatePanel();
+    return;
+  }
   if (m === 'start') start = clamp(Math.round(s), 0, end - 1);
   else end = clamp(Math.round(s), start + 1, buffer.length);
   loops[name] = { ...loops[name], loopStart: round6(start / sr()), loopEnd: round6(end / sr()), duration: round6(buffer.duration) };
@@ -82,14 +97,22 @@ view.onMarkerDrag = (m, s, spp) => {
 };
 view.onCursor = (s) => { cursor = s; };
 
-// 開始・終了それぞれの数値入力と微調整のボタン
-const panels = {} as Record<Marker, { sec: HTMLInputElement; samples: HTMLInputElement }>;
-for (const [m, label, color] of [['start', '開始', 'var(--start)'], ['end', '終了', 'var(--end)']] as const) {
+// 今のモードで動かす 2 本の線。数値入力と微調整のボタンはこの 2 本に対応する
+const MODE_MARKERS = { loop: ['start', 'end'], crop: ['cropStart', 'cropEnd'] } as const satisfies Record<Mode, readonly [Marker, Marker]>;
+const MARKER_LABELS: Record<Marker, { label: string; color: string }> = {
+  start: { label: '開始', color: 'var(--start)' },
+  end: { label: '終了', color: 'var(--end)' },
+  cropStart: { label: '前端', color: 'var(--crop)' },
+  cropEnd: { label: '後端', color: 'var(--crop)' },
+};
+const positionOf = (m: Marker) => ({ start, end, cropStart: crop.start, cropEnd: crop.end })[m];
+
+const panels = MODE_MARKERS.loop.map((_, i) => {
+  const marker = () => MODE_MARKERS[mode][i];
   const el = document.createElement('div');
   el.className = 'marker';
-  el.style.setProperty('--c', color);
   el.innerHTML = `
-    <h2>${label} <button data-act="zoom" title="この点を拡大して表示">拡大</button></h2>
+    <h2><span data-f="title"></span> <button data-act="zoom" title="この点を拡大して表示">拡大</button></h2>
     <div class="row">
       <label>秒 <input type="number" step="0.001" min="0" data-f="sec" /></label>
       <label>サンプル <input type="number" step="1" min="0" data-f="samples" /></label>
@@ -105,54 +128,82 @@ for (const [m, label, color] of [['start', '開始', 'var(--start)'], ['end', '�
       <button data-zc="1" title="次のゼロクロスへ">0 ▶</button>
     </div>`;
   $('markers').append(el);
-  const pos = () => (m === 'start' ? start : end);
+  const pos = () => positionOf(marker());
   const sec = el.querySelector<HTMLInputElement>('[data-f=sec]')!;
   const samples = el.querySelector<HTMLInputElement>('[data-f=samples]')!;
-  panels[m] = { sec, samples };
   // 空や数でない入力は、マーカーを動かさずに表示を戻す (Number('') は 0 になるので跳んでしまう)
   const input = (el: HTMLInputElement, toSample: (v: number) => number) => {
     const v = Number(el.value);
     if (el.value.trim() === '' || !Number.isFinite(v)) updatePanel();
-    else setMarker(m, toSample(v));
+    else setMarker(marker(), toSample(v));
   };
   sec.addEventListener('change', () => input(sec, (v) => v * sr()));
   samples.addEventListener('change', () => input(samples, (v) => v));
   el.querySelector('[data-act=zoom]')!.addEventListener('click', () => view.zoomTo(pos(), MARKER_ZOOM * sr()));
-  for (const b of el.querySelectorAll<HTMLButtonElement>('[data-n]')) b.addEventListener('click', () => setMarker(m, pos() + Number(b.dataset.n)));
-  for (const b of el.querySelectorAll<HTMLButtonElement>('[data-ms]')) b.addEventListener('click', () => setMarker(m, pos() + Math.round((Number(b.dataset.ms) / 1000) * sr())));
+  for (const b of el.querySelectorAll<HTMLButtonElement>('[data-n]')) b.addEventListener('click', () => setMarker(marker(), pos() + Number(b.dataset.n)));
+  for (const b of el.querySelectorAll<HTMLButtonElement>('[data-ms]')) b.addEventListener('click', () => setMarker(marker(), pos() + Math.round((Number(b.dataset.ms) / 1000) * sr())));
   for (const b of el.querySelectorAll<HTMLButtonElement>('[data-zc]')) {
     b.addEventListener('click', () => {
       const z = nextZeroCross(mono, pos(), Number(b.dataset.zc) as 1 | -1, ZERO_CROSS_LIMIT * sr());
-      if (z !== null) setMarker(m, z);
+      if (z !== null) setMarker(marker(), z);
     });
   }
-}
+  return { el, sec, samples, title: el.querySelector<HTMLElement>('[data-f=title]')! };
+});
 
 function updatePanel() {
-  for (const m of ['start', 'end'] as const) {
-    const s = m === 'start' ? start : end;
-    panels[m].sec.value = (s / sr()).toFixed(6);
-    panels[m].samples.value = String(s);
-  }
-  $('length').textContent = `${formatTime((end - start) / sr())} (${end - start} サンプル)`;
+  MODE_MARKERS[mode].forEach((m, i) => {
+    const s = positionOf(m);
+    panels[i].sec.value = (s / sr()).toFixed(6);
+    panels[i].samples.value = String(s);
+  });
+  const [a, z] = mode === 'crop' ? [crop.start, crop.end] : [start, end];
+  $('length').textContent = `${formatTime((z - a) / sr())} (${z - a} サンプル)`;
   updateWarning();
   updateStatus();
+}
+
+// ---- モード ----
+
+function setMode(next: Mode) {
+  player.stop();
+  mode = next;
+  const inCrop = mode === 'crop';
+  for (const b of document.querySelectorAll<HTMLButtonElement>('[data-mode]')) b.setAttribute('aria-pressed', String(b.dataset.mode === mode));
+  MODE_MARKERS[mode].forEach((m, i) => {
+    panels[i].title.textContent = MARKER_LABELS[m].label;
+    panels[i].el.style.setProperty('--c', MARKER_LABELS[m].color);
+  });
+  $('length-label').textContent = inCrop ? 'クロップ後の長さ' : 'ループの長さ';
+  $('crop-tools').hidden = !inCrop;
+  const playFirst = $('play-intro'), playSeam = $('play-seam');
+  playFirst.textContent = inCrop ? '▶ 前端から' : '▶ 頭から';
+  playFirst.title = inCrop ? '前端から後端まで 1 回再生する' : 'イントロを 1 回流してからループ区間を繰り返す';
+  playSeam.textContent = inCrop ? '▶ 後端の手前から' : '▶ つなぎ目の手前から';
+  playSeam.title = inCrop ? '後端の少し前から再生して、終わり方をすぐ聴く' : 'ループの終わりの少し前から再生して、つなぎ目をすぐ聴く';
+  updatePanel();
+}
+
+for (const b of document.querySelectorAll<HTMLButtonElement>('[data-mode]')) {
+  b.addEventListener('click', () => setMode(b.dataset.mode as Mode));
 }
 
 // JSON の duration と開いている音源の長さが違えば知らせる。区間を動かすと今の音源の長さで記録し直すので消える
 function updateWarning() {
   const want = loops[name]?.duration;
   const mismatch = buffer !== null && want !== undefined && Math.abs(want - buffer.duration) > DURATION_TOLERANCE;
-  $('warning').textContent = mismatch
-    ? `${name}: JSON の duration (${formatTime(want)}) と音源の長さ (${formatTime(buffer!.duration)}) が違います。別の音源か、デコードの差でループ位置がずれている可能性があります`
-    : '';
+  const messages = [];
+  if (mismatch) messages.push(`${name}: JSON の duration (${formatTime(want)}) と音源の長さ (${formatTime(buffer!.duration)}) が違います。別の音源か、デコードの差でループ位置がずれている可能性があります`);
+  if (mode === 'crop' && cropCutsLoop()) messages.push('クロップの範囲がループ区間にかかっているので、書き出せません。線を区間の外へ動かすか、ループモードで区間を動かしてください');
+  $('warning').textContent = messages.join('\n');
 }
 
 // ---- JSON の読み込みと書き出し ----
 
 function updateStatus() {
   const dirty = isDirty();
-  const hasLoops = Object.keys(loops).length > 0;
+  // 読み込んだ項目をすべて消したときも、空の JSON を保存できるようにする
+  const hasLoops = Object.keys(loops).length > 0 || Object.keys(saved).length > 0;
   $('status').textContent = dirty ? '未書き出しの変更があります' : hasLoops ? '変更なし' : '';
   $('status').classList.toggle('dirty', dirty);
   const save = $<HTMLButtonElement>('save');
@@ -163,6 +214,7 @@ function updateStatus() {
   download.disabled = !hasLoops || writing;
   download.classList.toggle('primary', jsonTarget === null);
   $<HTMLButtonElement>('copy').disabled = !hasLoops;
+  $<HTMLButtonElement>('export-crop').disabled = !buffer || writing || cropCutsLoop();
 }
 
 // handle を渡すと、そのファイルを上書き保存の対象にする。渡さなければ対象をなくす
@@ -193,20 +245,31 @@ function markExported(sent: LoopMap) {
   updateStatus();
 }
 
-async function whileWriting(task: () => Promise<void>) {
+async function whileWriting(failure: string, task: () => Promise<void>) {
   writing = true;
   updateStatus();
   try {
     await task();
   } catch (e) {
-    if (!isAbort(e)) alert(`JSON を保存できませんでした (${e})`);
+    if (!isAbort(e)) alert(`${failure} (${e})`);
   } finally {
     writing = false;
     updateStatus();
   }
 }
 
-$('save').addEventListener('click', () => void whileWriting(async () => {
+function downloadBlob(blob: Blob, fileName: string) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = fileName;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(url), BLOB_URL_LIFETIME);
+}
+
+const JSON_FAILURE = 'JSON を保存できませんでした';
+
+$('save').addEventListener('click', () => void whileWriting(JSON_FAILURE, async () => {
   const target = jsonTarget!;
   const fileName = target.handle.name;
   if (!(await canWrite(target.handle))) {
@@ -216,27 +279,22 @@ $('save').addEventListener('click', () => void whileWriting(async () => {
   const current = await target.handle.getFile();
   if (current.lastModified !== target.lastModified && !confirm(`${fileName} は読み込んだあとに変更されています。上書きしますか?`)) return;
   const sent = structuredClone(loops);
-  target.lastModified = await writeText(target.handle, serializeLoops(sent));
+  target.lastModified = await writeContent(target.handle, serializeLoops(sent));
   markExported(sent);
 }));
 
 $('download').addEventListener('click', () => {
   if (fileAccessSupported) {
-    void whileWriting(async () => {
+    void whileWriting(JSON_FAILURE, async () => {
       const handle = await pickJsonToSave(jsonTarget?.handle.name ?? 'loops.json');
       const sent = structuredClone(loops);
-      const lastModified = await writeText(handle, serializeLoops(sent));
+      const lastModified = await writeContent(handle, serializeLoops(sent));
       jsonTarget = { handle, lastModified };
       markExported(sent);
     });
     return;
   }
-  const url = URL.createObjectURL(new Blob([serializeLoops(loops)], { type: 'application/json' }));
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = 'loops.json';
-  a.click();
-  setTimeout(() => URL.revokeObjectURL(url), BLOB_URL_LIFETIME);
+  downloadBlob(new Blob([serializeLoops(loops)], { type: 'application/json' }), 'loops.json');
   // ダウンロードの成否はページから分からないので、押した時点で書き出し済みとする
   markExported(structuredClone(loops));
 });
@@ -268,7 +326,7 @@ function decode(file: string, source: File): Promise<Decoded> {
     pending = (async () => {
       try {
         const b = await ctx.decodeAudioData(await source.arrayBuffer());
-        const d = { source, buffer: b, mono: mixdown(b) };
+        const d = { source, buffer: b, mono: mixdown(b), crop: { start: 0, end: b.length } };
         // デコード中に同じ名前のファイルで置き換えられていたら、古い結果は残さない
         if (files.get(file) === source) decoded.set(file, d);
         return d;
@@ -307,7 +365,7 @@ async function open(file: string): Promise<'opened' | 'failed' | 'superseded'> {
     if (token !== openToken) return 'superseded';
     // 開けなかったら前の音源に戻す
     const prev = decoded.get(name);
-    if (prev) { buffer = prev.buffer; mono = prev.mono; applyLoop(); }
+    if (prev) { buffer = prev.buffer; mono = prev.mono; crop = prev.crop; applyLoop(); }
     select.value = name;
     $('info').textContent = `${file} を開けませんでした (${e})` + (name ? `。${name} のままです` : '');
     return 'failed';
@@ -316,7 +374,9 @@ async function open(file: string): Promise<'opened' | 'failed' | 'superseded'> {
   name = file;
   buffer = d.buffer;
   mono = d.mono;
+  crop = d.crop;
   cursor = 0;
+  outFormat.value = formatOf(file);
   $('info').textContent = `${buffer.sampleRate} Hz · ${buffer.numberOfChannels}ch · ${formatTime(buffer.duration)} (${buffer.length} サンプル)`;
   view.setData(mono, buffer.sampleRate);
   applyLoop();
@@ -415,15 +475,67 @@ addEventListener('drop', (e) => {
   void addFiles([...(e.dataTransfer?.files ?? [])], handles);
 });
 
+// ---- クロップの書き出し ----
+
+const outFormat = $<HTMLSelectElement>('out-format');
+
+// 書き出した音源を開く。ループを決めていた音源なら、前を切った分を引いた秒数で項目を作る。元の音源と項目は残す
+async function openCropped(out: File, sourceLoop: LoopPoints | undefined, loopStart: number, loopEnd: number) {
+  files.set(out.name, out);
+  updateFileList();
+  let d: Decoded;
+  try {
+    d = await decode(out.name, out);
+  } catch (e) {
+    // 保存はできているので、書き出しの失敗とは分けて伝える。Ogg Vorbis は極端に短いとデコードできないことがある
+    alert(`${out.name} を保存しましたが、開けませんでした (${e})`);
+    return;
+  }
+  if (sourceLoop) loops[out.name] = { ...sourceLoop, loopStart: round6(loopStart), loopEnd: round6(loopEnd), duration: round6(d.buffer.duration) };
+  else delete loops[out.name];   // 同じ名前で置き換えたときに、前の音源の項目を残さない
+  setMode('loop');
+  select.value = out.name;
+  await open(out.name);
+}
+
+$('export-crop').addEventListener('click', () => void whileWriting('音源を書き出せませんでした', async () => {
+  if (!buffer) return;
+  const format = outFormat.value as OutFormat;
+  const info = OUT_FORMATS[format];
+  if (buffer.numberOfChannels > info.maxChannels) {
+    alert(`${info.description} は ${info.maxChannels}ch までです。この音源は ${buffer.numberOfChannels}ch なので、WAV で書き出してください`);
+    return;
+  }
+  const suggested = croppedName(name, format);
+  // 保存先の選択はクリックの直後でないと拒否されるので、エンコードより先に開く
+  const handle = fileAccessSupported ? await pickAudioToSave(suggested, info) : null;
+  // ダイアログを開いている間に変わらないよう、ここで控える
+  const source = files.get(name)!, audio = buffer, from = crop.start, to = crop.end;
+  const sourceLoop = loops[name], rate = audio.sampleRate, loopStart = (start - from) / rate, loopEnd = (end - from) / rate;
+  const { renderCrop } = await import('./cropRender');
+  const blob = await renderCrop(source, audio, from, to, format);
+  if (handle) await writeContent(handle, blob);
+  else downloadBlob(blob, suggested);
+  await openCropped(new File([blob], handle?.name ?? suggested, { type: blob.type }), sourceLoop, loopStart, loopEnd);
+}));
+
 // ---- 再生 ----
 
 function play(fromSample: number) {
   if (!buffer) return;
+  if (mode === 'crop') {
+    const from = fromSample >= crop.start && fromSample < crop.end ? fromSample : crop.start;
+    player.playOnce(buffer, from / sr(), crop.end / sr());
+    return;
+  }
   player.play(buffer, fromSample / sr(), start / sr(), end / sr());
 }
 const preroll = () => Math.max(0, Number($<HTMLInputElement>('preroll').value) || 0);
-$('play-intro').addEventListener('click', () => play(0));
-$('play-seam').addEventListener('click', () => play(Math.max(0, end - preroll() * sr())));
+$('play-intro').addEventListener('click', () => play(mode === 'crop' ? crop.start : 0));
+$('play-seam').addEventListener('click', () => {
+  const [first, last] = mode === 'crop' ? [crop.start, crop.end] : [0, end];
+  play(Math.max(first, last - preroll() * sr()));
+});
 $('play-cursor').addEventListener('click', () => play(cursor));
 $('stop').addEventListener('click', () => player.stop());
 $('fit').addEventListener('click', () => view.fit());
@@ -462,5 +574,5 @@ function frame() {
 // ---- 起動 ----
 
 $('info').textContent = '音源をドロップするか、「音源を開く」で選んでください';
-updateStatus();
+setMode('loop');
 requestAnimationFrame(frame);

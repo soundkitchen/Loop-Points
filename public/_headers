@@ -1,4 +1,5 @@
 # Cloudflare Workers の静的アセットに付けるヘッダー
 # connect-src 'none' で外部への通信を止める。index.html の style 要素のために style-src は 'unsafe-inline' を許可する
+# 'wasm-unsafe-eval' は mp3 と Ogg のエンコーダ (wasm) を動かすために許可する。'unsafe-eval' と違い、JavaScript の eval は許可しない
 /*
-  Content-Security-Policy: default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src data:; connect-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'
+  Content-Security-Policy: default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src data:; connect-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'

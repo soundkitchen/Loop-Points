@@ -1,4 +1,4 @@
-// File System Access API で JSON を直接読み書きする。使えるのは Chromium 系のブラウザだけ
+// File System Access API で JSON と音源を直接読み書きする。使えるのは Chromium 系のブラウザだけ
 type PickerTypes = { description: string; accept: Record<string, string[]> }[];
 
 declare global {
@@ -31,6 +31,10 @@ export function pickJsonToSave(suggestedName: string): Promise<FileSystemFileHan
   return window.showSaveFilePicker!({ suggestedName, types: JSON_TYPES });
 }
 
+export function pickAudioToSave(suggestedName: string, format: { description: string; mime: string; ext: string }): Promise<FileSystemFileHandle> {
+  return window.showSaveFilePicker!({ suggestedName, types: [{ description: format.description, accept: { [format.mime]: [format.ext] } }] });
+}
+
 // 開いたファイルは読み取りの許可しかないので、最初の保存で書き込みの許可を求める
 export async function canWrite(handle: FileSystemFileHandle): Promise<boolean> {
   const mode = { mode: 'readwrite' } as const;
@@ -38,10 +42,10 @@ export async function canWrite(handle: FileSystemFileHandle): Promise<boolean> {
 }
 
 // 書き込んで、書き込み後の最終更新日時を返す。close するまで元のファイルは変わらない
-export async function writeText(handle: FileSystemFileHandle, text: string): Promise<number> {
+export async function writeContent(handle: FileSystemFileHandle, content: string | Blob): Promise<number> {
   const writable = await handle.createWritable();
   try {
-    await writable.write(text);
+    await writable.write(content);
     await writable.close();
   } catch (e) {
     // 開いたままだと一時ファイルとロックが残る。abort の失敗より、元の失敗を伝える

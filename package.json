@@ -16,5 +16,8 @@
     "typescript": "^7.0.2",
     "vite": "^8.3.6",
     "wrangler": "^4.158.0"
+  },
+  "dependencies": {
+    "wasm-media-encoders": "^0.7.0"
   }
 }
