@@ -86,7 +86,8 @@
     <header>
       <h1>Loop Points</h1>
       <button id="open-audio">音源を開く</button>
-      <input id="audio-input" type="file" multiple accept=".mp3,.wav,.ogg,.opus,.m4a,.aac,.flac" hidden />
+      <!-- accept は src/main.ts が読み込める拡張子の一覧から付ける -->
+      <input id="audio-input" type="file" multiple hidden />
       <select id="file" hidden></select>
       <span id="info" class="dim mono"></span>
       <span class="spacer"></span>
@@ -113,7 +114,7 @@
       <div class="dropzone">
         <p class="lead">音源をここにドロップ</p>
         <p><button id="empty-open-audio" class="primary">音源を開く</button></p>
-        <p class="dim">mp3 / wav / ogg / opus / m4a / aac / flac。複数をまとめて読み込めます</p>
+        <p class="dim"><span id="audio-formats"></span>。複数をまとめて読み込めます</p>
         <p class="dim">続きから作業するときは、JSON も一緒にドロップするか <button id="empty-open-json">JSON を読み込む</button></p>
         <p id="empty-json"></p>
         <p id="empty-info" class="dim"></p>

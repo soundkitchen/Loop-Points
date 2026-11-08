@@ -13,7 +13,9 @@ const ZERO_CROSS_LIMIT = 1;  // 「◀ 0」「0 ▶」で探す範囲 (秒)
 const MARKER_ZOOM = 0.02;    // 「拡大」で表示する幅 (秒)
 // duration の不一致とみなす差 (秒)。サンプルレートの違いによる丸めは無視し、mp3 の無音 (数十ミリ秒) の差は拾う
 const DURATION_TOLERANCE = 0.001;
-const AUDIO_EXT = /\.(mp3|wav|ogg|opus|m4a|aac|flac)$/i;
+// 読み込める音源の拡張子。判定、ファイル選択の accept、案内の文言をここから作る
+const AUDIO_EXTS = ['mp3', 'wav', 'ogg', 'opus', 'm4a', 'aac', 'flac'];
+const AUDIO_EXT = new RegExp(`\\.(${AUDIO_EXTS.join('|')})$`, 'i');
 const JSON_EXT = /\.json$/i;
 
 const ctx = new AudioContext();
@@ -181,8 +183,8 @@ async function loadLoops(file: File, handle: FileSystemFileHandle | null = null)
   saved = parsed;
   loops = structuredClone(parsed);
   jsonTarget = handle && { handle, lastModified: file.lastModified };
-  // 音源より先に読み込んだときに、読み込めたことを案内に出す。音源を開いたあとは案内ごと隠れる
-  $('empty-json').textContent = `${file.name} を読み込みました (${Object.keys(parsed).length} 件)。音源を開くと反映します`;
+  // 音源より先に読み込んだときに、読み込めたことを案内に出す
+  if (!name) $('empty-json').textContent = `${file.name} を読み込みました (${Object.keys(parsed).length} 件)。音源を開くと反映します`;
   applyLoop();
   updateStatus();
 }
@@ -307,8 +309,11 @@ async function open(file: string): Promise<'opened' | 'failed' | 'superseded'> {
   buffer = d.buffer;
   mono = d.mono;
   cursor = 0;
-  // 編集画面に切り替える。波形の幅を測れるよう、setData より前に表示する
-  document.body.classList.add('loaded');
+  // 最初に開けたときに編集画面に切り替えて、描画を始める。波形の幅を測れるよう、setData より前に表示する
+  if (!document.body.classList.contains('loaded')) {
+    document.body.classList.add('loaded');
+    requestAnimationFrame(frame);
+  }
   showInfo(`${buffer.sampleRate} Hz · ${buffer.numberOfChannels}ch · ${formatTime(buffer.duration)} (${buffer.length} サンプル)`);
   view.setData(mono, buffer.sampleRate);
   applyLoop();
@@ -363,6 +368,7 @@ select.addEventListener('change', () => void open(select.value));
 
 // ボタンから、隠してあるファイル選択を開く
 const audioInput = $<HTMLInputElement>('audio-input');
+audioInput.accept = AUDIO_EXTS.map((ext) => `.${ext}`).join(',');
 audioInput.addEventListener('change', () => {
   const picked = [...(audioInput.files ?? [])];
   audioInput.value = '';   // 同じファイルをもう一度選んでも change が起きるように空にする
@@ -427,9 +433,10 @@ document.addEventListener('click', (e) => {
   if (isToggle(e.target) && !(fromKeyboard && isThemeButton(e.target))) (e.target as HTMLElement).blur();
 });
 addEventListener('keydown', (e) => {
-  // 数値の欄とセレクトでは Space を文字入力などに使うので横取りしない
+  // 数値の欄とセレクトでは Space を文字入力などに使うので横取りしない。
+  // 音源を開くまでは鳴らすものがなく、案内のボタンを Space で押せるよう横取りしない
   const typing = (e.target instanceof HTMLInputElement && !isToggle(e.target)) || e.target instanceof HTMLSelectElement;
-  if (e.code !== 'Space' || typing || isThemeButton(e.target)) return;
+  if (e.code !== 'Space' || typing || isThemeButton(e.target) || !name) return;
   e.preventDefault();
   if (e.repeat) return;   // 長押しのキーリピートで再生と停止を繰り返さない
   if (player.playing) player.stop();
@@ -446,5 +453,6 @@ function frame() {
 
 // ---- 起動 ----
 
+// 描画は、最初の音源を開いたときに open が始める
+$('audio-formats').textContent = AUDIO_EXTS.join(' / ');
 updateStatus();
-requestAnimationFrame(frame);
