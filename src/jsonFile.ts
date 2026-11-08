@@ -1,17 +1,19 @@
 // File System Access API で JSON を直接読み書きする。使えるのは Chromium 系のブラウザだけ
 type PickerTypes = { description: string; accept: Record<string, string[]> }[];
 
+// ない環境もあるが、ない環境では src/entry.ts が本体を読み込まないので、本体からはあるものとして扱う。
+// 判定する fileAccessSupported だけは、typeof で有無を確かめる
 declare global {
   interface Window {
-    showOpenFilePicker?(options: { types: PickerTypes }): Promise<FileSystemFileHandle[]>;
-    showSaveFilePicker?(options: { suggestedName: string; types: PickerTypes }): Promise<FileSystemFileHandle>;
+    showOpenFilePicker(options: { types: PickerTypes }): Promise<FileSystemFileHandle[]>;
+    showSaveFilePicker(options: { suggestedName: string; types: PickerTypes }): Promise<FileSystemFileHandle>;
   }
   interface FileSystemHandle {
     queryPermission(descriptor: { mode: 'readwrite' }): Promise<PermissionState>;
     requestPermission(descriptor: { mode: 'readwrite' }): Promise<PermissionState>;
   }
   interface DataTransferItem {
-    getAsFileSystemHandle?(): Promise<FileSystemHandle | null>;
+    getAsFileSystemHandle(): Promise<FileSystemHandle | null>;
   }
 }
 
@@ -23,12 +25,12 @@ export const fileAccessSupported = typeof window.showOpenFilePicker === 'functio
 export const isAbort = (e: unknown) => e instanceof DOMException && e.name === 'AbortError';
 
 export async function pickJsonToOpen(): Promise<FileSystemFileHandle> {
-  const [handle] = await window.showOpenFilePicker!({ types: JSON_TYPES });
+  const [handle] = await window.showOpenFilePicker({ types: JSON_TYPES });
   return handle;
 }
 
 export function pickJsonToSave(suggestedName: string): Promise<FileSystemFileHandle> {
-  return window.showSaveFilePicker!({ suggestedName, types: JSON_TYPES });
+  return window.showSaveFilePicker({ suggestedName, types: JSON_TYPES });
 }
 
 // 開いたファイルは読み取りの許可しかないので、最初の保存で書き込みの許可を求める

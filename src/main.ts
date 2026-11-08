@@ -1,4 +1,4 @@
-import { canWrite, fileAccessSupported, isAbort, pickJsonToOpen, pickJsonToSave, writeText } from './jsonFile';
+import { canWrite, isAbort, pickJsonToOpen, pickJsonToSave, writeText } from './jsonFile';
 import { parseLoops, serializeLoops, type LoopMap } from './loops';
 import { LoopPlayer } from './player';
 import { mixdown, nearestZeroCross, nextZeroCross } from './samples';
@@ -15,8 +15,6 @@ const MARKER_ZOOM = 0.02;    // 「拡大」で表示する幅 (秒)
 const DURATION_TOLERANCE = 0.001;
 const AUDIO_EXT = /\.(mp3|wav|ogg|opus|m4a|aac|flac)$/i;
 const JSON_EXT = /\.json$/i;
-// ダウンロード用の Blob URL を残す時間 (ミリ秒)。すぐに破棄すると、ブラウザが読む前に消えて失敗することがある
-const BLOB_URL_LIFETIME = 60_000;
 
 const ctx = new AudioContext();
 const player = new LoopPlayer(ctx);
@@ -34,7 +32,7 @@ let playhead: number | null = null;
 
 let loops: LoopMap = {};
 let saved: LoopMap = {};   // 読み込んだ、または最後に書き出した JSON の値
-// 上書き保存の対象。lastModified は外からの変更に気づくために控える。File System Access API が使えないときは常に null
+// 上書き保存の対象。lastModified は外からの変更に気づくために控える。JSON を読み込むか保存するまでは null
 let jsonTarget: { handle: FileSystemFileHandle; lastModified: number } | null = null;
 let writing = false;       // 保存ダイアログを開いている間と書き込み中。この間は保存も JSON の読み込みもしない
 
@@ -220,26 +218,13 @@ $('save').addEventListener('click', () => void whileWriting(async () => {
   markExported(sent);
 }));
 
-$('download').addEventListener('click', () => {
-  if (fileAccessSupported) {
-    void whileWriting(async () => {
-      const handle = await pickJsonToSave(jsonTarget?.handle.name ?? 'loops.json');
-      const sent = structuredClone(loops);
-      const lastModified = await writeText(handle, serializeLoops(sent));
-      jsonTarget = { handle, lastModified };
-      markExported(sent);
-    });
-    return;
-  }
-  const url = URL.createObjectURL(new Blob([serializeLoops(loops)], { type: 'application/json' }));
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = 'loops.json';
-  a.click();
-  setTimeout(() => URL.revokeObjectURL(url), BLOB_URL_LIFETIME);
-  // ダウンロードの成否はページから分からないので、押した時点で書き出し済みとする
-  markExported(structuredClone(loops));
-});
+$('download').addEventListener('click', () => void whileWriting(async () => {
+  const handle = await pickJsonToSave(jsonTarget?.handle.name ?? 'loops.json');
+  const sent = structuredClone(loops);
+  const lastModified = await writeText(handle, serializeLoops(sent));
+  jsonTarget = { handle, lastModified };
+  markExported(sent);
+}));
 
 // クリップボードはすぐ上書きされるので、コピーしても書き出し済みとはしない
 $('copy').addEventListener('click', async () => {
@@ -371,20 +356,13 @@ select.addEventListener('change', () => void open(select.value));
 
 // ボタンから、隠してあるファイル選択を開く
 const audioInput = $<HTMLInputElement>('audio-input');
-const jsonInput = $<HTMLInputElement>('json-input');
-for (const input of [audioInput, jsonInput]) {
-  input.addEventListener('change', () => {
-    const picked = [...(input.files ?? [])];
-    input.value = '';   // 同じファイルをもう一度選んでも change が起きるように空にする
-    void addFiles(picked);
-  });
-}
+audioInput.addEventListener('change', () => {
+  const picked = [...(audioInput.files ?? [])];
+  audioInput.value = '';   // 同じファイルをもう一度選んでも change が起きるように空にする
+  void addFiles(picked);
+});
 $('open-audio').addEventListener('click', () => audioInput.click());
 $('open-json').addEventListener('click', async () => {
-  if (!fileAccessSupported) {
-    jsonInput.click();
-    return;
-  }
   // 上書き保存できるよう、ハンドルが取れる方法で開く
   try {
     const handle = await pickJsonToOpen();
@@ -409,9 +387,7 @@ addEventListener('drop', (e) => {
   e.preventDefault();
   document.body.classList.remove('dragging');
   // DataTransfer はこのイベントの間しか読めないので、ここで受け取っておく
-  const handles = fileAccessSupported
-    ? [...(e.dataTransfer?.items ?? [])].filter((i) => i.kind === 'file').map((i) => i.getAsFileSystemHandle?.() ?? Promise.resolve(null))
-    : [];
+  const handles = [...(e.dataTransfer?.items ?? [])].filter((i) => i.kind === 'file').map((i) => i.getAsFileSystemHandle());
   void addFiles([...(e.dataTransfer?.files ?? [])], handles);
 });
 
