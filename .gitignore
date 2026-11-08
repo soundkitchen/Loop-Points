@@ -3,3 +3,6 @@
 # Zig のビルド成果物
 zig-out/
 .zig-cache/
+
+# Lyria の実ファイル(手元での確認用。配布しない)
+samples/
