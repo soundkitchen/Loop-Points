@@ -181,6 +181,8 @@ async function loadLoops(file: File, handle: FileSystemFileHandle | null = null)
   saved = parsed;
   loops = structuredClone(parsed);
   jsonTarget = handle && { handle, lastModified: file.lastModified };
+  // 音源より先に読み込んだときに、読み込めたことを案内に出す。音源を開いたあとは案内ごと隠れる
+  $('empty-json').textContent = `${file.name} を読み込みました (${Object.keys(parsed).length} 件)。音源を開くと反映します`;
   applyLoop();
   updateStatus();
 }
@@ -247,6 +249,9 @@ addEventListener('beforeunload', (e) => {
 
 let openToken = 0;   // 最後に呼んだ open を見分ける。読み込み中に別の音源へ切り替えたら、前の open は何もしない
 
+// 読み込みの経過を出す。音源を 1 つも開いていないうちはヘッダーが隠れているので、読み込みの案内に出す
+const showInfo = (text: string) => { $(name ? 'info' : 'empty-info').textContent = text; };
+
 function decode(file: string, source: File): Promise<Decoded> {
   let pending = decoding.get(source);
   if (!pending) {
@@ -282,7 +287,7 @@ async function open(file: string): Promise<'opened' | 'failed' | 'superseded'> {
   // 読み込みが終わるまでは、前の音源のマーカーを動かしたり鳴らしたりできないようにする
   // (name は読み込めてから変える。先に変えると、前の音源の位置が新しい音源の項目に入る)
   buffer = null;
-  $('info').textContent = '読み込み中…';
+  showInfo('読み込み中…');
   const source = files.get(file)!;
   const cached = decoded.get(file);
   let d: Decoded;
@@ -294,7 +299,7 @@ async function open(file: string): Promise<'opened' | 'failed' | 'superseded'> {
     const prev = decoded.get(name);
     if (prev) { buffer = prev.buffer; mono = prev.mono; applyLoop(); }
     select.value = name;
-    $('info').textContent = `${file} を開けませんでした (${e})` + (name ? `。${name} のままです` : '');
+    showInfo(`${file} を開けませんでした (${e})` + (name ? `。${name} のままです` : ''));
     return 'failed';
   }
   if (token !== openToken) return 'superseded';
@@ -302,7 +307,9 @@ async function open(file: string): Promise<'opened' | 'failed' | 'superseded'> {
   buffer = d.buffer;
   mono = d.mono;
   cursor = 0;
-  $('info').textContent = `${buffer.sampleRate} Hz · ${buffer.numberOfChannels}ch · ${formatTime(buffer.duration)} (${buffer.length} サンプル)`;
+  // 編集画面に切り替える。波形の幅を測れるよう、setData より前に表示する
+  document.body.classList.add('loaded');
+  showInfo(`${buffer.sampleRate} Hz · ${buffer.numberOfChannels}ch · ${formatTime(buffer.duration)} (${buffer.length} サンプル)`);
   view.setData(mono, buffer.sampleRate);
   applyLoop();
   return 'opened';
@@ -361,8 +368,7 @@ audioInput.addEventListener('change', () => {
   audioInput.value = '';   // 同じファイルをもう一度選んでも change が起きるように空にする
   void addFiles(picked);
 });
-$('open-audio').addEventListener('click', () => audioInput.click());
-$('open-json').addEventListener('click', async () => {
+async function openJson() {
   // 上書き保存できるよう、ハンドルが取れる方法で開く
   try {
     const handle = await pickJsonToOpen();
@@ -370,7 +376,10 @@ $('open-json').addEventListener('click', async () => {
   } catch (e) {
     if (!isAbort(e)) alert(`JSON を読めませんでした (${e})`);
   }
-});
+}
+// ヘッダーのボタンと、音源を開く前の案内のボタン
+for (const id of ['open-audio', 'empty-open-audio']) $(id).addEventListener('click', () => audioInput.click());
+for (const id of ['open-json', 'empty-open-json']) $(id).addEventListener('click', () => void openJson());
 
 // ページのどこにドロップしてもよい
 const hasFiles = (e: DragEvent) => e.dataTransfer?.types.includes('Files') ?? false;
@@ -437,6 +446,5 @@ function frame() {
 
 // ---- 起動 ----
 
-$('info').textContent = '音源をドロップするか、「音源を開く」で選んでください';
 updateStatus();
 requestAnimationFrame(frame);
