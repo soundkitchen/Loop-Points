@@ -64,16 +64,20 @@ pub const Quantizer = struct {
 
     /// `x`(満幅を ±1 とする値)を整数形式 `f` の値にする
     fn quantize(q: *Quantizer, f: Format, x: f64) i64 {
-        const s = f.scale();
-        var v = if (std.math.isNan(x)) 0 else x * s;
-        if (q.dither == .tpdf) {
-            const r = q.rng.random();
-            v += r.float(f64) - r.float(f64);
-        }
-        v = @round(v);
-        return @intFromFloat(std.math.clamp(v, -s, s - 1));
+        return quantizeBits(q, f.bits(), x);
     }
 };
+
+/// 整数形式 `f` のサンプル 1 つ(`b` は `f.bytes()` バイト)を、`f.bits()` ビットの符号付き整数として読む
+inline fn readInt(f: Format, b: []const u8) i32 {
+    return switch (f) {
+        .u8 => @as(i32, b[0]) - 128,
+        .i16 => std.mem.readInt(i16, b[0..2], .little),
+        .i24 => std.mem.readInt(i24, b[0..3], .little),
+        .i32 => std.mem.readInt(i32, b[0..4], .little),
+        .f32, .f64 => unreachable,
+    };
+}
 
 /// `src`(形式 `f` のバイト列)を f32 にする。`dst.len` はサンプル数で、`src.len == dst.len * f.bytes()`
 pub fn toF32(f: Format, src: []const u8, dst: []f32) void {
@@ -83,10 +87,7 @@ pub fn toF32(f: Format, src: []const u8, dst: []f32) void {
     for (dst, 0..) |*d, i| {
         const b = src[i * n ..][0..n];
         d.* = switch (f) {
-            .u8 => @floatCast(@as(f64, @floatFromInt(@as(i16, b[0]) - 128)) * inv),
-            .i16 => @floatCast(@as(f64, @floatFromInt(std.mem.readInt(i16, b[0..2], .little))) * inv),
-            .i24 => @floatCast(@as(f64, @floatFromInt(std.mem.readInt(i24, b[0..3], .little))) * inv),
-            .i32 => @floatCast(@as(f64, @floatFromInt(std.mem.readInt(i32, b[0..4], .little))) * inv),
+            .u8, .i16, .i24, .i32 => @floatCast(@as(f64, @floatFromInt(readInt(f, b))) * inv),
             .f32 => @bitCast(std.mem.readInt(u32, b[0..4], .little)),
             .f64 => @floatCast(@as(f64, @bitCast(std.mem.readInt(u64, b[0..8], .little)))),
         };
@@ -153,16 +154,7 @@ pub fn toInt(f: Format, src: []const u8, dst: []i32) void {
     std.debug.assert(!f.isFloat());
     std.debug.assert(src.len == dst.len * f.bytes());
     const n = f.bytes();
-    for (dst, 0..) |*d, i| {
-        const b = src[i * n ..][0..n];
-        d.* = switch (f) {
-            .u8 => @as(i32, b[0]) - 128,
-            .i16 => std.mem.readInt(i16, b[0..2], .little),
-            .i24 => std.mem.readInt(i24, b[0..3], .little),
-            .i32 => std.mem.readInt(i32, b[0..4], .little),
-            .f32, .f64 => unreachable,
-        };
-    }
+    for (dst, 0..) |*d, i| d.* = readInt(f, src[i * n ..][0..n]);
 }
 
 /// `x`(満幅を ±1 とする値)を `bits` ビット(1〜32)の符号付き整数にする。`q` のディザで丸め、範囲外はクリップする

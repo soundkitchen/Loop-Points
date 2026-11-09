@@ -66,7 +66,7 @@ var dec: kiln.mp3.Decoder = .{};                  // 1 フレームずつの低�
 const nch = try dec.decodeFrame(frame_bytes, &pcm); // pcm: [2][1152]f32。扱えないフレームは InvalidFrame
 ```
 
-- MP3 → FLAC は `kiln.mp3.toFlacAlloc`(§2.6)。位置と区間の扱いは `toWav` と同じ
+- MP3 → FLAC は `kiln.mp3.toFlac`(`*Io.Writer` に書き、STREAMINFO の書き戻しを返す)と一括版の `toFlacAlloc`(§2.6)。位置と区間の扱いは `toWav` と同じ
 - `decode` / `toWav` の位置はトリムと同じタイムライン。ただしタグなしの入力でも先頭を 529 に切り上げない(デコードでは先頭のデコーダ遅延も出力できるため)
 - 復号は区間の少し手前のフレームから始める(結果は先頭から復号したときと同じ。[`mp3-decoder.md`](mp3-decoder.md) §2)
 - `invalid_frames` は、区間にかかったフレームのうち、サイド情報が壊れていて復号できなかったものの数
@@ -85,7 +85,7 @@ kiln trim <input> <output> [--start TIME] [--end TIME | --duration TIME]
 - WAV に変換するときだけ `--sample-format u8|i16|i24|i32|f32|f64` を使う。形式の既定は、MP3 は `i16`、FLAC はビット深度を保つ形式([`flac.md`](flac.md) §4)
 - FLAC に書くときだけ `--bits 4〜32`(既定は、整数の WAV なら元のビット深度、それ以外は 16)と `--compression 0〜8`(既定は 5。flac コマンドの -0〜-8 と同じ。[`flac.md`](flac.md) §6)を使う
 - `--dither tpdf|none`(既定は `tpdf`)は変換するときだけ使う。オプションを使わない組み合わせで指定すると引数の誤り(終了コード 2)
-- FLAC は STREAMINFO を最後に書き戻すので、メモリ上に作ってから書く(stdout にも書ける)
+- FLAC は STREAMINFO を最後に書き戻す。ファイルへはフレームを流して書き(`kiln.wav.toFlac` / `kiln.mp3.toFlac`)、閉じる前に先頭の STREAMINFO を位置を指定して書き戻す(`File.writePositionalAll`。出力全体をメモリにためない)。stdout へは書き戻せないので、メモリ上で書き戻してから書く
 - MP3 → WAV / FLAC では、タグなしの入力でも先頭を 529 に切り上げない(`kiln.mp3.decode` と同じ)。MP3 / FLAC → WAV と MP3 → FLAC で復号できなかったフレームがあれば、その数を stderr に警告する(終了コードは 0)
 - TIME は秒(`1.5`)、分:秒 / 時:分:秒(`1:02.5`)、サンプル数(`66150s`)。秒は浮動小数点を使わずに解析し、切り捨てでサンプル位置にする
 - `--duration` は、切り上げた後の実際の開始位置から数える(タグなしの入力で `--start` を省いても、出力の長さは指定どおり)
@@ -154,8 +154,9 @@ try e.writeF32(interleaved);                     // writePlanarF32(&.{ left, rig
 const header = try e.finish();                   // .frames を渡さなかったときだけ、書き戻すヘッダが返る
 // 一括版: チャンネルごとの f32(Web Audio の AudioBuffer と同じ並び)から
 const bytes = try kiln.wav.encodePlanarAlloc(gpa, &.{ left, right }, .{ .sample_rate = 44100 });
-// 区間を FLAC にする(整数の WAV はビット深度を変えなければ可逆)
-const f = try kiln.wav.toFlacAlloc(gpa, input, .{ .start = 44100 }, .{ .compression = 5 }); // f.data / f.start / f.end
+// 区間を FLAC にする(整数の WAV はビット深度を変えなければ可逆)。r.patch(STREAMINFO)を出力の先頭に書き戻す
+const r = try kiln.wav.toFlac(gpa, input, .{ .start = 44100 }, .{ .compression = 5 }, writer); // r.start / r.end / r.patch
+const f = try kiln.wav.toFlacAlloc(gpa, input, .{ .start = 44100 }, .{});  // 一括版(書き戻し済み): f.data / f.start / f.end
 ```
 
 - 既定の形式は 16bit 整数、ディザは TPDF(§2.4)
@@ -190,7 +191,7 @@ try enc.writeI32(interleaved);                   // writeF32 は TPDF ディザ�
 const patch = try enc.finish();                  // patch.offset / patch.bytes(STREAMINFO の 34 バイト)
 // 一括版(STREAMINFO を書き戻したバイト列を返す)
 const a = try kiln.flac.encodePlanarAlloc(gpa, &.{ left, right }, 44100, .{ .bits_per_sample = 16 });
-const m = try kiln.mp3.toFlacAlloc(gpa, mp3_input, .{ .start = 0 }, .{});  // m.data / m.result
+const m = try kiln.mp3.toFlacAlloc(gpa, mp3_input, .{ .start = 0 }, .{});  // m.data / m.result(流して書く版は mp3.toFlac)
 ```
 
 - `gpa` はフレームの一覧と、復号・符号化の作業領域に使う。設計と検証は [`flac.md`](flac.md)

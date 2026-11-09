@@ -133,71 +133,96 @@ pub fn trimAlloc(
     return .{ .data = try out.toOwnedSlice(), .start = r.start, .end = r.end, .sample_rate = r.sample_rate };
 }
 
-pub const FlacConverted = struct {
-    /// FLAC ファイル全体。呼び出し側が `gpa` で解放する
-    data: []u8,
+pub const FlacResult = struct {
     start: u64,
     end: u64,
     sample_rate: u32,
+    /// 出力の先頭に書き戻す STREAMINFO
+    patch: flac.StreamInfoPatch,
 };
 
-/// 区間 `[options.start, options.end)` を FLAC にする(範囲外の指定は `trim` と同じく丸める)。
+/// 区間 `[options.start, options.end)` を FLAC にして `w` に書く(範囲外の指定は `trim` と同じく丸める)。
+/// STREAMINFO(長さ・MD5 など)は最後に決まるので、戻り値の `patch` を呼び出し側が出力の先頭に書き戻す。
 /// 整数の WAV は、ビット深度を変えなければ可逆(既定は元のビット深度)。浮動小数点の WAV は既定で 16bit に
-/// ディザで丸める。チャンネル数が 8 を超える WAV は書けない(`InvalidOptions`)
-pub fn toFlacAlloc(
+/// ディザで丸める。チャンネル数が 8 を超える WAV は書けない(`InvalidOptions`)。`w.flush()` は呼び出し側が行う
+pub fn toFlac(
     gpa: std.mem.Allocator,
     input: []const u8,
     options: TrimOptions,
     flac_options: flac.WriteOptions,
-) (ParseError || flac.WriteError || error{EmptyRange})!FlacConverted {
-    const w = try parse.Wav.parse(input);
-    const frames = w.frames();
+    w: *Io.Writer,
+) (ParseError || flac.StreamError || error{EmptyRange})!FlacResult {
+    const wf = try parse.Wav.parse(input);
+    const frames = wf.frames();
     const end = @min(options.end orelse frames, frames);
     if (options.start >= end) return error.EmptyRange;
-    if (w.channels > 8) return error.InvalidOptions;
-    const nch: usize = w.channels;
-    const src_bits: u8 = if (w.format.isFloat()) 0 else w.format.bits();
+    if (wf.channels > 8) return error.InvalidOptions;
+    const nch: usize = wf.channels;
+    const src_bits: u8 = if (wf.format.isFloat()) 0 else wf.format.bits();
     const bits = flac_options.bits_per_sample orelse if (src_bits != 0) src_bits else 16;
 
-    var out: Io.Writer.Allocating = .init(gpa);
-    defer out.deinit();
-    var enc = flac.Encoder.init(gpa, &out.writer, .{
-        .sample_rate = w.sample_rate,
+    var enc = flac.Encoder.init(gpa, w, .{
+        .sample_rate = wf.sample_rate,
         .channels = @intCast(nch),
         .bits_per_sample = bits,
         .compression = flac_options.compression,
         .total_samples = end - options.start,
         .dither = flac_options.dither,
         .vendor = flac.vendor,
-    }) catch |err| return flac.mapWriteError(err);
+    }) catch |err| return flac.mapStreamError(err);
     defer enc.deinit();
 
-    const frame_len = w.frameLen();
-    const data = w.data[@intCast(options.start * frame_len)..@intCast(end * frame_len)];
+    const frame_len = wf.frameLen();
+    const data = wf.data[@intCast(options.start * frame_len)..@intCast(end * frame_len)];
     var ints: [4096]i32 = undefined;
     var conv: [4096]i32 = undefined;
     var floats: [4096]f32 = undefined;
     var q: pcm.Quantizer = .init(flac_options.dither);
     const per = ints.len / nch * nch;
     var i: usize = 0;
-    const total = data.len / w.format.bytes();
+    const total = data.len / wf.format.bytes();
     while (i < total) {
         const n = @min(per, total - i);
-        const chunk = data[i * w.format.bytes() ..][0 .. n * w.format.bytes()];
+        const chunk = data[i * wf.format.bytes() ..][0 .. n * wf.format.bytes()];
         if (src_bits == 0) {
-            pcm.toF32(w.format, chunk, floats[0..n]);
-            enc.writeF32(floats[0..n]) catch |err| return flac.mapWriteError(err);
+            pcm.toF32(wf.format, chunk, floats[0..n]);
+            enc.writeF32(floats[0..n]) catch |err| return flac.mapStreamError(err);
         } else {
-            pcm.toInt(w.format, chunk, ints[0..n]);
+            pcm.toInt(wf.format, chunk, ints[0..n]);
             const v = if (bits == src_bits) ints[0..n] else blk: {
                 pcm.convertInt(src_bits, bits, ints[0..n], conv[0..n], &q);
                 break :blk conv[0..n];
             };
-            enc.writeI32(v) catch |err| return flac.mapWriteError(err);
+            enc.writeI32(v) catch |err| return flac.mapStreamError(err);
         }
         i += n;
     }
-    return .{ .data = try flac.finishAlloc(&enc, &out), .start = options.start, .end = end, .sample_rate = w.sample_rate };
+    const patch = enc.finish() catch |err| return flac.mapStreamError(err);
+    return .{ .start = options.start, .end = end, .sample_rate = wf.sample_rate, .patch = patch };
+}
+
+pub const FlacConverted = struct {
+    /// FLAC ファイル全体(STREAMINFO は書き戻し済み)。呼び出し側が `gpa` で解放する
+    data: []u8,
+    start: u64,
+    end: u64,
+    sample_rate: u32,
+};
+
+/// `toFlac` の一括版。STREAMINFO を書き戻したバイト列を返す
+pub fn toFlacAlloc(
+    gpa: std.mem.Allocator,
+    input: []const u8,
+    options: TrimOptions,
+    flac_options: flac.WriteOptions,
+) (ParseError || flac.WriteError || error{EmptyRange})!FlacConverted {
+    var out: Io.Writer.Allocating = .init(gpa);
+    defer out.deinit();
+    const r = toFlac(gpa, input, options, flac_options, &out.writer) catch |err| switch (err) {
+        error.WriteFailed => return error.OutOfMemory,
+        else => |e| return e,
+    };
+    return .{ .data = try flac.takePatched(&out, r.patch), .start = r.start, .end = r.end, .sample_rate = r.sample_rate };
 }
 
 test {

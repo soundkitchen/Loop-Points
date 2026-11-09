@@ -90,7 +90,8 @@ pub fn autocorrelation(x: []const i64, w: []const f64, buf: []f64, autoc: []f64)
 }
 
 /// Levinson-Durbin で、次数 1〜`orders` の予測係数(`coefs[o - 1][0..o]`、予測は Σ coefs[j] x[n - 1 - j])と
-/// 予測誤差 `errors[o - 1]` を求める。途中で誤差が 0 になったら、そこまでの次数を返す
+/// 予測誤差 `errors[o - 1]` を求め、求められた次数の数を返す。誤差が 0 になったらその次数まで、
+/// 丸め誤差で反射係数の絶対値が 1 以上になった(誤差が負になる、不安定な)ときはその手前の次数までにする
 pub fn levinson(autoc: []const f64, orders: usize, coefs: *[max_order][max_order]f64, errors: *[max_order]f64) usize {
     var a: [max_order]f64 = undefined;
     var err = autoc[0];
@@ -98,6 +99,7 @@ pub fn levinson(autoc: []const f64, orders: usize, coefs: *[max_order][max_order
         var r = -autoc[i + 1];
         for (0..i) |j| r -= a[j] * autoc[i - j];
         r /= err;
+        if (!(@abs(r) < 1)) return i;
         a[i] = r;
         var j: usize = 0;
         while (j < i / 2) : (j += 1) {
@@ -114,9 +116,10 @@ pub fn levinson(autoc: []const f64, orders: usize, coefs: *[max_order][max_order
     return orders;
 }
 
-/// 予測誤差から、残差 1 サンプルあたりの見込みのビット数
+/// 予測誤差から、残差 1 サンプルあたりの見込みのビット数(誤差が負なら選ばれないよう無限大)
 fn expectedBits(err: f64, n: usize) f64 {
-    if (err <= 0) return 0;
+    if (err < 0) return std.math.inf(f64);
+    if (err == 0) return 0;
     const b = 0.5 * std.math.log2(err * 0.5 / @as(f64, @floatFromInt(n)));
     return @max(b, 0);
 }
@@ -174,6 +177,20 @@ test "levinson: AR(1) の信号は次数 1 の係数で予測できる" {
     try std.testing.expectApproxEqAbs(0.9, coefs[0][0], 1e-12);
     try std.testing.expectApproxEqAbs(0.0, coefs[1][1], 1e-12);
     try std.testing.expectApproxEqAbs(1 - 0.81, errors[0], 1e-12);
+}
+
+test "levinson: ほぼ完全に予測できる信号でも、不安定な次数を返さない" {
+    // 純粋な正弦波の自己相関 cos(ωk) は次数 2 で誤差 0 になり、それより上は丸め誤差で不安定になりうる
+    var autoc: [9]f64 = undefined;
+    for (&autoc, 0..) |*a, k| a.* = @cos(0.3 * @as(f64, @floatFromInt(k)));
+    var coefs: [max_order][max_order]f64 = undefined;
+    var errors: [max_order]f64 = undefined;
+    const got = levinson(&autoc, 8, &coefs, &errors);
+    try std.testing.expect(got >= 1 and got <= 8);
+    for (errors[0..got]) |e| try std.testing.expect(e >= 0);
+    for (0..got) |o| for (coefs[o][0 .. o + 1]) |c| try std.testing.expect(std.math.isFinite(c));
+    // 負の誤差の次数は選ばない
+    try std.testing.expectEqual(1, bestOrder(&.{ 1.0, -1e-9 }, 4096, 20));
 }
 
 test "quantize" {

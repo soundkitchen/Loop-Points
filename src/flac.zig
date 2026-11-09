@@ -296,14 +296,34 @@ pub const WriteOptions = struct {
 /// ベンダー文字列(Vorbis コメント)
 pub const vendor = "kiln " ++ @import("build_options").version;
 
+/// 一括版(`...Alloc`)のエラー
 pub const WriteError = error{ OutOfMemory, InvalidOptions, TooLarge, InternalError };
+/// `*Io.Writer` に書く版のエラー
+pub const StreamError = Io.Writer.Error || WriteError;
+
+/// エンコーダのエラーを、`*Io.Writer` に書く版のエラーにする(書き込みの失敗はそのまま)
+pub fn mapStreamError(err: anyerror) StreamError {
+    return switch (err) {
+        error.WriteFailed => error.WriteFailed,
+        error.OutOfMemory => error.OutOfMemory,
+        error.InvalidOptions => error.InvalidOptions,
+        error.TooLarge => error.TooLarge,
+        // 書く長さは入力から決めるので、食い違うのは kiln の不具合
+        else => error.InternalError,
+    };
+}
+
+/// `Io.Writer.Allocating` に書いた FLAC の先頭に STREAMINFO を書き戻し、バイト列として引き取る
+pub fn takePatched(out: *Io.Writer.Allocating, patch: StreamInfoPatch) error{OutOfMemory}![]u8 {
+    const data = try out.toOwnedSlice();
+    @memcpy(data[patch.offset..][0..patch.bytes.len], &patch.bytes);
+    return data;
+}
 
 /// `Io.Writer.Allocating` に書いたエンコーダを閉じ、STREAMINFO を書き戻したバイト列を返す
 pub fn finishAlloc(enc: *Encoder, out: *Io.Writer.Allocating) WriteError![]u8 {
     const patch = enc.finish() catch |err| return mapWriteError(err);
-    const data = try out.toOwnedSlice();
-    @memcpy(data[patch.offset..][0..patch.bytes.len], &patch.bytes);
-    return data;
+    return takePatched(out, patch);
 }
 
 /// エンコーダのエラーを一括版のエラーにする
@@ -802,4 +822,38 @@ test "mp3.toFlacAlloc / encodePlanarAlloc" {
     defer got.deinit();
     _ = try decode(gpa, data, .{}, &got);
     try std.testing.expectEqualSlices(i32, &.{ 0, 64, -64, 127 }, got.list.items);
+}
+
+/// テスト用: インターリーブした整数を FLAC にする
+fn encodeInts(samples: []const i32, nch: u8, bits: u8, level: u8) ![]u8 {
+    const gpa = std.testing.allocator;
+    var out: Io.Writer.Allocating = .init(gpa);
+    defer out.deinit();
+    var enc: Encoder = try .init(gpa, &out.writer, .{
+        .sample_rate = 44100,
+        .channels = nch,
+        .bits_per_sample = bits,
+        .compression = level,
+        .total_samples = samples.len / nch,
+    });
+    defer enc.deinit();
+    try enc.writeI32(samples);
+    return finishAlloc(&enc, &out);
+}
+
+test "encode: 32bit の満幅の矩形波(固定予測の残差が 32 ビットを超える)も正しく書ける" {
+    const gpa = std.testing.allocator;
+    for ([_]u8{ 1, 2 }) |nch| {
+        const samples = try gpa.alloc(i32, 8192 * @as(usize, nch));
+        defer gpa.free(samples);
+        for (samples, 0..) |*v, i| v.* = if ((i / nch / 2048) % 2 == 0) std.math.maxInt(i32) else std.math.minInt(i32);
+        for ([_]u8{ 0, 5, 8 }) |level| {
+            const data = try encodeInts(samples, nch, 32, level);
+            defer gpa.free(data);
+            var got: CollectSink = .{};
+            defer got.deinit();
+            try std.testing.expectEqual(0, (try decode(gpa, data, .{}, &got)).invalid_frames);
+            try std.testing.expectEqualSlices(i32, samples, got.list.items);
+        }
+    }
 }

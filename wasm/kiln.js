@@ -166,13 +166,14 @@ export async function load(source = new URL('./kiln.wasm', import.meta.url)) {
 
   /**
    * FLAC の書き出しの指定を wasm に渡す値にする。defaultBits は bitsPerSample を省いたときの値で、
-   * null なら bits は -1(コアが決める)
+   * null なら bits は null(コアが決める)。利用者が渡した bitsPerSample は必ず 4〜32 の整数か確かめる
    */
   function flacOptions(options, defaultBits = 16) {
-    const bits = options.bitsPerSample ?? defaultBits ?? -1;
-    if (bits !== -1 && !(Number.isInteger(bits) && bits >= 4 && bits <= 32)) {
+    if (options.bitsPerSample !== undefined
+      && !(Number.isInteger(options.bitsPerSample) && options.bitsPerSample >= 4 && options.bitsPerSample <= 32)) {
       throw new RangeError('kiln: bitsPerSample must be an integer from 4 to 32');
     }
+    const bits = options.bitsPerSample ?? defaultBits;
     const compression = options.compression ?? 5;
     if (!(Number.isInteger(compression) && compression >= 0 && compression <= 8)) {
       throw new RangeError('kiln: compression must be an integer from 0 to 8');
@@ -363,7 +364,7 @@ export async function load(source = new URL('./kiln.wasm', import.meta.url)) {
     toFlac(input, options = {}) {
       const { bits, compression, dither } = flacOptions(options, null);
       return rangeWith(e.kiln_wav_probe, input, options, (ptr, len, s, t) => {
-        check(e.kiln_wav_to_flac(ptr, len, s, t ?? 0n, t !== null, Math.max(bits, 0), bits >= 0, compression, dither));
+        check(e.kiln_wav_to_flac(ptr, len, s, t ?? 0n, t !== null, bits ?? 0, bits !== null, compression, dither));
         return { data: takeOutput() };
       });
     },

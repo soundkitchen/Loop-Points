@@ -27,7 +27,9 @@ const usage =
     \\                          the smallest one that keeps the bit depth for FLAC)
     \\  --bits N                FLAC bit depth, 4 to 32 (default: the bit depth of an
     \\                          integer WAV, otherwise 16)
-    \\  --compression N         FLAC compression level, 0 (fastest) to 8 (smallest),
+    \\  --compression N         FLAC compression level, 0 (fastest) to
+++ std.fmt.comptimePrint(" {d}", .{kiln.flac.max_compression}) ++
+    \\ (smallest),
     \\                          as in the flac command (default: 5)
     \\  --dither DITHER         dither when converting to an integer format with less
     \\                          precision: tpdf (default) or none
@@ -132,7 +134,7 @@ fn parseTrimArgs(args: []const [:0]const u8, stderr: *Io.Writer) !?TrimArgs {
             const v = try optionValue(args, &i, stderr) orelse return null;
             r.compression = std.fmt.parseInt(u8, v, 10) catch null;
             if (r.compression == null or r.compression.? > kiln.flac.max_compression) {
-                try stderr.print("error: invalid --compression '{s}' (0 to 8)\n", .{v});
+                try stderr.print("error: invalid --compression '{s}' (0 to {d})\n", .{ v, kiln.flac.max_compression });
                 return null;
             }
         } else if (std.mem.eql(u8, arg, "--dither")) {
@@ -361,13 +363,22 @@ const Convert = union(enum) {
     flac: kiln.flac.WriteOptions,
 };
 
-/// 区間を切り出して(または形式を変えて)`w` に書き、実際に書いた区間を返す
-fn run(job: Job, w: *Io.Writer) !Trimmed {
-    const c = job.convert orelse return trimTo(job.format, job.input, job.range, w);
+/// 書き出しの結果
+const Written = struct {
+    trimmed: Trimmed,
+    /// FLAC を流して書いたとき、出力の先頭に書き戻す STREAMINFO
+    patch: ?kiln.flac.StreamInfoPatch = null,
+};
+
+/// 区間を切り出して(または形式を変えて)`w` に書き、実際に書いた区間を返す。
+/// `seekable` なら FLAC は流して書き、STREAMINFO の書き戻しを返す(呼び出し側が書き戻す)。
+/// そうでなければ(stdout)、メモリ上で書き戻してから書く
+fn run(job: Job, w: *Io.Writer, seekable: bool) !Written {
+    const c = job.convert orelse return .{ .trimmed = try trimTo(job.format, job.input, job.range, w) };
     const start = job.range.start;
     const end = job.range.end;
     switch (c) {
-        .wav => |o| return switch (job.format) {
+        .wav => |o| return .{ .trimmed = switch (job.format) {
             .mp3 => blk: {
                 const r = try kiln.mp3.toWav(job.input, .{ .start = start, .end = end }, .{ .format = o.format.?, .dither = o.dither }, w);
                 break :blk .{ .start = r.start, .end = r.end, .invalid_frames = r.invalid_frames };
@@ -377,22 +388,31 @@ fn run(job: Job, w: *Io.Writer) !Trimmed {
                 break :blk .{ .start = r.start, .end = r.end, .invalid_frames = r.invalid_frames };
             },
             .wav => unreachable,
-        },
-        // FLAC は STREAMINFO を最後に書き戻すので、メモリ上に作ってから書く
-        .flac => |o| switch (job.format) {
-            .wav => {
-                const t = try kiln.wav.toFlacAlloc(job.gpa, job.input, .{ .start = start, .end = end }, o);
-                defer job.gpa.free(t.data);
-                try w.writeAll(t.data);
-                return .{ .start = t.start, .end = t.end };
-            },
-            .mp3 => {
-                const t = try kiln.mp3.toFlacAlloc(job.gpa, job.input, .{ .start = start, .end = end }, o);
-                defer job.gpa.free(t.data);
-                try w.writeAll(t.data);
-                return .{ .start = t.result.start, .end = t.result.end, .invalid_frames = t.result.invalid_frames };
-            },
-            .flac => unreachable,
+        } },
+        .flac => |o| {
+            // stdout には書き戻せないので、メモリ上に作って書き戻してから書く
+            var mem: Io.Writer.Allocating = .init(job.gpa);
+            defer mem.deinit();
+            const out = if (seekable) w else &mem.writer;
+            var written: Written = switch (job.format) {
+                .wav => blk: {
+                    const r = try kiln.wav.toFlac(job.gpa, job.input, .{ .start = start, .end = end }, o, out);
+                    break :blk .{ .trimmed = .{ .start = r.start, .end = r.end }, .patch = r.patch };
+                },
+                .mp3 => blk: {
+                    const r = try kiln.mp3.toFlac(job.gpa, job.input, .{ .start = start, .end = end }, o, out);
+                    const t = r.result;
+                    break :blk .{ .trimmed = .{ .start = t.start, .end = t.end, .invalid_frames = t.invalid_frames }, .patch = r.patch };
+                },
+                .flac => unreachable,
+            };
+            if (!seekable) {
+                const data = try kiln.flac.takePatched(&mem, written.patch.?);
+                defer job.gpa.free(data);
+                try w.writeAll(data);
+                written.patch = null;
+            }
+            return written;
         },
     }
 }
@@ -417,18 +437,20 @@ fn trimTo(format: kiln.Format, input: []const u8, range: Range, w: *Io.Writer) !
 /// 出力先に置き換える(失敗しても、既存の出力先のファイルは元のまま残る)
 fn writeOutput(io: Io, path: []const u8, job: Job, stdout: *Io.Writer) !Trimmed {
     if (std.mem.eql(u8, path, "-")) {
-        const r = try run(job, stdout);
+        const r = try run(job, stdout, false);
         try stdout.flush();
-        return r;
+        return r.trimmed;
     }
     var af = try Io.Dir.cwd().createFileAtomic(io, path, .{ .replace = true });
     defer af.deinit(io);
     var buf: [64 * 1024]u8 = undefined;
     var fw = af.file.writer(io, &buf);
-    const r = try run(job, &fw.interface);
+    const r = try run(job, &fw.interface, true);
     try fw.interface.flush();
+    // FLAC は STREAMINFO を最後に書き戻す(フレームはメモリにためずに流して書く)
+    if (r.patch) |p| try af.file.writePositionalAll(io, &p.bytes, p.offset);
     try af.replace(io);
-    return r;
+    return r.trimmed;
 }
 
 /// コアのエラーを利用者向けの説明にする

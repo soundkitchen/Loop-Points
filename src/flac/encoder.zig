@@ -161,7 +161,8 @@ pub const Encoder = struct {
         for (&e.slots) |*s| s.* = .{ .sig = &.{}, .res = .{ &.{}, &.{} } };
         errdefer e.deinit();
         e.block = try gpa.alloc(i64, bs * options.channels);
-        const nslots: usize = if (options.channels == 2) 4 else 1;
+        // 相関除去を試すときだけ、左・右・side・mid の 4 つを使う
+        const nslots: usize = if (options.channels == 2 and preset.stereo != .independent) 4 else 1;
         for (e.slots[0..nslots]) |*s| {
             s.sig = try gpa.alloc(i64, bs);
             s.res = .{ try gpa.alloc(i64, bs), try gpa.alloc(i64, bs) };
@@ -406,10 +407,12 @@ pub const Encoder = struct {
             c.order = fixed_order;
             c.res = 1 - best.res;
             const res = s.res[c.res][0 .. n - c.order];
-            fixedResidual(sig, c.order, res);
-            if (e.ricePlan(&c, res, n)) |rb| {
-                c.bits = head + @as(u64, c.order) * c.bps + rb;
-                if (c.bits < best.bits) best = c;
+            // 残差が 32 ビットに収まらなければ(32bit の音声や 33 ビットの side で起きうる)使わない
+            if (fixedResidual(sig, c.order, res)) {
+                if (e.ricePlan(&c, res, n)) |rb| {
+                    c.bits = head + @as(u64, c.order) * c.bps + rb;
+                    if (c.bits < best.bits) best = c;
+                }
             }
         }
 
@@ -647,9 +650,10 @@ fn fixedCost(x: []const i64) u64 {
     return @min(sums[0], @min(sums[1], sums[2]));
 }
 
-fn fixedResidual(x: []const i64, order: u8, res: []i64) void {
+/// 固定予測の残差。残差が 32 ビットに収まらなければ false
+fn fixedResidual(x: []const i64, order: u8, res: []i64) bool {
     for (order..x.len, res) |i, *r| {
-        r.* = x[i] - switch (order) {
+        const v = x[i] - switch (order) {
             0 => 0,
             1 => x[i - 1],
             2 => 2 * x[i - 1] - x[i - 2],
@@ -657,7 +661,10 @@ fn fixedResidual(x: []const i64, order: u8, res: []i64) void {
             4 => 4 * x[i - 1] - 6 * x[i - 2] + 4 * x[i - 3] - x[i - 4],
             else => unreachable,
         };
+        if (v > max_residual or v < -max_residual) return false;
+        r.* = v;
     }
+    return true;
 }
 
 /// 線形予測の残差。残差が 32 ビットに収まらなければ false
