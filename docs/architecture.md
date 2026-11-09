@@ -87,7 +87,7 @@ kiln trim <input> <output> [--start TIME] [--end TIME | --duration TIME]
 - `--dither tpdf|none`(既定は `tpdf`)は変換するときだけ使う。オプションを使わない組み合わせで指定すると引数の誤り(終了コード 2)
 - FLAC の入力は、フレームの一覧(`kiln.flac.Index`)を 1 回だけ作り、長さを求めるのと、切り出し・WAV への変換(`Index.trim` / `Index.toWav`)で使い回す(区切りを探す走査を繰り返さない)
 - FLAC は STREAMINFO を最後に書き戻す。ファイルへはフレームを流して書き(`kiln.wav.toFlac` / `kiln.mp3.toFlac` / `kiln.flac.Index.trim`)、閉じる前に先頭の STREAMINFO を位置を指定して書き戻す(`File.writePositionalAll`。出力全体をメモリにためない)。stdout へは書き戻せないので、メモリ上で書き戻してから書く
-- MP3 → WAV / FLAC では、タグなしの入力でも先頭を 529 に切り上げない(`kiln.mp3.decode` と同じ)。MP3 / FLAC → WAV と MP3 → FLAC で復号できなかったフレームがあれば、その数を stderr に警告する(終了コードは 0)
+- MP3 → WAV / FLAC では、タグなしの入力でも先頭を 529 に切り上げない(`kiln.mp3.decode` と同じ)。MP3 / FLAC → WAV、MP3 → FLAC、FLAC → FLAC で復号できなかったフレームがあれば、その数を stderr に警告する(終了コードは 0。FLAC → FLAC では無音として作り直したフレームの数)
 - TIME は秒(`1.5`)、分:秒 / 時:分:秒(`1:02.5`)、サンプル数(`66150s`)。秒は浮動小数点を使わずに解析し、切り捨てでサンプル位置にする
 - `--duration` は、切り上げた後の実際の開始位置から数える(タグなしの入力で `--start` を省いても、出力の長さは指定どおり)
 - 出力ファイルは一時ファイルに書き、最後まで書けたときだけ置き換える(`Dir.createFileAtomic`)。失敗したときは、既存の出力ファイルは元のまま残る。置き換えはリネームなので、出力先がシンボリックリンクならリンク自体が置き換わる
