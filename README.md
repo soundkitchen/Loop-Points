@@ -95,7 +95,7 @@ self.onmessage = async ({ data: { bytes, start, end } }) => {
 |---|---|
 | `src/` | コア。I/O を持たず、アロケータとバイト列/サンプル列、`std.Io.Reader` / `std.Io.Writer` だけを扱う |
 | `cli/` | CLI。ファイルの読み書きと引数処理だけを担う薄いラッパー |
-| `wasm/` | wasm 向けの export 関数(`main.zig`)と JS ラッパー(`kiln.js`) |
+| `wasm/` | wasm 向けの export 関数(`main.zig`)、JS ラッパー(`kiln.js`)とその型定義(`kiln.d.ts`) |
 | `testdata/` | テスト用の音声(lame で作った短い MP3 と、Python で書いた短い WAV。Lyria の実ファイルは入れない)。作り方は [`testdata/README.md`](testdata/README.md) |
 | `docs/` | 設計と調査の記録。仕様として扱う |
 
