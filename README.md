@@ -80,6 +80,7 @@ const { data: wavOfMp3 } = kiln.mp3.toWav(bytes, { start: 1.5, end: 10, format: 
 - [`docs/draft.md`](docs/draft.md): 構想と決定事項
 - [`docs/architecture.md`](docs/architecture.md): アーキテクチャ方針
 - [`docs/lyria-mp3.md`](docs/lyria-mp3.md): Lyria 出力 MP3 の調査と無劣化トリム方式
+- [`docs/mp3-decoder.md`](docs/mp3-decoder.md): MP3 デコーダの設計と検証
 
 ## ライセンス
 
