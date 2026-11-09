@@ -111,6 +111,63 @@ pub fn fromF32(f: Format, src: []const f32, dst: []u8, q: *Quantizer) void {
     }
 }
 
+/// `bits` ビット(1〜32)の符号付き整数の `src` を形式 `f` のバイト列にする。`dst.len == src.len * f.bytes()`。
+/// 整数形式で `f` のビット数が `bits` 以上なら、下位に 0 を足す(左シフトする)だけなので可逆。
+/// 少ないときは `q` のディザで丸める。浮動小数点形式へは `値 / 2^(bits - 1)`
+pub fn fromInt(f: Format, bits: u8, src: []const i32, dst: []u8, q: *Quantizer) void {
+    std.debug.assert(dst.len == src.len * f.bytes());
+    std.debug.assert(bits >= 1 and bits <= 32);
+    const n = f.bytes();
+    const inv = std.math.ldexp(@as(f64, 1), 1 - @as(i32, bits));
+    if (!f.isFloat() and f.bits() >= bits) {
+        const shift: u5 = @intCast(f.bits() - bits);
+        for (src, 0..) |v, i| {
+            const b = dst[i * n ..][0..n];
+            const x = @as(i64, v) << shift;
+            switch (f) {
+                .u8 => b[0] = @intCast(x + 128),
+                .i16 => std.mem.writeInt(i16, b[0..2], @intCast(x), .little),
+                .i24 => std.mem.writeInt(i24, b[0..3], @intCast(x), .little),
+                .i32 => std.mem.writeInt(i32, b[0..4], @intCast(x), .little),
+                .f32, .f64 => unreachable,
+            }
+        }
+        return;
+    }
+    for (src, 0..) |v, i| {
+        const b = dst[i * n ..][0..n];
+        const x = @as(f64, @floatFromInt(v)) * inv;
+        switch (f) {
+            .u8 => b[0] = @intCast(q.quantize(f, x) + 128),
+            .i16 => std.mem.writeInt(i16, b[0..2], @intCast(q.quantize(f, x)), .little),
+            .i24 => std.mem.writeInt(i24, b[0..3], @intCast(q.quantize(f, x)), .little),
+            .i32 => std.mem.writeInt(i32, b[0..4], @intCast(q.quantize(f, x)), .little),
+            .f32 => std.mem.writeInt(u32, b[0..4], @bitCast(@as(f32, @floatCast(x))), .little),
+            .f64 => std.mem.writeInt(u64, b[0..8], @bitCast(x), .little),
+        }
+    }
+}
+
+test fromInt {
+    var q: Quantizer = .init(.none);
+    // 12bit → i16 は左シフト、8bit → u8 は 128 を足す
+    var b16: [4]u8 = undefined;
+    fromInt(.i16, 12, &.{ -2048, 2047 }, &b16, &q);
+    try std.testing.expectEqual(-32768, std.mem.readInt(i16, b16[0..2], .little));
+    try std.testing.expectEqual(2047 << 4, std.mem.readInt(i16, b16[2..4], .little));
+    var b8: [2]u8 = undefined;
+    fromInt(.u8, 8, &.{ -128, 127 }, &b8, &q);
+    try std.testing.expectEqualSlices(u8, &.{ 0, 255 }, &b8);
+    // 24bit → i16 は丸める(ディザなしなら四捨五入)
+    fromInt(.i16, 24, &.{ 0x7FFFFF, 0x180 }, &b16, &q);
+    try std.testing.expectEqual(32767, std.mem.readInt(i16, b16[0..2], .little));
+    try std.testing.expectEqual(2, std.mem.readInt(i16, b16[2..4], .little));
+    // 16bit → f32
+    var f: [4]u8 = undefined;
+    fromInt(.f32, 16, &.{-16384}, &f, &q);
+    try std.testing.expectEqual(-0.5, @as(f32, @bitCast(std.mem.readInt(u32, &f, .little))));
+}
+
 test "整数 → f32 → 整数で元に戻る(16 / 24bit、8bit)" {
     var q: Quantizer = .init(.none);
     inline for (.{ Format.u8, Format.i16, Format.i24 }) |f| {

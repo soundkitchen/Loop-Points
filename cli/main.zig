@@ -13,18 +13,21 @@ const usage =
     \\  kiln --help
     \\
     \\Commands:
-    \\  trim    Cut an MP3 or WAV file, accurate to the sample, without re-encoding.
-    \\          With --format wav, an MP3 input is decoded and written as WAV.
+    \\  trim    Cut an MP3, WAV or FLAC file, accurate to the sample.
+    \\          MP3 and WAV are cut without re-encoding.
+    \\          With --format wav, an MP3 or FLAC input is decoded and written as WAV.
     \\          <input> / <output> may be "-" for stdin / stdout.
     \\          The input format is detected from its contents.
     \\
     \\Options:
-    \\  --format FORMAT         output format: mp3 or wav (default: same as the input).
-    \\                          Only MP3 to WAV conversion is supported.
-    \\  --sample-format SAMPLE  WAV sample format when decoding MP3:
-    \\                          u8, i16 (default), i24, i32, f32 or f64
-    \\  --dither DITHER         dither when decoding MP3 to an integer format:
-    \\                          tpdf (default) or none
+    \\  --format FORMAT         output format: mp3, wav or flac (default: same as the input).
+    \\                          Only MP3 or FLAC to WAV conversion is supported,
+    \\                          and FLAC cannot be written yet.
+    \\  --sample-format SAMPLE  WAV sample format when decoding MP3 or FLAC:
+    \\                          u8, i16, i24, i32, f32 or f64 (default: i16 for MP3,
+    \\                          the smallest one that keeps the bit depth for FLAC)
+    \\  --dither DITHER         dither when decoding MP3 to an integer format, or FLAC to
+    \\                          one with fewer bits: tpdf (default) or none
     \\
     \\TIME:
     \\  1.5         seconds
@@ -126,7 +129,7 @@ fn parseTrimArgs(args: []const [:0]const u8, stderr: *Io.Writer) !?TrimArgs {
                 return null;
             }
             r.format = std.meta.stringToEnum(kiln.Format, args[i]) orelse {
-                try stderr.print("error: unknown format '{s}' (mp3 or wav)\n", .{args[i]});
+                try stderr.print("error: unknown format '{s}' (mp3, wav or flac)\n", .{args[i]});
                 return null;
             };
         } else if (slot) |s| {
@@ -179,18 +182,23 @@ fn trim(init: std.process.Init, args: []const [:0]const u8, stdout: *Io.Writer, 
     defer gpa.free(input);
 
     const in_format = kiln.detect(input) orelse {
-        try stderr.print("error: {s}: unknown format (not an MP3 or WAV file)\n", .{a.input});
+        try stderr.print("error: {s}: unknown format (not an MP3, WAV or FLAC file)\n", .{a.input});
         return 1;
     };
     const out_format = a.format orelse in_format;
-    // 変換できるのは MP3 → WAV だけ(MP3 のエンコーダはない)
+    // FLAC のエンコーダはまだないので、FLAC は WAV にしか書き出せない
+    if (in_format == .flac and out_format == .flac) {
+        try stderr.writeAll("error: writing FLAC is not supported yet (use --format wav)\n");
+        return 1;
+    }
+    // 変換できるのは MP3 / FLAC → WAV だけ(MP3 と FLAC のエンコーダはない)
     const convert = out_format != in_format;
-    if (convert and !(in_format == .mp3 and out_format == .wav)) {
+    if (convert and !(out_format == .wav and (in_format == .mp3 or in_format == .flac))) {
         try stderr.print("error: converting {s} to {s} is not supported\n", .{ in_format.name(), out_format.name() });
         return 1;
     }
     if (!convert and (a.sample_format != null or a.dither != null)) {
-        try stderr.writeAll("error: --sample-format and --dither are only used when converting (--format wav for an MP3 input)\n");
+        try stderr.writeAll("error: --sample-format and --dither are only used when converting (--format wav for an MP3 or FLAC input)\n");
         return 2;
     }
     const info = probe(in_format, input) catch |err| {
@@ -215,9 +223,11 @@ fn trim(init: std.process.Init, args: []const [:0]const u8, stdout: *Io.Writer, 
         .input = input,
         .range = .{ .start = start, .end = end },
         .convert = if (convert) .{
-            .format = a.sample_format orelse .i16,
+            // 省いたとき: MP3 は 16bit 整数、FLAC はビット深度を保つ形式(コアが決める)
+            .format = a.sample_format orelse if (in_format == .mp3) .i16 else null,
             .dither = a.dither orelse .tpdf,
         } else null,
+        .gpa = gpa,
     };
     const r = writeOutput(io, a.output, job, stdout) catch |err| switch (err) {
         error.EmptyRange => {
@@ -239,7 +249,11 @@ fn trim(init: std.process.Init, args: []const [:0]const u8, stdout: *Io.Writer, 
         try stderr.print("warning: end clamped to the end of the input ({d} samples)\n", .{r.end});
     };
     if (r.invalid_frames > 0) {
-        try stderr.print("warning: {d} frame(s) could not be decoded (broken side information) and were output as silence\n", .{r.invalid_frames});
+        const why = switch (in_format) {
+            .mp3 => "broken side information",
+            else => "broken frame or CRC mismatch",
+        };
+        try stderr.print("warning: {d} frame(s) could not be decoded ({s}) and were output as silence\n", .{ r.invalid_frames, why });
     }
     return 0;
 }
@@ -272,6 +286,10 @@ fn probe(format: kiln.Format, input: []const u8) !Info {
             const i = try kiln.wav.probe(input);
             break :blk .{ .sample_rate = i.sample_rate, .samples = i.samples, .min_start = 0 };
         },
+        .flac => blk: {
+            const i = try kiln.flac.probe(input);
+            break :blk .{ .sample_rate = i.sample_rate, .samples = i.samples, .min_start = 0 };
+        },
     };
 }
 
@@ -281,7 +299,7 @@ const Range = struct { start: u64, end: ?u64 };
 const Trimmed = struct {
     start: u64,
     end: u64,
-    /// MP3 をデコードしたとき、復号できなかったフレームの数
+    /// MP3 / FLAC をデコードしたとき、復号できなかったフレームの数
     invalid_frames: u64 = 0,
 };
 
@@ -290,18 +308,29 @@ const Job = struct {
     format: kiln.Format,
     input: []const u8,
     range: Range,
-    /// MP3 をデコードして WAV で書くときの設定(null なら入力と同じ形式で切り出す)
-    convert: ?struct { format: kiln.pcm.Format, dither: kiln.pcm.Dither },
+    /// MP3 / FLAC をデコードして WAV で書くときの設定(null なら入力と同じ形式で切り出す)。
+    /// format が null なら FLAC のビット深度を保つ形式
+    convert: ?struct { format: ?kiln.pcm.Format, dither: kiln.pcm.Dither },
+    /// FLAC の復号の作業領域に使う
+    gpa: std.mem.Allocator,
 };
 
 /// 区間を切り出して(またはデコードして WAV にして)`w` に書き、実際に書いた区間を返す
 fn run(job: Job, w: *Io.Writer) !Trimmed {
     const c = job.convert orelse return trimTo(job.format, job.input, job.range, w);
-    const r = try kiln.mp3.toWav(job.input, .{ .start = job.range.start, .end = job.range.end }, .{
-        .format = c.format,
-        .dither = c.dither,
-    }, w);
-    return .{ .start = r.start, .end = r.end, .invalid_frames = r.invalid_frames };
+    const start = job.range.start;
+    const end = job.range.end;
+    return switch (job.format) {
+        .mp3 => blk: {
+            const r = try kiln.mp3.toWav(job.input, .{ .start = start, .end = end }, .{ .format = c.format.?, .dither = c.dither }, w);
+            break :blk .{ .start = r.start, .end = r.end, .invalid_frames = r.invalid_frames };
+        },
+        .flac => blk: {
+            const r = try kiln.flac.toWav(job.gpa, job.input, .{ .start = start, .end = end }, .{ .format = c.format, .dither = c.dither }, w);
+            break :blk .{ .start = r.start, .end = r.end, .invalid_frames = r.invalid_frames };
+        },
+        .wav => unreachable,
+    };
 }
 
 /// 区間を切り出して `w` に書き、実際に切り出した区間を返す
@@ -315,6 +344,8 @@ fn trimTo(format: kiln.Format, input: []const u8, range: Range, w: *Io.Writer) !
             const r = try kiln.wav.trim(input, .{ .start = range.start, .end = range.end }, w);
             break :blk .{ .start = r.start, .end = r.end };
         },
+        // FLAC → FLAC は trim の手前で弾いている
+        .flac => unreachable,
     };
 }
 
@@ -341,10 +372,13 @@ fn describe(format: kiln.Format, err: anyerror) []const u8 {
     return switch (err) {
         error.NotMp3 => "not an MP3 file",
         error.NotWav => "not a WAV file",
+        error.NotFlac => "not a FLAC file",
+        error.InvalidFlac => "broken FLAC file (missing or invalid STREAMINFO / metadata blocks)",
         error.InvalidWav => "broken WAV file (missing or invalid fmt / data chunk)",
         error.UnsupportedFormat => switch (format) {
             .mp3 => "unsupported MPEG audio (only MPEG-1 Layer III is supported)",
             .wav => "unsupported WAV (only little-endian RIFF with PCM or IEEE float is supported; RF64, RIFX and compressed encodings are not)",
+            .flac => "unsupported FLAC (only native FLAC is supported; Ogg FLAC is not)",
         },
         error.EmptyRange => "empty range",
         error.TooLarge => "output is too large",
@@ -370,6 +404,7 @@ test parseTrimArgs {
     // "-" は stdin / stdout
     _ = (try parseTrimArgs(&.{ "-", "-" }, &w)).?;
     try std.testing.expectEqual(kiln.Format.wav, (try parseTrimArgs(&.{ "a", "b", "--format", "wav" }, &w)).?.format.?);
+    try std.testing.expectEqual(kiln.Format.flac, (try parseTrimArgs(&.{ "a", "b", "--format", "flac" }, &w)).?.format.?);
     const conv = (try parseTrimArgs(&.{ "a", "b", "--format", "wav", "--sample-format", "f32", "--dither", "none" }, &w)).?;
     try std.testing.expectEqual(kiln.pcm.Format.f32, conv.sample_format.?);
     try std.testing.expectEqual(kiln.pcm.Dither.none, conv.dither.?);
@@ -382,7 +417,7 @@ test parseTrimArgs {
         &.{ "in.mp3", "out.mp3", "--end", "1", "--duration", "1" },
         &.{ "in.mp3", "out.mp3", "--bogus" },
         &.{ "in.mp3", "out.mp3", "--format" },
-        &.{ "in.mp3", "out.mp3", "--format", "flac" },
+        &.{ "in.mp3", "out.mp3", "--format", "ogg" },
         &.{ "in.mp3", "out.wav", "--sample-format", "s16" },
         &.{ "in.mp3", "out.wav", "--dither" },
         &.{ "in.mp3", "out.wav", "--dither", "rpdf" },
