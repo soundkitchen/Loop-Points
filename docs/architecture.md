@@ -72,7 +72,7 @@ kiln trim <input> <output> [--start TIME] [--end TIME | --duration TIME] [--form
 - 入力は `BufferSource`(`ArrayBuffer` / TypedArray / `DataView`)。TypedArray と `DataView` は、要素の値ではなく下のバイト列として読む
 - `wav.probe(bytes)` / `wav.trim(bytes, options)` は MP3 と同じ形(`probe` の `format` は `'u8'` / `'i16'` / `'i24'` / `'i32'` / `'f32'` / `'f64'`)。`wav.encode(source, { sampleRate, format = 'i16', dither = 'tpdf' })` は、`decodeAudioData` が返す `AudioBuffer`(`sampleRate` は省ける)か、チャンネルごとの `Float32Array` の配列から WAV のバイト列を作る
 - `wav.encode` のサンプルは、`kiln_alloc_f32` で確保した領域(4 バイト境界)にチャンネルごとに続けて書き、`kiln_wav_encode` に渡す。形式は `kiln.pcm.Format` の番号でやり取りする(JS 側の `FORMATS` と並びを合わせる)
-- `mp3.trim` / `wav.trim` は、秒で指定されたときだけ、サンプルレートを知るために先に `kiln_mp3_probe` / `kiln_wav_probe` を呼ぶ。サンプル数だけの指定では入力の解析は 1 回で済む(戻り値の秒は `kiln_mp3_trim` が返すサンプルレートで計算する)
+- `mp3.trim` / `wav.trim` は、秒で指定されたときだけ、サンプルレートを知るために先に `kiln_mp3_probe` / `kiln_wav_probe` を呼ぶ。サンプル数だけの指定では入力の解析は 1 回で済む(戻り値の秒は `kiln_mp3_trim` / `kiln_wav_trim` が返すサンプルレートで計算する)
 - `startSample` / `endSample` に BigInt を渡すときは 0 以上 2^64 未満でなければ `RangeError` にする(u64 の引数で桁あふれしないように)
 - サンプル位置は u64 なので、export 関数の引数・戻り値は JS では BigInt になる
 
