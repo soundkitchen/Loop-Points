@@ -8,26 +8,31 @@ const time = @import("time.zig");
 const usage =
     \\Usage:
     \\  kiln trim <input> <output> [--start TIME] [--end TIME | --duration TIME]
-    \\            [--format FORMAT] [--sample-format SAMPLE] [--dither DITHER]
+    \\            [--format FORMAT] [--sample-format SAMPLE] [--bits N]
+    \\            [--compression N] [--dither DITHER]
     \\  kiln --version
     \\  kiln --help
     \\
     \\Commands:
     \\  trim    Cut an MP3 or WAV file, accurate to the sample, without re-encoding.
-    \\          With --format wav, an MP3 or FLAC input is decoded and written as WAV
-    \\          (FLAC needs --format wav, as writing FLAC is not supported yet).
+    \\          With --format, convert while cutting: MP3 or FLAC to WAV, and
+    \\          WAV or MP3 to FLAC (cutting FLAC to FLAC is not supported yet).
     \\          <input> / <output> may be "-" for stdin / stdout.
     \\          The input format is detected from its contents.
     \\
     \\Options:
-    \\  --format FORMAT         output format: mp3, wav or flac (default: same as the input).
-    \\                          Only MP3 or FLAC to WAV conversion is supported,
-    \\                          and FLAC cannot be written yet.
+    \\  --format FORMAT         output format: mp3, wav or flac (default: same as the input)
     \\  --sample-format SAMPLE  WAV sample format when decoding MP3 or FLAC:
     \\                          u8, i16, i24, i32, f32 or f64 (default: i16 for MP3,
     \\                          the smallest one that keeps the bit depth for FLAC)
-    \\  --dither DITHER         dither when decoding MP3 to an integer format, or FLAC to
-    \\                          one with fewer bits: tpdf (default) or none
+    \\  --bits N                FLAC bit depth, 4 to 32 (default: the bit depth of an
+    \\                          integer WAV, otherwise 16)
+    \\  --compression N         FLAC compression level, 0 (fastest) to
+++ std.fmt.comptimePrint(" {d}", .{kiln.flac.max_compression}) ++
+    \\ (smallest),
+    \\                          as in the flac command (default: 5)
+    \\  --dither DITHER         dither when converting to an integer format with less
+    \\                          precision: tpdf (default) or none
     \\
     \\TIME:
     \\  1.5         seconds
@@ -80,6 +85,8 @@ const TrimArgs = struct {
     duration: ?time.Time = null,
     format: ?kiln.Format = null,
     sample_format: ?kiln.pcm.Format = null,
+    bits: ?u8 = null,
+    compression: ?u8 = null,
     dither: ?kiln.pcm.Dither = null,
 };
 
@@ -116,6 +123,20 @@ fn parseTrimArgs(args: []const [:0]const u8, stderr: *Io.Writer) !?TrimArgs {
                 try stderr.print("error: unknown sample format '{s}' (u8, i16, i24, i32, f32 or f64)\n", .{v});
                 return null;
             };
+        } else if (std.mem.eql(u8, arg, "--bits")) {
+            const v = try optionValue(args, &i, stderr) orelse return null;
+            r.bits = std.fmt.parseInt(u8, v, 10) catch null;
+            if (r.bits == null or r.bits.? < 4 or r.bits.? > 32) {
+                try stderr.print("error: invalid --bits '{s}' (4 to 32)\n", .{v});
+                return null;
+            }
+        } else if (std.mem.eql(u8, arg, "--compression")) {
+            const v = try optionValue(args, &i, stderr) orelse return null;
+            r.compression = std.fmt.parseInt(u8, v, 10) catch null;
+            if (r.compression == null or r.compression.? > kiln.flac.max_compression) {
+                try stderr.print("error: invalid --compression '{s}' (0 to {d})\n", .{ v, kiln.flac.max_compression });
+                return null;
+            }
         } else if (std.mem.eql(u8, arg, "--dither")) {
             const v = try optionValue(args, &i, stderr) orelse return null;
             r.dither = std.meta.stringToEnum(kiln.pcm.Dither, v) orelse {
@@ -186,19 +207,27 @@ fn trim(init: std.process.Init, args: []const [:0]const u8, stdout: *Io.Writer, 
         return 1;
     };
     const out_format = a.format orelse in_format;
-    // FLAC のエンコーダはまだないので、FLAC は WAV にしか書き出せない
+    // FLAC → FLAC の切り出しはまだない
     if (in_format == .flac and out_format == .flac) {
-        try stderr.writeAll("error: writing FLAC is not supported yet (use --format wav)\n");
+        try stderr.writeAll("error: cutting FLAC to FLAC is not supported yet (use --format wav)\n");
         return 1;
     }
-    // 変換できるのは MP3 / FLAC → WAV だけ(MP3 と FLAC のエンコーダはない)
+    // 変換できるのは MP3 / FLAC → WAV と WAV / MP3 → FLAC(MP3 のエンコーダはない)
     const convert = out_format != in_format;
-    if (convert and !(out_format == .wav and (in_format == .mp3 or in_format == .flac))) {
+    if (convert and out_format == .mp3) {
         try stderr.print("error: converting {s} to {s} is not supported\n", .{ in_format.name(), out_format.name() });
         return 1;
     }
-    if (!convert and (a.sample_format != null or a.dither != null)) {
-        try stderr.writeAll("error: --sample-format and --dither are only used when converting (--format wav for an MP3 or FLAC input)\n");
+    if (!convert and a.dither != null) {
+        try stderr.writeAll("error: --dither is only used when converting (with --format)\n");
+        return 2;
+    }
+    if (a.sample_format != null and !(convert and out_format == .wav)) {
+        try stderr.writeAll("error: --sample-format is only used when converting to WAV (--format wav for an MP3 or FLAC input)\n");
+        return 2;
+    }
+    if ((a.bits != null or a.compression != null) and out_format != .flac) {
+        try stderr.writeAll("error: --bits and --compression are only used when writing FLAC (--format flac)\n");
         return 2;
     }
     const info = probe(in_format, input) catch |err| {
@@ -222,11 +251,24 @@ fn trim(init: std.process.Init, args: []const [:0]const u8, stdout: *Io.Writer, 
         .format = in_format,
         .input = input,
         .range = .{ .start = start, .end = end },
-        .convert = if (convert) .{
-            // 省いたとき: MP3 は 16bit 整数、FLAC はビット深度を保つ形式(コアが決める)
-            .format = a.sample_format orelse if (in_format == .mp3) .i16 else null,
-            .dither = a.dither orelse .tpdf,
-        } else null,
+        .convert = if (!convert) null else switch (out_format) {
+            .wav => .{
+                .wav = .{
+                    // 省いたとき: MP3 は 16bit 整数、FLAC はビット深度を保つ形式(コアが決める)
+                    .format = a.sample_format orelse if (in_format == .mp3) .i16 else null,
+                    .dither = a.dither orelse .tpdf,
+                },
+            },
+            .flac => .{
+                .flac = .{
+                    // 省いたとき: 整数の WAV は元のビット深度、それ以外は 16(コアが決める)
+                    .bits_per_sample = a.bits,
+                    .compression = a.compression orelse 5,
+                    .dither = a.dither orelse .tpdf,
+                },
+            },
+            .mp3 => unreachable,
+        },
         .gpa = gpa,
     };
     const r = writeOutput(io, a.output, job, stdout) catch |err| switch (err) {
@@ -308,29 +350,71 @@ const Job = struct {
     format: kiln.Format,
     input: []const u8,
     range: Range,
-    /// MP3 / FLAC をデコードして WAV で書くときの設定(null なら入力と同じ形式で切り出す)。
-    /// format が null なら FLAC のビット深度を保つ形式
-    convert: ?struct { format: ?kiln.pcm.Format, dither: kiln.pcm.Dither },
-    /// FLAC の復号の作業領域に使う
+    /// 形式を変えて書くときの設定(null なら入力と同じ形式で切り出す)
+    convert: ?Convert,
+    /// FLAC の読み書きの作業領域に使う
     gpa: std.mem.Allocator,
 };
 
-/// 区間を切り出して(またはデコードして WAV にして)`w` に書き、実際に書いた区間を返す
-fn run(job: Job, w: *Io.Writer) !Trimmed {
-    const c = job.convert orelse return trimTo(job.format, job.input, job.range, w);
+const Convert = union(enum) {
+    /// MP3 / FLAC をデコードして WAV で書く。format が null なら FLAC のビット深度を保つ形式
+    wav: struct { format: ?kiln.pcm.Format, dither: kiln.pcm.Dither },
+    /// WAV / MP3 を FLAC で書く
+    flac: kiln.flac.WriteOptions,
+};
+
+/// 書き出しの結果
+const Written = struct {
+    trimmed: Trimmed,
+    /// FLAC を流して書いたとき、出力の先頭に書き戻す STREAMINFO
+    patch: ?kiln.flac.StreamInfoPatch = null,
+};
+
+/// 区間を切り出して(または形式を変えて)`w` に書き、実際に書いた区間を返す。
+/// `seekable` なら FLAC は流して書き、STREAMINFO の書き戻しを返す(呼び出し側が書き戻す)。
+/// そうでなければ(stdout)、メモリ上で書き戻してから書く
+fn run(job: Job, w: *Io.Writer, seekable: bool) !Written {
+    const c = job.convert orelse return .{ .trimmed = try trimTo(job.format, job.input, job.range, w) };
     const start = job.range.start;
     const end = job.range.end;
-    return switch (job.format) {
-        .mp3 => blk: {
-            const r = try kiln.mp3.toWav(job.input, .{ .start = start, .end = end }, .{ .format = c.format.?, .dither = c.dither }, w);
-            break :blk .{ .start = r.start, .end = r.end, .invalid_frames = r.invalid_frames };
+    switch (c) {
+        .wav => |o| return .{ .trimmed = switch (job.format) {
+            .mp3 => blk: {
+                const r = try kiln.mp3.toWav(job.input, .{ .start = start, .end = end }, .{ .format = o.format.?, .dither = o.dither }, w);
+                break :blk .{ .start = r.start, .end = r.end, .invalid_frames = r.invalid_frames };
+            },
+            .flac => blk: {
+                const r = try kiln.flac.toWav(job.gpa, job.input, .{ .start = start, .end = end }, .{ .format = o.format, .dither = o.dither }, w);
+                break :blk .{ .start = r.start, .end = r.end, .invalid_frames = r.invalid_frames };
+            },
+            .wav => unreachable,
+        } },
+        .flac => |o| {
+            // stdout には書き戻せないので、メモリ上に作って書き戻してから書く
+            var mem: Io.Writer.Allocating = .init(job.gpa);
+            defer mem.deinit();
+            const out = if (seekable) w else &mem.writer;
+            var written: Written = switch (job.format) {
+                .wav => blk: {
+                    const r = try kiln.wav.toFlac(job.gpa, job.input, .{ .start = start, .end = end }, o, out);
+                    break :blk .{ .trimmed = .{ .start = r.start, .end = r.end }, .patch = r.patch };
+                },
+                .mp3 => blk: {
+                    const r = try kiln.mp3.toFlac(job.gpa, job.input, .{ .start = start, .end = end }, o, out);
+                    const t = r.result;
+                    break :blk .{ .trimmed = .{ .start = t.start, .end = t.end, .invalid_frames = t.invalid_frames }, .patch = r.patch };
+                },
+                .flac => unreachable,
+            };
+            if (!seekable) {
+                const data = try kiln.flac.takePatched(&mem, written.patch.?);
+                defer job.gpa.free(data);
+                try w.writeAll(data);
+                written.patch = null;
+            }
+            return written;
         },
-        .flac => blk: {
-            const r = try kiln.flac.toWav(job.gpa, job.input, .{ .start = start, .end = end }, .{ .format = c.format, .dither = c.dither }, w);
-            break :blk .{ .start = r.start, .end = r.end, .invalid_frames = r.invalid_frames };
-        },
-        .wav => unreachable,
-    };
+    }
 }
 
 /// 区間を切り出して `w` に書き、実際に切り出した区間を返す
@@ -353,18 +437,20 @@ fn trimTo(format: kiln.Format, input: []const u8, range: Range, w: *Io.Writer) !
 /// 出力先に置き換える(失敗しても、既存の出力先のファイルは元のまま残る)
 fn writeOutput(io: Io, path: []const u8, job: Job, stdout: *Io.Writer) !Trimmed {
     if (std.mem.eql(u8, path, "-")) {
-        const r = try run(job, stdout);
+        const r = try run(job, stdout, false);
         try stdout.flush();
-        return r;
+        return r.trimmed;
     }
     var af = try Io.Dir.cwd().createFileAtomic(io, path, .{ .replace = true });
     defer af.deinit(io);
     var buf: [64 * 1024]u8 = undefined;
     var fw = af.file.writer(io, &buf);
-    const r = try run(job, &fw.interface);
+    const r = try run(job, &fw.interface, true);
     try fw.interface.flush();
+    // FLAC は STREAMINFO を最後に書き戻す(フレームはメモリにためずに流して書く)
+    if (r.patch) |p| try af.file.writePositionalAll(io, &p.bytes, p.offset);
     try af.replace(io);
-    return r;
+    return r.trimmed;
 }
 
 /// コアのエラーを利用者向けの説明にする
@@ -383,6 +469,7 @@ fn describe(format: kiln.Format, err: anyerror) []const u8 {
         error.EmptyRange => "empty range",
         error.TooLarge => "output is too large",
         error.InternalError => "internal error (a bug in kiln; please report it)",
+        error.InvalidOptions => "cannot write with these settings (FLAC supports 1 to 8 channels and sample rates below 1048576 Hz)",
         else => @errorName(err),
     };
 }
@@ -405,6 +492,9 @@ test parseTrimArgs {
     _ = (try parseTrimArgs(&.{ "-", "-" }, &w)).?;
     try std.testing.expectEqual(kiln.Format.wav, (try parseTrimArgs(&.{ "a", "b", "--format", "wav" }, &w)).?.format.?);
     try std.testing.expectEqual(kiln.Format.flac, (try parseTrimArgs(&.{ "a", "b", "--format", "flac" }, &w)).?.format.?);
+    const fl = (try parseTrimArgs(&.{ "a", "b", "--format", "flac", "--bits", "24", "--compression", "8" }, &w)).?;
+    try std.testing.expectEqual(24, fl.bits.?);
+    try std.testing.expectEqual(8, fl.compression.?);
     const conv = (try parseTrimArgs(&.{ "a", "b", "--format", "wav", "--sample-format", "f32", "--dither", "none" }, &w)).?;
     try std.testing.expectEqual(kiln.pcm.Format.f32, conv.sample_format.?);
     try std.testing.expectEqual(kiln.pcm.Dither.none, conv.dither.?);
@@ -421,6 +511,9 @@ test parseTrimArgs {
         &.{ "in.mp3", "out.wav", "--sample-format", "s16" },
         &.{ "in.mp3", "out.wav", "--dither" },
         &.{ "in.mp3", "out.wav", "--dither", "rpdf" },
+        &.{ "in.wav", "out.flac", "--bits", "3" },
+        &.{ "in.wav", "out.flac", "--bits", "x" },
+        &.{ "in.wav", "out.flac", "--compression", "9" },
     }) |bad| {
         try std.testing.expectEqual(null, try parseTrimArgs(bad, &w));
     }

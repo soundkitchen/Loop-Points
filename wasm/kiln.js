@@ -164,6 +164,59 @@ export async function load(source = new URL('./kiln.wasm', import.meta.url)) {
     });
   }
 
+  /**
+   * FLAC の書き出しの指定を wasm に渡す値にする。defaultBits は bitsPerSample を省いたときの値で、
+   * null なら bits は null(コアが決める)。利用者が渡した bitsPerSample は必ず 4〜32 の整数か確かめる
+   */
+  function flacOptions(options, defaultBits = 16) {
+    if (options.bitsPerSample !== undefined
+      && !(Number.isInteger(options.bitsPerSample) && options.bitsPerSample >= 4 && options.bitsPerSample <= 32)) {
+      throw new RangeError('kiln: bitsPerSample must be an integer from 4 to 32');
+    }
+    const bits = options.bitsPerSample ?? defaultBits;
+    const compression = options.compression ?? 5;
+    if (!(Number.isInteger(compression) && compression >= 0 && compression <= 8)) {
+      throw new RangeError('kiln: compression must be an integer from 0 to 8');
+    }
+    const { dither } = formatOptions({ dither: options.dither });
+    return { bits, compression, dither };
+  }
+
+  /**
+   * AudioBuffer か Float32Array の配列を、チャンネルごとに続けて linear memory に写して
+   * fn(ptr, channels, frames, sampleRate) を呼び、終わったら解放する
+   */
+  function withPlanar(source, options, fn) {
+    let channels = source;
+    let sampleRate = options.sampleRate;
+    if (source && typeof source.getChannelData === 'function') {
+      channels = Array.from({ length: source.numberOfChannels }, (_, i) => source.getChannelData(i));
+      sampleRate ??= source.sampleRate;
+    }
+    if (!Array.isArray(channels) || channels.length === 0 || !channels.every((c) => c instanceof Float32Array)) {
+      throw new TypeError('kiln: source must be an AudioBuffer or a non-empty array of Float32Array');
+    }
+    const frames = channels[0].length;
+    if (!channels.every((c) => c.length === frames)) {
+      throw new RangeError('kiln: all channels must have the same length');
+    }
+    if (!Number.isInteger(sampleRate) || sampleRate <= 0 || sampleRate > 0xFFFF_FFFF) {
+      throw new RangeError('kiln: sampleRate must be a positive integer');
+    }
+    const count = frames * channels.length;
+    const ptr = e.kiln_alloc_f32(count) >>> 0;
+    if (ptr === 0) throw new KilnError('OutOfMemory');
+    try {
+      if (count > 0) {
+        const view = new Float32Array(e.memory.buffer, ptr, count);
+        channels.forEach((c, i) => view.set(c, i * frames));
+      }
+      return fn(ptr, channels.length, frames, sampleRate);
+    } finally {
+      e.kiln_free_f32(ptr, count);
+    }
+  }
+
   /** 出力のバイト列をコピーして解放する(linear memory の中身は次の呼び出しで変わるため) */
   function takeOutput() {
     const data = bytesAt(e.kiln_output_ptr(), e.kiln_output_len()).slice();
@@ -234,6 +287,22 @@ export async function load(source = new URL('./kiln.wasm', import.meta.url)) {
         return { data: takeOutput(), invalidFrames: Number(e.kiln_value(4)) };
       });
     },
+
+    /**
+     * MP3 をデコードして FLAC にする。位置の指定と戻り値は toWav と同じ。
+     * @param {ArrayBufferLike | ArrayBufferView} input MP3 ファイル全体
+     * @param {{ start?: number, end?: number, startSample?: number | bigint, endSample?: number | bigint,
+     *           bitsPerSample?: number, compression?: number, dither?: 'tpdf' | 'none' }} options
+     *   bitsPerSample の既定は 16、compression の既定は 5、dither の既定は 'tpdf'
+     * @returns {{ data: Uint8Array, startSample: number, endSample: number, start: number, end: number, invalidFrames: number }}
+     */
+    toFlac(input, options = {}) {
+      const { bits, compression, dither } = flacOptions(options);
+      return rangeWith(e.kiln_mp3_probe, input, options, (ptr, len, s, t) => {
+        check(e.kiln_mp3_to_flac(ptr, len, s, t ?? 0n, t !== null, bits, compression, dither));
+        return { data: takeOutput(), invalidFrames: Number(e.kiln_value(4)) };
+      });
+    },
   };
 
   const wav = {
@@ -277,37 +346,27 @@ export async function load(source = new URL('./kiln.wasm', import.meta.url)) {
      * @returns {Uint8Array} WAV ファイル
      */
     encode(source, options = {}) {
-      let channels = source;
-      let sampleRate = options.sampleRate;
-      if (source && typeof source.getChannelData === 'function') {
-        channels = Array.from({ length: source.numberOfChannels }, (_, i) => source.getChannelData(i));
-        sampleRate ??= source.sampleRate;
-      }
-      if (!Array.isArray(channels) || channels.length === 0 || !channels.every((c) => c instanceof Float32Array)) {
-        throw new TypeError('kiln: source must be an AudioBuffer or a non-empty array of Float32Array');
-      }
-      const frames = channels[0].length;
-      if (!channels.every((c) => c.length === frames)) {
-        throw new RangeError('kiln: all channels must have the same length');
-      }
-      if (!Number.isInteger(sampleRate) || sampleRate <= 0 || sampleRate > 0xFFFF_FFFF) {
-        throw new RangeError('kiln: sampleRate must be a positive integer');
-      }
       const { format, dither } = formatOptions(options);
-
-      const count = frames * channels.length;
-      const ptr = e.kiln_alloc_f32(count) >>> 0;
-      if (ptr === 0) throw new KilnError('OutOfMemory');
-      try {
-        if (count > 0) {
-          const view = new Float32Array(e.memory.buffer, ptr, count);
-          channels.forEach((c, i) => view.set(c, i * frames));
-        }
-        check(e.kiln_wav_encode(ptr, channels.length, frames, sampleRate, format, dither));
+      return withPlanar(source, options, (ptr, nch, frames, sampleRate) => {
+        check(e.kiln_wav_encode(ptr, nch, frames, sampleRate, format, dither));
         return takeOutput();
-      } finally {
-        e.kiln_free_f32(ptr, count);
-      }
+      });
+    },
+
+    /**
+     * WAV の区間を FLAC にする。位置の指定と戻り値は trim と同じ。整数の WAV はビット深度を変えなければ可逆。
+     * @param {ArrayBufferLike | ArrayBufferView} input WAV ファイル全体
+     * @param {{ start?: number, end?: number, startSample?: number | bigint, endSample?: number | bigint,
+     *           bitsPerSample?: number, compression?: number, dither?: 'tpdf' | 'none' }} options
+     *   bitsPerSample の既定は、整数の WAV なら元のビット深度、浮動小数点なら 16。compression の既定は 5
+     * @returns {{ data: Uint8Array, startSample: number, endSample: number, start: number, end: number }}
+     */
+    toFlac(input, options = {}) {
+      const { bits, compression, dither } = flacOptions(options, null);
+      return rangeWith(e.kiln_wav_probe, input, options, (ptr, len, s, t) => {
+        check(e.kiln_wav_to_flac(ptr, len, s, t ?? 0n, t !== null, bits ?? 0, bits !== null, compression, dither));
+        return { data: takeOutput() };
+      });
     },
   };
 
@@ -361,16 +420,31 @@ export async function load(source = new URL('./kiln.wasm', import.meta.url)) {
         return { data: takeOutput(), invalidFrames: Number(e.kiln_value(4)) };
       });
     },
+
+    /**
+     * PCM を FLAC にする。decodeAudioData が返す AudioBuffer か、チャンネルごとの Float32Array の配列(1〜8 チャンネル)を渡す。
+     * @param {AudioBuffer | Float32Array[]} source どのチャンネルも同じ長さ
+     * @param {{ sampleRate?: number, bitsPerSample?: number, compression?: number, dither?: 'tpdf' | 'none' }} options
+     *   sampleRate は AudioBuffer なら省ける。bitsPerSample の既定は 16、compression の既定は 5(0〜8。flac の -0〜-8)
+     * @returns {Uint8Array} FLAC ファイル
+     */
+    encode(source, options = {}) {
+      const { bits, compression, dither } = flacOptions(options);
+      return withPlanar(source, options, (ptr, nch, frames, sampleRate) => {
+        check(e.kiln_flac_encode(ptr, nch, frames, sampleRate, bits, compression, dither));
+        return takeOutput();
+      });
+    },
   };
 
   return {
     /** ライブラリのバージョン */
     version: decoder.decode(bytesAt(e.kiln_version_ptr(), e.kiln_version_len())),
-    /** MP3 の解析、トリム、デコード */
+    /** MP3 の解析、トリム、デコード(PCM、WAV、FLAC) */
     mp3,
-    /** WAV の解析、切り出し、書き出し */
+    /** WAV の解析、切り出し、書き出し(WAV と FLAC) */
     wav,
-    /** FLAC の解析、デコード */
+    /** FLAC の解析、デコード、書き出し */
     flac,
     /** 生の export 関数(低レベル API) */
     exports: e,

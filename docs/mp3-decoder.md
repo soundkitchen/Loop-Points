@@ -1,6 +1,6 @@
 # MP3 デコーダ
 
-MPEG-1 Layer III のデコーダ(`src/mp3/` の `bits` / `huffman` / `layer3` / `synth` / `decoder`)の設計と検証の記録。MP3 → WAV の書き出しに使う。扱う範囲は無劣化トリム(`docs/lyria-mp3.md` §5.1)と同じく MPEG-1 Layer III だけ。
+MPEG-1 Layer III のデコーダ(`src/mp3/` の `bits` / `huffman` / `layer3` / `synth` / `decoder`)の設計と検証の記録。MP3 → WAV / FLAC の書き出しに使う。扱う範囲は無劣化トリム(`docs/lyria-mp3.md` §5.1)と同じく MPEG-1 Layer III だけ。
 
 ## 1. 数表の出所
 
@@ -27,7 +27,7 @@ MPEG-1 Layer III のデコーダ(`src/mp3/` の `bits` / `huffman` / `layer3` / 
 6. IMDCT(窓、前のグラニュールとの重ね合わせ、周波数反転)
 7. 32 帯の合成フィルタバンク(行列 N の対称性 N[32 − i] = −N[i]、N[96 − i] = N[i] を使い、64 行のうち 33 行だけ計算する)
 
-`kiln.mp3.decode` / `kiln.mp3.toWav` は、トリムと同じタイムライン(`docs/lyria-mp3.md` §5.1)で区間を切り出して渡す。Xing / Info のフレームは復号しない(ffmpeg と同じ)。
+`kiln.mp3.decode` / `kiln.mp3.toWav` / `kiln.mp3.toFlac` は、トリムと同じタイムライン(`docs/lyria-mp3.md` §5.1)で区間を切り出して渡す。Xing / Info のフレームは復号しない(ffmpeg と同じ)。
 
 **区間の手前から復号する**: 区間の先頭を含むフレーム k は、1 つ前のフレーム k − 1 が正しく復号されていれば正しい(IMDCT の重ね合わせと合成フィルタの状態は k − 1 のスペクトルだけで決まる)。k − 1 は、ビットリザーバ(最大 512 バイト)がそろっていれば正しい。そこで、k − 2 から遡ってメインデータの合計が 512 バイト以上になるフレームから復号を始める。先頭から復号した結果とビット単位で一致することを、テスト(testdata の 4 本)と、実ファイル・低ビットレートのファイル・適合性試験のストリームの 14 本 140 区間で確かめた。
 

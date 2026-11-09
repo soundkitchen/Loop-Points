@@ -13,6 +13,7 @@ const decoder = @import("mp3/decoder.zig");
 const layer3 = @import("mp3/layer3.zig");
 const pcm = @import("pcm.zig");
 const wav = @import("wav.zig");
+const flac = @import("flac.zig");
 
 /// 1 フレームずつ復号するデコーダ(低レベル API)
 pub const Decoder = decoder.Decoder;
@@ -162,6 +163,49 @@ pub fn toWavAlloc(gpa: std.mem.Allocator, input: []const u8, options: DecodeOpti
     };
     std.debug.assert(out.written().len == len);
     return .{ .data = try out.toOwnedSlice(), .result = r };
+}
+
+pub const FlacWritten = struct {
+    result: DecodeResult,
+    /// 出力の先頭に書き戻す STREAMINFO
+    patch: flac.StreamInfoPatch,
+};
+
+/// `decode` した区間を FLAC にして `w` に書く(入力の解析は 1 回)。ビット深度の既定は 16 で、ディザで丸める。
+/// 戻り値の `patch`(STREAMINFO)を呼び出し側が出力の先頭に書き戻す。`w.flush()` は呼び出し側が行う
+pub fn toFlac(gpa: std.mem.Allocator, input: []const u8, options: DecodeOptions, flac_options: flac.WriteOptions, w: *Io.Writer) !FlacWritten {
+    const s = try stream.Stream.parse(input);
+    const range = try clampDecodeRange(&s, options);
+    var enc = flac.Encoder.init(gpa, w, .{
+        .sample_rate = s.header.sampleRate(),
+        .channels = s.header.channels(),
+        .bits_per_sample = flac_options.bits_per_sample orelse 16,
+        .compression = flac_options.compression,
+        .total_samples = range.end - range.start,
+        .dither = flac_options.dither,
+        .vendor = flac.vendor,
+    }) catch |err| return flac.mapStreamError(err);
+    defer enc.deinit();
+    const r = decodeParsed(input, &s, range, &enc) catch |err| return flac.mapStreamError(err);
+    const patch = enc.finish() catch |err| return flac.mapStreamError(err);
+    return .{ .result = r, .patch = patch };
+}
+
+pub const FlacDecoded = struct {
+    /// FLAC ファイル全体(STREAMINFO は書き戻し済み)。呼び出し側が `gpa` で解放する
+    data: []u8,
+    result: DecodeResult,
+};
+
+/// `toFlac` の一括版。STREAMINFO を書き戻したバイト列を返す
+pub fn toFlacAlloc(gpa: std.mem.Allocator, input: []const u8, options: DecodeOptions, flac_options: flac.WriteOptions) !FlacDecoded {
+    var out: Io.Writer.Allocating = .init(gpa);
+    defer out.deinit();
+    const r = toFlac(gpa, input, options, flac_options, &out.writer) catch |err| switch (err) {
+        error.WriteFailed => return error.OutOfMemory,
+        else => |e| return e,
+    };
+    return .{ .data = try flac.takePatched(&out, r.patch), .result = r.result };
 }
 
 const Range = struct { start: u64, end: u64 };
