@@ -28,6 +28,15 @@
 - **Safari 対応**: トリム結果に ID3v2 の `iTunSMPB` を付け、末尾に 1 フレーム余分に含める(詳細は [`lyria-mp3.md`](lyria-mp3.md))。これで一致を確認したのは `decodeAudioData` だけで、`<audio>` 要素での再生は未確認。Firefox の確認も後回し。
 - **コア API**: [`architecture.md`](architecture.md) の方針で進める。
 
+### 2.2 2026-11-09 に決めたこと(MP3 トリマーの実装)
+
+- **CLI**: サブコマンド形式。`kiln trim <input> <output> [--start TIME] [--end TIME | --duration TIME]`。`-` で stdin / stdout
+- **時刻の指定**: 秒(`1.5`)、`分:秒`(`1:02.5`)、サンプル数(`66150s`)のどれでもよい。秒はサンプル位置に切り捨てで変換する
+- **範囲外の指定**: 丸めて続行する(タグなしの入力では先頭を 529 サンプルに切り上げ、末尾はファイルの終わりに切り詰める)。丸めたことは CLI が stderr に警告する。丸めた結果が空ならエラー
+- **入力の範囲**: MPEG-1 Layer III なら、Xing / LAME タグ付き(他のエンコーダの出力)も受け付ける。位置は ffmpeg がデコードしたときの先頭を 0 とする(LAME タグの delay を除いた位置)。MPEG-2 / 2.5 は扱わない
+- **API**: `kiln.mp3.probe` / `trim`(`*std.Io.Writer` に書く)/ `trimAlloc`。範囲外の丸めはコアが行い、実際に切り出した区間を返す。JS は `mp3.probe` / `mp3.trim`(秒またはサンプル数)。詳細は [`architecture.md`](architecture.md) §2.1〜2.3
+- **低ビットレートの入力**: 開始位置の手前に必要なフレームが LAME タグの delay(12bit)に収まらないときだけ、ビットリザーバの中身を詰めた無音フレーム(carrier)を使う。Lyria のような入力では従来どおり元のフレームだけを連結する(詳細は [`lyria-mp3.md`](lyria-mp3.md) §5.2)
+
 ## 3. まだ決めていないこと(論点と、ここまでの見立て)
 
 ### 3.1 スコープ: 何をいつサポートするか

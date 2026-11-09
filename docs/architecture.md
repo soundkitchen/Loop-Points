@@ -13,13 +13,16 @@
 | パス | 内容 | ビルド成果物 |
 |---|---|---|
 | `src/root.zig` | コアのルート。モジュール名 `kiln` | — |
+| `src/mp3.zig`, `src/mp3/` | MP3 の解析と無劣化トリム(`kiln.mp3`)。`frame`(フレームヘッダ)/ `id3` / `xing`(Xing・LAME タグ)/ `stream`(入力の解析)/ `trim` に分ける | — |
 | `cli/main.zig` | CLI | `zig-out/bin/kiln` |
 | `wasm/main.zig` | wasm の export 関数 | `zig-out/wasm/kiln.wasm` |
 | `wasm/kiln.js` | JS ラッパー(ES module。`load()` で wasm を読み込む) | `zig-out/wasm/kiln.js` |
-| `testdata/` | テスト用の音声(MP3 トリマーの実装時に追加する) | — |
+| `cli/time.zig` | CLI の時刻指定(`1.5` / `1:02.5` / `66150s`)の解析 | — |
+| `testdata/` | テスト用の音声と、それを `@embedFile` するモジュール(`testdata.zig`)。作り方は `testdata/README.md` | — |
 
 - `zig build` は CLI と wasm の両方をビルドする。wasm は `-Dtarget` に関係なく常に `wasm32-freestanding` 向けで、最適化モードが debug のときは small でビルドする
 - `zig build test` はコアと CLI のテストを実行し、wasm のビルドが通ることも確かめる(wasm はネイティブで実行できないため)
+- コアのテストは、`testdata` モジュールを import できるテスト専用のモジュール(ルートは同じ `src/root.zig`)で実行する。ライブラリとしての `kiln` モジュールには `testdata` を含めない(`@import("testdata")` は `test` ブロックの中でだけ使う)
 - バージョンは `build.zig.zon` の `.version` だけを出所にし、ビルドオプション経由でコアの `kiln.version` に渡す
 
 ## 2. コア API の方針
@@ -32,6 +35,35 @@
 4. **アロケータは常に引数で明示的に渡す**(Zig 標準ライブラリの流儀)。
 5. **エラーは Zig の error set で返す**。詳しい診断が必要な箇所だけ、診断情報の構造体を返す。
 
+### 2.1 MP3 トリムの API
+
+```zig
+const info = try kiln.mp3.probe(input);          // sample_rate, channels, samples, frames, min_start
+const r = try kiln.mp3.trim(input, .{ .start = 66150, .end = 441000 }, writer); // *std.Io.Writer
+// r.start / r.end: 丸めた後の区間。end を null にすると末尾まで
+const t = try kiln.mp3.trimAlloc(gpa, input, .{ .start = 66150 }); // t.data / t.start / t.end
+```
+
+- 位置はタイムライン上のサンプル位置([`lyria-mp3.md`](lyria-mp3.md) §5.1)。秒からの変換は CLI と JS 側で行う
+- 範囲外の指定はコアが丸め、実際に切り出した区間を返す。丸めたことを利用者に伝えるのは呼び出し側(CLI は stderr に警告を出す)
+- `trim` は入力のスライスをそのまま `Writer` に書くため、アロケータを使わない
+
+### 2.2 CLI
+
+```sh
+kiln trim <input> <output> [--start TIME] [--end TIME | --duration TIME]
+```
+
+- `<input>` / `<output>` は `-` で stdin / stdout
+- TIME は秒(`1.5`)、分:秒 / 時:分:秒(`1:02.5`)、サンプル数(`66150s`)。秒は浮動小数点を使わずに解析し、切り捨てでサンプル位置にする
+- 終了コード: 0 = 成功、1 = 処理の失敗(入力が MP3 でない、区間が空など)、2 = 引数の誤り
+
+### 2.3 wasm と JS
+
+- export 関数は成功なら true を返し、結果(出力のバイト列や数値)をモジュール内の変数に置く。JS 側は `kiln_output_ptr` / `kiln_output_len` / `kiln_value(i)` で読み出し、失敗時は `kiln_error_ptr` / `kiln_error_len` でエラー名を読む
+- JS ラッパーは `load()` が返すオブジェクトに `mp3.probe(bytes)` / `mp3.trim(bytes, { start, end })`(秒)/ `{ startSample, endSample }`(サンプル数)を持つ。失敗時はコアのエラー名を `code` に持つ `KilnError` を投げる
+- サンプル位置は u64 なので、export 関数の引数・戻り値は JS では BigInt になる
+
 ## 3. Zig 0.17.1 で確認したこと
 
 試作(16bit WAV を `*Io.Writer` に書くコア)を、テスト・CLI・`wasm32-freestanding` の 3 通りで動かして確認した。
@@ -42,4 +74,7 @@
 - wasm では `std.heap.wasm_allocator` が使える。試作の wasm は ReleaseSmall で約 3KB。
 - ファズテストは `std.testing.fuzz` が使える。
 - 最適化モードの型は `std.lang.Optimize` で、値は `.debug` / `.safe` / `.fast` / `.small`。以前の `std.builtin.OptimizeMode` と `.Debug` などは非推奨(0.18.0 の後に削除予定)。
+- 配列の繰り返し演算子 `**` は使えない(`"ab" ** 2` は構文エラー)。0 で埋めた配列は `@splat(0)` で作る。
+- CRC-16/ARC(LAME タグの CRC)は `std.hash.crc.@"CRC-16/ARC"` にある。
+- wasm32 の export 関数が返すポインタ・長さ(usize)は、JS には符号付きの i32 として見える。2GiB 以上のアドレスや、長さ 0 の確保で `wasm_allocator` が返すダミーのアドレス(0xFFFFFFFF)が負になるため、JS 側で `>>> 0` して扱う。
 - stdout / stderr は `Io.File.Writer.initStreaming` で書く。`.init` は位置指定書き込みなので、ファイルにリダイレクトすると先頭から書いてしまい、`>>` で追記しても既存の内容を上書きする(macOS で確認)。

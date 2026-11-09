@@ -71,7 +71,18 @@ pub fn build(b: *std.Build) void {
 
     // テスト(コアと CLI。wasm はネイティブで実行できないため、ビルドの成否で確認する)
     const test_step = b.step("test", "テストを実行する");
-    const core_tests = b.addTest(.{ .root_module = kiln });
+    // コアのテストは testdata/ の音声を使うため、testdata モジュールを import できる
+    // テスト専用のモジュールで実行する(ライブラリとしての kiln モジュールには含めない)
+    const testdata = b.createModule(.{ .root_source_file = b.path("testdata/testdata.zig") });
+    const core_tests = b.addTest(.{ .root_module = b.createModule(.{
+        .root_source_file = b.path("src/root.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "build_options", .module = options_mod },
+            .{ .name = "testdata", .module = testdata },
+        },
+    }) });
     test_step.dependOn(&b.addRunArtifact(core_tests).step);
     const cli_tests = b.addTest(.{ .root_module = exe.root_module });
     test_step.dependOn(&b.addRunArtifact(cli_tests).step);
