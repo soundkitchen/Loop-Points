@@ -95,6 +95,18 @@ export async function load(source = new URL('./kiln.wasm', import.meta.url)) {
    * trimExport は実際に切り出した区間を kiln_value(0, 1) に、サンプルレートを kiln_value(2) に置く関数
    */
   function trimWith(probeExport, trimExport, input, options) {
+    return rangeWith(probeExport, input, options, (ptr, len, s, t) => {
+      check(trimExport(ptr, len, s, t ?? 0n, t !== null));
+      return { data: takeOutput() };
+    });
+  }
+
+  /**
+   * 区間を指定する処理の共通部分。秒(start / end)かサンプル数(startSample / endSample)を
+   * サンプル位置の BigInt にして fn(ptr, len, start, end | null) を呼ぶ。fn は実際の区間を kiln_value(0, 1) に、
+   * サンプルレートを kiln_value(2) に置く export を呼び、戻り値に区間を足して返す
+   */
+  function rangeWith(probeExport, input, options, fn) {
     const { start, end, startSample, endSample } = options;
     if (start !== undefined && startSample !== undefined) {
       throw new TypeError('kiln: specify either start or startSample, not both');
@@ -113,12 +125,21 @@ export async function load(source = new URL('./kiln.wasm', import.meta.url)) {
         : startSample !== undefined ? toSampleIndex(startSample, 'startSample') : 0n;
       const t = end !== undefined ? toSamples(end, sampleRate, 'end')
         : endSample !== undefined ? toSampleIndex(endSample, 'endSample') : null;
-      check(trimExport(ptr, len, s, t ?? 0n, t !== null));
+      const result = fn(ptr, len, s, t);
       const r0 = Number(e.kiln_value(0));
       const r1 = Number(e.kiln_value(1));
       sampleRate = Number(e.kiln_value(2));
-      return { data: takeOutput(), startSample: r0, endSample: r1, start: r0 / sampleRate, end: r1 / sampleRate };
+      return { ...result, startSample: r0, endSample: r1, start: r0 / sampleRate, end: r1 / sampleRate };
     });
+  }
+
+  /** サンプル形式とディザの名前を wasm に渡す番号にする */
+  function formatOptions(options) {
+    const format = FORMATS.indexOf(options.format ?? 'i16');
+    if (format < 0) throw new RangeError(`kiln: unknown format '${options.format}'`);
+    const dither = { tpdf: 1, none: 0 }[options.dither ?? 'tpdf'];
+    if (dither === undefined) throw new RangeError(`kiln: unknown dither '${options.dither}'`);
+    return { format, dither };
   }
 
   /** 出力のバイト列をコピーして解放する(linear memory の中身は次の呼び出しで変わるため) */
@@ -162,6 +183,42 @@ export async function load(source = new URL('./kiln.wasm', import.meta.url)) {
      */
     trim(input, options = {}) {
       return trimWith(e.kiln_mp3_probe, e.kiln_mp3_trim, input, options);
+    },
+
+    /**
+     * MP3 をデコードする。位置の指定は trim と同じ(タグなしの入力でも先頭を 529 に切り上げない)。
+     * @param {BufferSource} input MP3 ファイル全体
+     * @param {{ start?: number, end?: number, startSample?: number | bigint, endSample?: number | bigint }} options
+     * @returns {{ channels: Float32Array[], sampleRate: number, startSample: number, endSample: number, start: number, end: number,
+     *             invalidFrames: number }}
+     *   channels はチャンネルごとの PCM(AudioBuffer の getChannelData と同じ並び)。invalidFrames は
+     *   復号できなかった(無音にした)フレームの数
+     */
+    decode(input, options = {}) {
+      return rangeWith(e.kiln_mp3_probe, input, options, (ptr, len, s, t) => {
+        check(e.kiln_mp3_decode(ptr, len, s, t ?? 0n, t !== null));
+        const nch = Number(e.kiln_value(3));
+        const bytes = takeOutput();
+        const all = new Float32Array(bytes.buffer, bytes.byteOffset, bytes.byteLength / 4);
+        const frames = all.length / nch;
+        const channels = Array.from({ length: nch }, (_, i) => all.subarray(i * frames, (i + 1) * frames));
+        return { channels, sampleRate: Number(e.kiln_value(2)), invalidFrames: Number(e.kiln_value(4)) };
+      });
+    },
+
+    /**
+     * MP3 をデコードして WAV にする。位置の指定は decode と同じ。
+     * @param {BufferSource} input MP3 ファイル全体
+     * @param {{ start?: number, end?: number, startSample?: number | bigint, endSample?: number | bigint,
+     *           format?: string, dither?: 'tpdf' | 'none' }} options format の既定は 'i16'、dither の既定は 'tpdf'
+     * @returns {{ data: Uint8Array, startSample: number, endSample: number, start: number, end: number, invalidFrames: number }}
+     */
+    toWav(input, options = {}) {
+      const { format, dither } = formatOptions(options);
+      return rangeWith(e.kiln_mp3_probe, input, options, (ptr, len, s, t) => {
+        check(e.kiln_mp3_to_wav(ptr, len, s, t ?? 0n, t !== null, format, dither));
+        return { data: takeOutput(), invalidFrames: Number(e.kiln_value(3)) };
+      });
     },
   };
 
@@ -222,10 +279,7 @@ export async function load(source = new URL('./kiln.wasm', import.meta.url)) {
       if (!Number.isInteger(sampleRate) || sampleRate <= 0 || sampleRate > 0xFFFF_FFFF) {
         throw new RangeError('kiln: sampleRate must be a positive integer');
       }
-      const format = FORMATS.indexOf(options.format ?? 'i16');
-      if (format < 0) throw new RangeError(`kiln: unknown format '${options.format}'`);
-      const dither = { tpdf: 1, none: 0 }[options.dither ?? 'tpdf'];
-      if (dither === undefined) throw new RangeError(`kiln: unknown dither '${options.dither}'`);
+      const { format, dither } = formatOptions(options);
 
       const count = frames * channels.length;
       const ptr = e.kiln_alloc_f32(count) >>> 0;
@@ -246,7 +300,7 @@ export async function load(source = new URL('./kiln.wasm', import.meta.url)) {
   return {
     /** ライブラリのバージョン */
     version: decoder.decode(bytesAt(e.kiln_version_ptr(), e.kiln_version_len())),
-    /** MP3 の解析とトリム */
+    /** MP3 の解析、トリム、デコード */
     mp3,
     /** WAV の解析、切り出し、書き出し */
     wav,

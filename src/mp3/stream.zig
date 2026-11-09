@@ -87,20 +87,31 @@ pub const Stream = struct {
 fn findFirstFrame(data: []const u8, start: usize) Error!usize {
     var pos = start;
     while (pos + 4 <= data.len) : (pos += 1) {
+        if (!syncCandidate(data[pos..])) continue;
         if (Header.parse(data[pos..])) |h| {
             const next = pos + h.frameLen();
             if (next == data.len) return pos;
-            if (next < data.len) if (Header.parse(data[next..])) |h2| if (h2.compatible(h)) return pos;
+            if (next < data.len and syncCandidate(data[next..])) {
+                if (Header.parse(data[next..])) |h2| if (h2.compatible(h)) return pos;
+            }
             continue;
         }
         const any = frame.AnyHeader.parse(data[pos..]) orelse continue;
         const next = pos + any.len;
         if (next > data.len) continue;
         if (next == data.len) return error.UnsupportedFormat;
+        if (!syncCandidate(data[next..])) continue;
         const any2 = frame.AnyHeader.parse(data[next..]) orelse continue;
         if (any2.kind == any.kind) return error.UnsupportedFormat;
     }
     return error.NotMp3;
+}
+
+/// 最初のフレームの候補にしてよいか。emphasis の予約値(2)のヘッダは、ゴミが偶然同期ワードに
+/// 見えたものとみなして候補にしない(同期の判定を厳しく保つため)。見つかった後のフレームでは
+/// emphasis を見ない(`Header.parse`。ffmpeg と同じく予約値のフレームもデコードする)
+fn syncCandidate(bytes: []const u8) bool {
+    return bytes.len >= 4 and bytes[3] & 3 != 2;
 }
 
 const testdata = @import("testdata");

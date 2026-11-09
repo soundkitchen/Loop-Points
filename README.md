@@ -2,7 +2,7 @@
 
 音声を読み込み、クロップして、任意の形式で書き出すための Zig 製ライブラリです。CLI とブラウザ(wasm)の両方で動かすことを目指しています。
 
-最初の到達点は、Google Gemini Lyria が出力する MP3 を、再エンコードせずにサンプル精度でトリムすることです。今のところ、MP3(MPEG-1 Layer III)と WAV(PCM・浮動小数点)を、形式を変えずにサンプル精度で切り出せます。
+最初の到達点は、Google Gemini Lyria が出力する MP3 を、再エンコードせずにサンプル精度でトリムすることです。今のところ、MP3(MPEG-1 Layer III)と WAV(PCM・浮動小数点)を、形式を変えずにサンプル精度で切り出せます。MP3 をデコードして WAV に書き出すこともできます。
 
 - 表示名は `K!LN`、識別子(リポジトリ名・モジュール名・実行ファイル名)は `kiln` です。
 
@@ -29,14 +29,17 @@ kiln trim in.mp3 out.mp3 --start 1.5 --end 10       # 1.5 秒から 10 秒まで
 kiln trim in.mp3 out.mp3 --start 1:02.5 --duration 30
 kiln trim in.mp3 - --start 66150s > out.mp3         # サンプル数で指定。- は stdout
 kiln trim in.wav out.wav --start 0.5 --end 3        # WAV も同じ。形式は中身から判定する
+kiln trim in.mp3 out.wav --format wav               # MP3 をデコードして WAV に(既定は 16bit、TPDF ディザ)
+kiln trim in.mp3 out.wav --format wav --sample-format f32 --start 10 --end 20
 ```
 
-- 出力の形式は `--format mp3|wav` で指定できます(省くと入力と同じ)。形式の変換(MP3 → WAV など)にはまだ対応していません
+- 出力の形式は `--format mp3|wav` で指定できます(省くと入力と同じ)。変換できるのは MP3 → WAV だけです
+- MP3 → WAV の書き出しは `--sample-format u8|i16|i24|i32|f32|f64` と `--dither tpdf|none` で調整できます。デコーダは ffmpeg の float デコーダと長さが一致し、値の差は 5e-6 以内です([`docs/mp3-decoder.md`](docs/mp3-decoder.md))
 - WAV は `data` の中身を切り出すだけなので、元の形式のまま無劣化です
 
 - 再エンコードせずに切り出します。ffmpeg でデコードすると、元ファイルの該当区間とサンプル単位で一致します。Chrome / Firefox / Safari の `decodeAudioData`、mpg123、macOS の CoreAudio でも、位置と長さは同じで、違いはデコーダごとの丸めの差だけです。`<audio>` 要素では、Chrome / Firefox はサンプル単位で正確、Safari は長さと末尾が正確で、再生開始直後(数十 ms)は確かめられていません(方式と検証結果は [`docs/lyria-mp3.md`](docs/lyria-mp3.md))
 - Safari などは、LAME タグのない元ファイル(Lyria の出力など)を ffmpeg より 529 サンプル(約 12ms)前にずらして再生します。そうしたプレーヤーで元ファイルを聴きながら位置を選ぶと、その分ずれます
-- 位置は ffmpeg でデコードしたときの先頭を 0 とします。LAME タグのない MP3(Lyria の出力など)では、先頭 529 サンプルより前からは切り出せません(指定すると 529 に切り上げます)
+- 位置は ffmpeg でデコードしたときの先頭を 0 とします。MP3 → MP3 の無劣化トリムでは、LAME タグのない MP3(Lyria の出力など)の先頭 529 サンプルより前からは切り出せません(指定すると 529 に切り上げます)。MP3 → WAV(`--format wav`、JS の `mp3.decode` / `mp3.toWav`)はデコードするので切り上げず、0 から書き出せます
 - 入力の ID3v2 タグ(Lyria の C2PA マニフェストを含む)は引き継ぎません
 
 ### ブラウザ(wasm)
@@ -56,6 +59,10 @@ const blob = new Blob([data], { type: 'audio/mpeg' });
 const wav = kiln.wav.trim(wavBytes, { start: 0.5, end: 3 }).data;
 const audioBuffer = await new AudioContext().decodeAudioData(await file.arrayBuffer());
 const wavFile = kiln.wav.encode(audioBuffer, { format: 'i16' }); // 既定は 16bit、TPDF ディザ
+
+// MP3 をデコードする(ffmpeg と同じ位置で数える。decodeAudioData のようにブラウザで位置がずれない)
+const { channels, sampleRate } = kiln.mp3.decode(bytes, { start: 1.5, end: 10 }); // Float32Array[]
+const { data: wavOfMp3 } = kiln.mp3.toWav(bytes, { start: 1.5, end: 10, format: 'i16' });
 ```
 
 ## ディレクトリ構成
@@ -73,6 +80,7 @@ const wavFile = kiln.wav.encode(audioBuffer, { format: 'i16' }); // 既定は 16
 - [`docs/draft.md`](docs/draft.md): 構想と決定事項
 - [`docs/architecture.md`](docs/architecture.md): アーキテクチャ方針
 - [`docs/lyria-mp3.md`](docs/lyria-mp3.md): Lyria 出力 MP3 の調査と無劣化トリム方式
+- [`docs/mp3-decoder.md`](docs/mp3-decoder.md): MP3 デコーダの設計と検証
 
 ## ライセンス
 

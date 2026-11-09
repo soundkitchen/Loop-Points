@@ -24,7 +24,7 @@ pub const Header = struct {
     raw: u32,
 
     /// MPEG-1 Layer III の有効なヘッダなら返す。同期はあっても MPEG-1 Layer III でない、
-    /// または free format などで扱えないものは null
+    /// または free format などで扱えないものは null。emphasis は見ない
     pub fn parse(bytes: []const u8) ?Header {
         if (bytes.len < 4 or !isSync(bytes)) return null;
         const h: Header = .{ .raw = std.mem.readInt(u32, bytes[0..4], .big) };
@@ -33,7 +33,8 @@ pub const Header = struct {
         const bi = h.bitrateIndex();
         if (bi == 0 or bi == 15) return null;
         if (h.field(10, 2) == 0b11) return null; // サンプルレートの予約値
-        if (h.field(0, 2) == 0b10) return null; // emphasis の予約値
+        // emphasis(予約値の 2 を含む)は音声データに関係しないので見ない(ffmpeg と同じ)。
+        // 最初のフレームを探すときだけ、予約値を候補から外す(stream.findFirstFrame)
         return h;
     }
 
@@ -54,6 +55,11 @@ pub const Header = struct {
         return sample_rates[h.field(10, 2)];
     }
 
+    /// サンプルレートの番号(0: 44.1kHz、1: 48kHz、2: 32kHz)。スケールファクタ帯の表を引くのに使う
+    pub fn sampleRateIndex(h: Header) u2 {
+        return @intCast(h.field(10, 2));
+    }
+
     pub fn hasPadding(h: Header) bool {
         return h.field(9, 1) == 1;
     }
@@ -65,6 +71,17 @@ pub const Header = struct {
 
     pub fn isMono(h: Header) bool {
         return h.field(6, 2) == 0b11;
+    }
+
+    /// チャンネルモード(0: ステレオ、1: ジョイントステレオ、2: デュアルチャンネル、3: モノラル)
+    pub fn mode(h: Header) u2 {
+        return @intCast(h.field(6, 2));
+    }
+
+    /// モード拡張(ジョイントステレオのとき。ビット 1 が MS ステレオ、ビット 0 がインテンシティステレオ)。
+    /// ジョイントステレオでなければ 0
+    pub fn modeExtension(h: Header) u2 {
+        return if (h.mode() == 1) @intCast(h.field(4, 2)) else 0;
     }
 
     pub fn channels(h: Header) u8 {
@@ -142,7 +159,7 @@ pub const AnyHeader = struct {
         },
     };
 
-    /// MPEG オーディオの有効なヘッダなら返す(free format と予約値は null)
+    /// MPEG オーディオの有効なヘッダなら返す(free format と予約値は null。emphasis は見ない)
     pub fn parse(bytes: []const u8) ?AnyHeader {
         if (bytes.len < 4 or !isSync(bytes)) return null;
         const raw = std.mem.readInt(u32, bytes[0..4], .big);
@@ -150,7 +167,7 @@ pub const AnyHeader = struct {
         const layer_bits: u2 = @intCast((raw >> 17) & 3); // 0: 予約、1: III、2: II、3: I
         const bi: u4 = @intCast((raw >> 12) & 0xF);
         const sri: u2 = @intCast((raw >> 10) & 3);
-        if (version == 1 or layer_bits == 0 or bi == 0 or bi == 15 or sri == 3 or raw & 3 == 2) return null;
+        if (version == 1 or layer_bits == 0 or bi == 0 or bi == 15 or sri == 3) return null;
         const layer: usize = 3 - @as(usize, layer_bits); // 0: I、1: II、2: III
         const mpeg1 = version == 3;
         const kbps: usize = any_bitrates[@intFromBool(!mpeg1)][layer][bi];

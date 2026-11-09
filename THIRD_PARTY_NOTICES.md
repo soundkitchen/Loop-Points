@@ -6,7 +6,12 @@ K!LN 本体は MIT ライセンス([`LICENSE`](LICENSE))。このファイルに
 
 ## 取り込んだもの
 
-まだない。
+### minimp3
+
+- 出所: https://github.com/lieff/minimp3(コミット `ea99364f61c14656440e8d77e9c233ccf3124633`)
+- ライセンス: CC0-1.0(表示義務なし。出所の記録として書く)
+- 取り込んだもの: MPEG-1 Layer III の規格(ISO/IEC 11172-3)の数表。ハフマン符号表(`tabs` / `tab32` / `tab33` / `tabindex` / `g_linbits`)と、合成窓の係数(`g_win` と `mp3d_synth_pair` の定数)。コードは取り込んでいない
+- 取り込んだ先: `src/mp3/huffman.zig`(ハフマン符号表)、`src/mp3/synth.zig`(合成窓)。取り出し方と確かめたことは [`docs/mp3-decoder.md`](docs/mp3-decoder.md) §1
 
 <!--
 書き方(取り込むたびに 1 節を足す):

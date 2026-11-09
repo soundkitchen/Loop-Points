@@ -14,7 +14,7 @@
 |---|---|---|
 | `src/root.zig` | コアのルート。モジュール名 `kiln`。入力の形式の判定(`kiln.detect`)もここに置く | — |
 | `src/pcm.zig` | PCM のサンプル形式と、f32 との変換(`kiln.pcm`) | — |
-| `src/mp3.zig`, `src/mp3/` | MP3 の解析と無劣化トリム(`kiln.mp3`)。`frame`(フレームヘッダ)/ `id3` / `xing`(Xing・LAME タグ)/ `stream`(入力の解析)/ `trim` に分ける | — |
+| `src/mp3.zig`, `src/mp3/` | MP3 の解析と無劣化トリム(`kiln.mp3`)。`frame`(フレームヘッダ)/ `id3` / `xing`(Xing・LAME タグ)/ `stream`(入力の解析)/ `trim` に分ける。デコーダは `bits`(ビット読み取り)/ `huffman` / `layer3`(周波数領域の処理)/ `synth`(IMDCT と合成フィルタ)/ `decoder`(設計は [`mp3-decoder.md`](mp3-decoder.md)) | — |
 | `src/wav.zig`, `src/wav/` | WAV の解析とサンプル精度のトリム、エンコーダ(`kiln.wav`)。`parse`(チャンクの解析)/ `header`(ヘッダの書き出し)/ `encoder` に分ける | — |
 | `cli/main.zig` | CLI | `zig-out/bin/kiln` |
 | `wasm/main.zig` | wasm の export 関数 | `zig-out/wasm/kiln.wasm` |
@@ -53,15 +53,31 @@ const t = try kiln.mp3.trimAlloc(gpa, input, .{ .start = 66150 }); // t.data / t
 - 範囲外の指定はコアが丸め、実際に切り出した区間を返す。丸めたことを利用者に伝えるのは呼び出し側(CLI は stderr に警告を出す)
 - `trim` は入力のスライスをそのまま `Writer` に書くため、アロケータを使わない
 
+```zig
+// デコード: 区間の PCM をインターリーブした f32 で sink.writeF32 に渡す(kiln.wav.Encoder をそのまま渡せる)
+const d = try kiln.mp3.decode(input, .{ .start = 0, .end = 44100 }, &sink); // d.start / d.end / d.sample_rate / d.channels / d.invalid_frames
+// WAV にする一括版(入力の解析は 1 回)
+const r = try kiln.mp3.toWav(input, .{ .start = 0 }, .{ .format = .i16, .dither = .tpdf }, writer);
+var dec: kiln.mp3.Decoder = .{};                  // 1 フレームずつの低レベル API
+const nch = try dec.decodeFrame(frame_bytes, &pcm); // pcm: [2][1152]f32。扱えないフレームは InvalidFrame
+```
+
+- `decode` / `toWav` の位置はトリムと同じタイムライン。ただしタグなしの入力でも先頭を 529 に切り上げない(デコードでは先頭のデコーダ遅延も出力できるため)
+- 復号は区間の少し手前のフレームから始める(結果は先頭から復号したときと同じ。[`mp3-decoder.md`](mp3-decoder.md) §2)
+- `invalid_frames` は、区間にかかったフレームのうち、サイド情報が壊れていて復号できなかったものの数
+
 ### 2.2 CLI
 
 ```sh
-kiln trim <input> <output> [--start TIME] [--end TIME | --duration TIME] [--format FORMAT]
+kiln trim <input> <output> [--start TIME] [--end TIME | --duration TIME]
+          [--format FORMAT] [--sample-format SAMPLE] [--dither DITHER]
 ```
 
 - `<input>` / `<output>` は `-` で stdin / stdout
 - 入力の形式(MP3 / WAV)は、コアの `kiln.detect` が判定する。拡張子は見ない。WAV は先頭のバイト列(RIFF / RF64 / RIFX と WAVE)で判定し、それ以外は MP3 の解析に任せる(先頭にゴミがある MP3 も受け付ける)
-- `--format mp3|wav` で出力の形式を指定する。省くと入力と同じ形式。形式の変換はまだできないので、入力と違う形式を指定するとエラー(終了コード 1)
+- `--format mp3|wav` で出力の形式を指定する。省くと入力と同じ形式。変換できるのは MP3 → WAV だけ(MP3 をデコードして書く)で、ほかの組み合わせはエラー(終了コード 1)
+- MP3 → WAV のときだけ `--sample-format u8|i16|i24|i32|f32|f64`(既定は `i16`)と `--dither tpdf|none`(既定は `tpdf`)を使う。変換しないときに指定すると引数の誤り(終了コード 2)
+- MP3 → WAV では、タグなしの入力でも先頭を 529 に切り上げない(`kiln.mp3.decode` と同じ)。復号できなかったフレームがあれば、その数を stderr に警告する(終了コードは 0)
 - TIME は秒(`1.5`)、分:秒 / 時:分:秒(`1:02.5`)、サンプル数(`66150s`)。秒は浮動小数点を使わずに解析し、切り捨てでサンプル位置にする
 - `--duration` は、切り上げた後の実際の開始位置から数える(タグなしの入力で `--start` を省いても、出力の長さは指定どおり)
 - 出力ファイルは一時ファイルに書き、最後まで書けたときだけ置き換える(`Dir.createFileAtomic`)。失敗したときは、既存の出力ファイルは元のまま残る。置き換えはリネームなので、出力先がシンボリックリンクならリンク自体が置き換わる
@@ -73,8 +89,11 @@ kiln trim <input> <output> [--start TIME] [--end TIME | --duration TIME] [--form
 - JS ラッパーは `load()` が返すオブジェクトに `mp3.probe(bytes)` / `mp3.trim(bytes, { start, end })`(秒)/ `{ startSample, endSample }`(サンプル数)を持つ。失敗時はコアのエラー名を `code` に持つ `KilnError` を投げる
 - 入力は `BufferSource`(`ArrayBuffer` / TypedArray / `DataView`)。TypedArray と `DataView` は、要素の値ではなく下のバイト列として読む
 - `wav.probe(bytes)` / `wav.trim(bytes, options)` は MP3 と同じ形(`probe` の `format` は `'u8'` / `'i16'` / `'i24'` / `'i32'` / `'f32'` / `'f64'`)。`wav.encode(source, { sampleRate, format = 'i16', dither = 'tpdf' })` は、`decodeAudioData` が返す `AudioBuffer`(`sampleRate` は省ける)か、チャンネルごとの `Float32Array` の配列から WAV のバイト列を作る
+- `mp3.decode(bytes, options)` は、区間をデコードしてチャンネルごとの `Float32Array` を `channels` に返す(`AudioBuffer` の `getChannelData` と同じ並び)。`mp3.toWav(bytes, { ...区間, format = 'i16', dither = 'tpdf' })` は WAV のバイト列を返し、大きな PCM を JS に引き出さずに済む。位置の指定は `trim` と同じ
+- `mp3.decode` / `mp3.toWav` の戻り値の `invalidFrames` は、復号できなかった(無音にした)フレームの数
+- `kiln_mp3_decode` は、チャンネルごとに並べた f32 を出力のバイト列に置き、チャンネル数を `kiln_value(3)`、復号できなかったフレームの数を `kiln_value(4)` で返す。`kiln_mp3_to_wav` は、出力の大きさを前もって計算して一度に確保する
 - `wav.encode` のサンプルは、`kiln_alloc_f32` で確保した領域(4 バイト境界)にチャンネルごとに続けて書き、`kiln_wav_encode` に渡す。形式は `kiln.pcm.Format` の番号でやり取りする(JS 側の `FORMATS` と並びを合わせる)
-- `mp3.trim` / `wav.trim` は、秒で指定されたときだけ、サンプルレートを知るために先に `kiln_mp3_probe` / `kiln_wav_probe` を呼ぶ。サンプル数だけの指定では入力の解析は 1 回で済む(戻り値の秒は `kiln_mp3_trim` / `kiln_wav_trim` が返すサンプルレートで計算する)
+- `mp3.trim` / `mp3.decode` / `mp3.toWav` / `wav.trim` は、秒で指定されたときだけ、サンプルレートを知るために先に `kiln_mp3_probe` / `kiln_wav_probe` を呼ぶ。サンプル数だけの指定では入力の解析は 1 回で済む(戻り値の秒は `kiln_mp3_trim` / `kiln_wav_trim` が返すサンプルレートで計算する)
 - `startSample` / `endSample` に BigInt を渡すときは 0 以上 2^64 未満でなければ `RangeError` にする(u64 の引数で桁あふれしないように)
 - サンプル位置は u64 なので、export 関数の引数・戻り値は JS では BigInt になる
 

@@ -18,6 +18,8 @@ pub const EncoderOptions = encoder.Options;
 pub const EncodeOptions = encoder.EncodeOptions;
 pub const EncodeError = encoder.Error;
 pub const Header = encoder.Header;
+/// エンコーダが書くヘッダの最大のバイト数
+pub const max_header_len = encoder.max_header_len;
 
 /// チャンネルごとに分かれた f32 のサンプル(Web Audio の AudioBuffer と同じ並び)を WAV にする一括版。
 /// どのチャンネルも同じ長さ。返したバイト列は呼び出し側が `gpa` で解放する
