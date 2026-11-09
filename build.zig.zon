@@ -17,5 +17,6 @@
         "wasm",
         "testdata",
         "README.md",
+        "LICENSE",
     },
 }

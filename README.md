@@ -73,3 +73,9 @@ const wavFile = kiln.wav.encode(audioBuffer, { format: 'i16' }); // 既定は 16
 - [`docs/draft.md`](docs/draft.md): 構想と決定事項
 - [`docs/architecture.md`](docs/architecture.md): アーキテクチャ方針
 - [`docs/lyria-mp3.md`](docs/lyria-mp3.md): Lyria 出力 MP3 の調査と無劣化トリム方式
+
+## ライセンス
+
+MIT ライセンスです。全文は [`LICENSE`](LICENSE) を参照してください。
+
+外部のコードや数表を取り込むときは、MIT と両立するもの(パブリックドメイン、CC0、MIT / BSD など)に限ります。
