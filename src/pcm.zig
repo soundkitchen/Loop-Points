@@ -148,6 +148,65 @@ pub fn fromInt(f: Format, bits: u8, src: []const i32, dst: []u8, q: *Quantizer) 
     }
 }
 
+/// 整数形式 `f` のバイト列 `src` を、`f.bits()` ビットの符号付き整数にする(u8 は 128 を引く)。可逆
+pub fn toInt(f: Format, src: []const u8, dst: []i32) void {
+    std.debug.assert(!f.isFloat());
+    std.debug.assert(src.len == dst.len * f.bytes());
+    const n = f.bytes();
+    for (dst, 0..) |*d, i| {
+        const b = src[i * n ..][0..n];
+        d.* = switch (f) {
+            .u8 => @as(i32, b[0]) - 128,
+            .i16 => std.mem.readInt(i16, b[0..2], .little),
+            .i24 => std.mem.readInt(i24, b[0..3], .little),
+            .i32 => std.mem.readInt(i32, b[0..4], .little),
+            .f32, .f64 => unreachable,
+        };
+    }
+}
+
+/// `x`(満幅を ±1 とする値)を `bits` ビット(1〜32)の符号付き整数にする。`q` のディザで丸め、範囲外はクリップする
+pub fn quantizeBits(q: *Quantizer, bits: u8, x: f64) i32 {
+    const s = std.math.ldexp(@as(f64, 1), @as(i32, bits) - 1);
+    var v = if (std.math.isNan(x)) 0 else x * s;
+    if (q.dither == .tpdf) {
+        const r = q.rng.random();
+        v += r.float(f64) - r.float(f64);
+    }
+    v = @round(v);
+    return @intFromFloat(std.math.clamp(v, -s, s - 1));
+}
+
+/// `src_bits` ビットの符号付き整数を `dst_bits` ビットにする。増やすときは下位に 0 を足す(可逆)。
+/// 減らすときは `q` のディザで丸める
+pub fn convertInt(src_bits: u8, dst_bits: u8, src: []const i32, dst: []i32, q: *Quantizer) void {
+    std.debug.assert(src.len == dst.len);
+    if (dst_bits >= src_bits) {
+        const shift: u5 = @intCast(dst_bits - src_bits);
+        for (src, dst) |v, *d| d.* = v << shift;
+        return;
+    }
+    const inv = std.math.ldexp(@as(f64, 1), 1 - @as(i32, src_bits));
+    for (src, dst) |v, *d| d.* = quantizeBits(q, dst_bits, @as(f64, @floatFromInt(v)) * inv);
+}
+
+test "toInt / convertInt / quantizeBits" {
+    var q: Quantizer = .init(.none);
+    var i8s: [2]i32 = undefined;
+    toInt(.u8, &.{ 0, 255 }, &i8s);
+    try std.testing.expectEqualSlices(i32, &.{ -128, 127 }, &i8s);
+    var i24s: [1]i32 = undefined;
+    toInt(.i24, &.{ 0x00, 0x00, 0x80 }, &i24s);
+    try std.testing.expectEqual(-0x800000, i24s[0]);
+    var out: [2]i32 = undefined;
+    convertInt(16, 20, &.{ -32768, 3 }, &out, &q);
+    try std.testing.expectEqualSlices(i32, &.{ -32768 << 4, 3 << 4 }, &out);
+    convertInt(24, 16, &.{ 0x7FFFFF, 0x180 }, &out, &q);
+    try std.testing.expectEqualSlices(i32, &.{ 32767, 2 }, &out);
+    try std.testing.expectEqual(-8, quantizeBits(&q, 4, -2.0));
+    try std.testing.expectEqual(16384, quantizeBits(&q, 16, 0.5));
+}
+
 test fromInt {
     var q: Quantizer = .init(.none);
     // 12bit → i16 は左シフト、8bit → u8 は 128 を足す

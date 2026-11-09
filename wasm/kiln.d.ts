@@ -78,7 +78,17 @@ export interface WavFormatOptions {
   dither?: Dither;
 }
 
-/** `wav.encode` が受け取る PCM。`AudioBuffer` はこの形を満たす(Worker の型にない AudioBuffer の代わり) */
+/** FLAC の書き出しの指定 */
+export interface FlacFormatOptions {
+  /** ビット深度(4〜32)。既定は 16(`wav.toFlac` は、整数の WAV なら元のビット深度) */
+  bitsPerSample?: number;
+  /** 圧縮の段階(0〜8。flac コマンドの -0〜-8 と同じ)。既定は 5 */
+  compression?: number;
+  /** 既定は `'tpdf'`(浮動小数点から整数にするときと、整数のビット数を減らすときに効く) */
+  dither?: Dither;
+}
+
+/** `wav.encode` / `flac.encode` が受け取る PCM。`AudioBuffer` はこの形を満たす(Worker の型にない AudioBuffer の代わり) */
 export interface AudioBufferLike {
   readonly numberOfChannels: number;
   readonly sampleRate: number;
@@ -133,6 +143,11 @@ export interface Mp3 {
     input: BytesInput,
     options?: RangeOptions & WavFormatOptions,
   ): RangeResult & { data: Uint8Array<ArrayBuffer>; invalidFrames: number };
+  /** デコードして FLAC にする。`invalidFrames` は toWav と同じ */
+  toFlac(
+    input: BytesInput,
+    options?: RangeOptions & FlacFormatOptions,
+  ): RangeResult & { data: Uint8Array<ArrayBuffer>; invalidFrames: number };
 }
 
 export interface Wav {
@@ -143,6 +158,8 @@ export interface Wav {
   encode(source: AudioBufferLike, options?: WavFormatOptions & { sampleRate?: number }): Uint8Array<ArrayBuffer>;
   /** チャンネルごとの PCM を WAV にする。どのチャンネルも同じ長さで、`sampleRate` は必須 */
   encode(source: Float32Array[], options: WavFormatOptions & { sampleRate: number }): Uint8Array<ArrayBuffer>;
+  /** 区間を FLAC にする。整数の WAV はビット深度を変えなければ可逆 */
+  toFlac(input: BytesInput, options?: RangeOptions & FlacFormatOptions): RangeResult & { data: Uint8Array<ArrayBuffer> };
 }
 
 export interface Flac {
@@ -160,6 +177,10 @@ export interface Flac {
     input: BytesInput,
     options?: RangeOptions & WavFormatOptions,
   ): RangeResult & { data: Uint8Array<ArrayBuffer>; invalidFrames: number };
+  /** AudioBuffer(や同じ形のもの。1〜8 チャンネル)を FLAC にする。`sampleRate` を省くと AudioBuffer のもの */
+  encode(source: AudioBufferLike, options?: FlacFormatOptions & { sampleRate?: number }): Uint8Array<ArrayBuffer>;
+  /** チャンネルごとの PCM を FLAC にする。どのチャンネルも同じ長さで、`sampleRate` は必須 */
+  encode(source: Float32Array[], options: FlacFormatOptions & { sampleRate: number }): Uint8Array<ArrayBuffer>;
 }
 
 export interface Kiln {

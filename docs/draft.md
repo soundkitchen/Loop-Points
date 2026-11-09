@@ -64,9 +64,12 @@
 
 ### 2.6 2026-11-10 に決めたこと(FLAC)
 
-- **範囲**: デコーダとエンコーダの両方を作る(FLAC → WAV、FLAC → FLAC の切り出し、WAV / MP3 / AudioBuffer → FLAC)。PR はデコーダ(`feature/flac-decoder`)とエンコーダ(`feature/flac-encoder`)に分ける
+- **範囲**: デコーダとエンコーダの両方を作る(FLAC → WAV、FLAC → FLAC の切り出し、WAV / MP3 / AudioBuffer → FLAC)。PR はデコーダ(`feature/flac-decoder`)、エンコーダ(`feature/flac-encoder`)、FLAC → FLAC の切り出し(`feature/flac-trim`)の 3 つに分ける(エンコーダと切り出しを分けることは、エンコーダに取りかかるときに決めた)
 - **FLAC → FLAC の切り出し**: 区間の先頭と末尾にかかるフレームだけ作り直し、ほかのフレームはそのままコピーする(元の圧縮率を保つ)。どちらにしても復号した PCM は元と同じ
-- **エンコーダの圧縮**: 線形予測(LPC)と Rice 符号のパラメータ探索まで作り、flac の既定(-5)に近い大きさを目標にする
+- **エンコーダの圧縮**: 線形予測(LPC)と Rice 符号のパラメータ探索まで作り、flac の既定(-5)に近い大きさを目標にする。圧縮の段階は flac / sox / Audacity などと同じ 0〜8(既定 5)から選べ、中身も flac の -0〜-8 に合わせる(ffmpeg は 0〜12)。CLI は `--compression N`、JS は `compression`
+- **書き出すビット深度**: 整数の WAV は元のビット深度、浮動小数点の入力(MP3 のデコード結果、AudioBuffer、浮動小数点の WAV)は既定で 16bit(TPDF ディザ)。CLI は FLAC 専用の `--bits N`(4〜32。`--sample-format` は WAV 用のまま)、JS は `bitsPerSample`
+- **JS の API**: 入力ごとに分ける(`flac.encode(AudioBuffer か Float32Array[])`、`wav.toFlac`、`mp3.toFlac`、`flac.trim`)
+- **MD5**: 書き出す FLAC の STREAMINFO に PCM の MD5 を入れる(FLAC → FLAC の切り出しでも、区間をすべて復号して計算する)
 - **メタデータ**: FLAC → FLAC では Vorbis コメント・画像・APPLICATION を残し、STREAMINFO(長さと MD5)は作り直す。シークテーブルと CUE シートは位置がずれるので捨てる
 - **検証**: 参照実装の `flac` / `metaflac`(Homebrew)と ffmpeg、FLAC の公式テストファイル(CC0、リポジトリには入れない)と突き合わせる。テスト用の FLAC は `flac` で作ってリポジトリに入れる
 - **デコーダの細部**(設計は [`flac.md`](flac.md)): 仕様は RFC 9639 から自分で書く。Ogg FLAC は扱わない。FLAC → WAV の既定の形式はビット深度を保つもの(可逆)。CRC が合わないなど壊れたフレームは、libFLAC と同じく無音にして数を返す

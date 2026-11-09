@@ -13,6 +13,7 @@ const decoder = @import("mp3/decoder.zig");
 const layer3 = @import("mp3/layer3.zig");
 const pcm = @import("pcm.zig");
 const wav = @import("wav.zig");
+const flac = @import("flac.zig");
 
 /// 1 フレームずつ復号するデコーダ(低レベル API)
 pub const Decoder = decoder.Decoder;
@@ -162,6 +163,32 @@ pub fn toWavAlloc(gpa: std.mem.Allocator, input: []const u8, options: DecodeOpti
     };
     std.debug.assert(out.written().len == len);
     return .{ .data = try out.toOwnedSlice(), .result = r };
+}
+
+pub const FlacDecoded = struct {
+    /// FLAC ファイル全体。呼び出し側が `gpa` で解放する
+    data: []u8,
+    result: DecodeResult,
+};
+
+/// `decode` した区間を FLAC にする(入力の解析は 1 回)。ビット深度の既定は 16 で、ディザで丸める
+pub fn toFlacAlloc(gpa: std.mem.Allocator, input: []const u8, options: DecodeOptions, flac_options: flac.WriteOptions) !FlacDecoded {
+    const s = try stream.Stream.parse(input);
+    const range = try clampDecodeRange(&s, options);
+    var out: Io.Writer.Allocating = .init(gpa);
+    defer out.deinit();
+    var enc = flac.Encoder.init(gpa, &out.writer, .{
+        .sample_rate = s.header.sampleRate(),
+        .channels = s.header.channels(),
+        .bits_per_sample = flac_options.bits_per_sample orelse 16,
+        .compression = flac_options.compression,
+        .total_samples = range.end - range.start,
+        .dither = flac_options.dither,
+        .vendor = flac.vendor,
+    }) catch |err| return flac.mapWriteError(err);
+    defer enc.deinit();
+    const r = decodeParsed(input, &s, range, &enc) catch |err| return flac.mapWriteError(err);
+    return .{ .data = try flac.finishAlloc(&enc, &out), .result = r };
 }
 
 const Range = struct { start: u64, end: u64 };

@@ -9,6 +9,7 @@ const pcm = @import("pcm.zig");
 const parse = @import("wav/parse.zig");
 const header = @import("wav/header.zig");
 const encoder = @import("wav/encoder.zig");
+const flac = @import("flac.zig");
 
 pub const ParseError = parse.Error;
 
@@ -130,6 +131,73 @@ pub fn trimAlloc(
         else => |e| return e,
     };
     return .{ .data = try out.toOwnedSlice(), .start = r.start, .end = r.end, .sample_rate = r.sample_rate };
+}
+
+pub const FlacConverted = struct {
+    /// FLAC ファイル全体。呼び出し側が `gpa` で解放する
+    data: []u8,
+    start: u64,
+    end: u64,
+    sample_rate: u32,
+};
+
+/// 区間 `[options.start, options.end)` を FLAC にする(範囲外の指定は `trim` と同じく丸める)。
+/// 整数の WAV は、ビット深度を変えなければ可逆(既定は元のビット深度)。浮動小数点の WAV は既定で 16bit に
+/// ディザで丸める。チャンネル数が 8 を超える WAV は書けない(`InvalidOptions`)
+pub fn toFlacAlloc(
+    gpa: std.mem.Allocator,
+    input: []const u8,
+    options: TrimOptions,
+    flac_options: flac.WriteOptions,
+) (ParseError || flac.WriteError || error{EmptyRange})!FlacConverted {
+    const w = try parse.Wav.parse(input);
+    const frames = w.frames();
+    const end = @min(options.end orelse frames, frames);
+    if (options.start >= end) return error.EmptyRange;
+    if (w.channels > 8) return error.InvalidOptions;
+    const nch: usize = w.channels;
+    const src_bits: u8 = if (w.format.isFloat()) 0 else w.format.bits();
+    const bits = flac_options.bits_per_sample orelse if (src_bits != 0) src_bits else 16;
+
+    var out: Io.Writer.Allocating = .init(gpa);
+    defer out.deinit();
+    var enc = flac.Encoder.init(gpa, &out.writer, .{
+        .sample_rate = w.sample_rate,
+        .channels = @intCast(nch),
+        .bits_per_sample = bits,
+        .compression = flac_options.compression,
+        .total_samples = end - options.start,
+        .dither = flac_options.dither,
+        .vendor = flac.vendor,
+    }) catch |err| return flac.mapWriteError(err);
+    defer enc.deinit();
+
+    const frame_len = w.frameLen();
+    const data = w.data[@intCast(options.start * frame_len)..@intCast(end * frame_len)];
+    var ints: [4096]i32 = undefined;
+    var conv: [4096]i32 = undefined;
+    var floats: [4096]f32 = undefined;
+    var q: pcm.Quantizer = .init(flac_options.dither);
+    const per = ints.len / nch * nch;
+    var i: usize = 0;
+    const total = data.len / w.format.bytes();
+    while (i < total) {
+        const n = @min(per, total - i);
+        const chunk = data[i * w.format.bytes() ..][0 .. n * w.format.bytes()];
+        if (src_bits == 0) {
+            pcm.toF32(w.format, chunk, floats[0..n]);
+            enc.writeF32(floats[0..n]) catch |err| return flac.mapWriteError(err);
+        } else {
+            pcm.toInt(w.format, chunk, ints[0..n]);
+            const v = if (bits == src_bits) ints[0..n] else blk: {
+                pcm.convertInt(src_bits, bits, ints[0..n], conv[0..n], &q);
+                break :blk conv[0..n];
+            };
+            enc.writeI32(v) catch |err| return flac.mapWriteError(err);
+        }
+        i += n;
+    }
+    return .{ .data = try flac.finishAlloc(&enc, &out), .start = options.start, .end = end, .sample_rate = w.sample_rate };
 }
 
 test {

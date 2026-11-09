@@ -301,3 +301,50 @@ export fn kiln_flac_to_wav(ptr: [*]const u8, len: usize, start: u64, end: u64, h
     values = .{ r.start, r.end, r.sample_rate, r.channels, r.invalid_frames };
     return true;
 }
+
+/// FLAC の書き出しの指定を確かめる。compression は 0〜8、dither は 0: なし、1: TPDF
+fn flacOptions(bits: ?u32, compression: u32, dither: u32) KilnError!kiln.flac.WriteOptions {
+    if (compression > kiln.flac.max_compression or dither > 1) return error.InvalidOptions;
+    if (bits) |b| if (b < 4 or b > 32) return error.InvalidOptions;
+    return .{
+        .bits_per_sample = if (bits) |b| @intCast(b) else null,
+        .compression = @intCast(compression),
+        .dither = if (dither == 1) .tpdf else .none,
+    };
+}
+
+/// チャンネルごとに並べた f32(kiln_wav_encode と同じ並び)を FLAC にする。bits はビット深度(4〜32)。
+/// 成功すると出力を kiln_output_* に置く
+export fn kiln_flac_encode(ptr: [*]const f32, channels: u32, frames: usize, sample_rate: u32, bits: u32, compression: u32, dither: u32) bool {
+    kiln_output_free();
+    const o = flacOptions(bits, compression, dither) catch |err| return fail(err);
+    if (channels == 0 or channels > 8) return fail(error.InvalidOptions);
+    var slices: [8][]const f32 = undefined;
+    for (slices[0..channels], 0..) |*c, i| c.* = ptr[i * frames ..][0..frames];
+    output = kiln.flac.encodePlanarAlloc(gpa, slices[0..channels], sample_rate, o) catch |err| return fail(err);
+    return true;
+}
+
+/// WAV の区間 [start, end) を FLAC にする(位置はサンプル数。has_end が false なら末尾まで)。
+/// has_bits が false ならビット深度は既定(整数の WAV は元のビット深度、浮動小数点は 16)。
+/// 成功すると出力を kiln_output_* に、kiln_value の 0: start、1: end、2: サンプルレートを置く(kiln_wav_trim と同じ)
+export fn kiln_wav_to_flac(ptr: [*]const u8, len: usize, start: u64, end: u64, has_end: bool, bits: u32, has_bits: bool, compression: u32, dither: u32) bool {
+    kiln_output_free();
+    const o = flacOptions(if (has_bits) bits else null, compression, dither) catch |err| return fail(err);
+    const t = kiln.wav.toFlacAlloc(gpa, ptr[0..len], .{ .start = start, .end = if (has_end) end else null }, o) catch |err| return fail(err);
+    output = t.data;
+    values = .{ t.start, t.end, t.sample_rate, 0, 0 };
+    return true;
+}
+
+/// MP3 の区間 [start, end) をデコードして FLAC にする。bits はビット深度(4〜32)。
+/// 成功すると出力を kiln_output_* に、kiln_value に kiln_mp3_decode と同じ値を置く
+export fn kiln_mp3_to_flac(ptr: [*]const u8, len: usize, start: u64, end: u64, has_end: bool, bits: u32, compression: u32, dither: u32) bool {
+    kiln_output_free();
+    const o = flacOptions(bits, compression, dither) catch |err| return fail(err);
+    const t = kiln.mp3.toFlacAlloc(gpa, ptr[0..len], .{ .start = start, .end = if (has_end) end else null }, o) catch |err| return fail(err);
+    output = t.data;
+    const r = t.result;
+    values = .{ r.start, r.end, r.sample_rate, r.channels, r.invalid_frames };
+    return true;
+}

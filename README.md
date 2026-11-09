@@ -2,7 +2,7 @@
 
 音声を読み込み、クロップして、任意の形式で書き出すための Zig 製ライブラリです。CLI とブラウザ(wasm)の両方で動かすことを目指しています。
 
-最初の到達点は、Google Gemini Lyria が出力する MP3 を、再エンコードせずにサンプル精度でトリムすることです。今のところ、MP3(MPEG-1 Layer III)と WAV(PCM・浮動小数点)を、形式を変えずにサンプル精度で切り出せます。MP3 と FLAC をデコードして WAV に書き出すこともできます(FLAC の書き出しはこれから)。
+最初の到達点は、Google Gemini Lyria が出力する MP3 を、再エンコードせずにサンプル精度でトリムすることです。今のところ、MP3(MPEG-1 Layer III)と WAV(PCM・浮動小数点)を、形式を変えずにサンプル精度で切り出せます。MP3 と FLAC をデコードして WAV に、WAV と MP3 を FLAC に書き出すこともできます(FLAC → FLAC の切り出しはこれから)。
 
 - 表示名は `K!LN`、識別子(リポジトリ名・モジュール名・実行ファイル名)は `kiln` です。
 
@@ -32,9 +32,12 @@ kiln trim in.wav out.wav --start 0.5 --end 3        # WAV も同じ。形式は�
 kiln trim in.mp3 out.wav --format wav               # MP3 をデコードして WAV に(既定は 16bit、TPDF ディザ)
 kiln trim in.mp3 out.wav --format wav --sample-format f32 --start 10 --end 20
 kiln trim in.flac out.wav --format wav --start 10       # FLAC をデコードして WAV に(ビット深度を保つ)
+kiln trim in.wav out.flac --format flac                 # WAV を FLAC に(可逆。既定は flac -5 と同じ圧縮)
+kiln trim in.mp3 out.flac --format flac --compression 8 --bits 24
 ```
 
-- 出力の形式は `--format mp3|wav|flac` で指定できます(省くと入力と同じ)。変換できるのは MP3 / FLAC → WAV だけで、FLAC はまだ書き出せません
+- 出力の形式は `--format mp3|wav|flac` で指定できます(省くと入力と同じ)。変換できるのは MP3 / FLAC → WAV と WAV / MP3 → FLAC です(FLAC → FLAC の切り出しはまだできません)
+- FLAC の書き出しは `--compression 0〜8`(flac コマンドの -0〜-8 と同じ。既定は 5)と `--bits 4〜32`(既定は整数の WAV なら元のビット深度、それ以外は 16)で調整できます。大きさは flac コマンドの同じ段階とほぼ同じ(±0.3% 程度)です([`docs/flac.md`](docs/flac.md) §6)
 - MP3 / FLAC → WAV の書き出しは `--sample-format u8|i16|i24|i32|f32|f64` と `--dither tpdf|none` で調整できます。FLAC の既定はビット深度を保つ形式で、元の PCM のまま書き出します(libFLAC・ffmpeg と一致。[`docs/flac.md`](docs/flac.md))。MP3 のデコーダは ffmpeg の float デコーダと長さが一致し、値の差は 5e-6 以内です([`docs/mp3-decoder.md`](docs/mp3-decoder.md))
 - WAV は `data` の中身を切り出すだけなので、元の形式のまま無劣化です
 
@@ -68,6 +71,11 @@ const { data: wavOfMp3 } = kiln.mp3.toWav(bytes, { start: 1.5, end: 10, format: 
 // FLAC も同じ形。toWav の format を省くとビット深度を保つ(元の PCM のまま)
 const flacInfo = kiln.flac.probe(flacBytes);           // { sampleRate, channels, bitsPerSample, samples, ... }
 const { data: wavOfFlac } = kiln.flac.toWav(flacBytes, { start: 1.5, end: 10 });
+
+// FLAC に書き出す(compression は 0〜8、既定は 5。bitsPerSample の既定は 16)
+const flacFile = kiln.flac.encode(audioBuffer, { compression: 8 });
+const { data: flacOfWav } = kiln.wav.toFlac(wavBytes, { start: 0.5, end: 3 }); // 整数の WAV は可逆
+const { data: flacOfMp3 } = kiln.mp3.toFlac(bytes, { start: 1.5, end: 10 });
 ```
 
 - 失敗すると `KilnError` を投げます。`code` はエラーの名前(`'NotMp3'` / `'EmptyRange'` など。一覧は `kiln.d.ts` の `KilnErrorCode`)

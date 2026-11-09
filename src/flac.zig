@@ -10,6 +10,8 @@ const wav = @import("wav.zig");
 const stream = @import("flac/stream.zig");
 const decoder = @import("flac/decoder.zig");
 const metadata = @import("flac/metadata.zig");
+const encoder = @import("flac/encoder.zig");
+const mp3 = @import("mp3.zig");
 
 pub const ParseError = stream.Error;
 
@@ -271,8 +273,87 @@ pub fn toWavAlloc(gpa: std.mem.Allocator, input: []const u8, options: DecodeOpti
     return .{ .data = try out.toOwnedSlice(), .result = r };
 }
 
+// --- 書き出し ---
+
+/// ストリーミングのエンコーダ(`init → writeI32 / writeF32 → finish`)。`finish` が返す STREAMINFO を、
+/// 呼び出し側が出力の先頭に書き戻す(長さ・MD5・フレームの大きさは最後に決まるため)
+pub const Encoder = encoder.Encoder;
+pub const EncoderOptions = encoder.Options;
+pub const StreamInfoPatch = encoder.StreamInfoPatch;
+/// 圧縮の段階の最大値(flac の -8)
+pub const max_compression = encoder.max_compression;
+
+/// FLAC に書き出すときの指定(`kiln.flac.encodePlanarAlloc`、`kiln.wav.toFlacAlloc`、`kiln.mp3.toFlacAlloc`)
+pub const WriteOptions = struct {
+    /// ビット深度(4〜32)。null なら、整数の WAV は元のビット深度、それ以外(浮動小数点)は 16
+    bits_per_sample: ?u8 = null,
+    /// 圧縮の段階(0〜8。flac の -0〜-8)
+    compression: u8 = 5,
+    /// 浮動小数点から整数にするとき、整数のビット数を減らすときのディザ
+    dither: pcm.Dither = .tpdf,
+};
+
+/// ベンダー文字列(Vorbis コメント)
+pub const vendor = "kiln " ++ @import("build_options").version;
+
+pub const WriteError = error{ OutOfMemory, InvalidOptions, TooLarge, InternalError };
+
+/// `Io.Writer.Allocating` に書いたエンコーダを閉じ、STREAMINFO を書き戻したバイト列を返す
+pub fn finishAlloc(enc: *Encoder, out: *Io.Writer.Allocating) WriteError![]u8 {
+    const patch = enc.finish() catch |err| return mapWriteError(err);
+    const data = try out.toOwnedSlice();
+    @memcpy(data[patch.offset..][0..patch.bytes.len], &patch.bytes);
+    return data;
+}
+
+/// エンコーダのエラーを一括版のエラーにする
+pub fn mapWriteError(err: anyerror) WriteError {
+    return switch (err) {
+        error.WriteFailed, error.OutOfMemory => error.OutOfMemory,
+        error.InvalidOptions => error.InvalidOptions,
+        error.TooLarge => error.TooLarge,
+        // 書く長さは入力から決めるので、食い違うのは kiln の不具合
+        else => error.InternalError,
+    };
+}
+
+/// チャンネルごとに分かれた f32(Web Audio の AudioBuffer と同じ並び)を FLAC にする一括版。
+/// どのチャンネルも同じ長さ。ビット深度の既定は 16。返したバイト列は呼び出し側が `gpa` で解放する
+pub fn encodePlanarAlloc(gpa: std.mem.Allocator, channels: []const []const f32, sample_rate: u32, options: WriteOptions) WriteError![]u8 {
+    if (channels.len == 0 or channels.len > 8) return error.InvalidOptions;
+    const frames = channels[0].len;
+    for (channels) |c| if (c.len != frames) return error.InvalidOptions;
+    var out: Io.Writer.Allocating = .init(gpa);
+    defer out.deinit();
+    var enc = Encoder.init(gpa, &out.writer, .{
+        .sample_rate = sample_rate,
+        .channels = @intCast(channels.len),
+        .bits_per_sample = options.bits_per_sample orelse 16,
+        .compression = options.compression,
+        .total_samples = frames,
+        .dither = options.dither,
+        .vendor = vendor,
+    }) catch |err| return mapWriteError(err);
+    defer enc.deinit();
+    var buf: [4096]f32 = undefined;
+    const nch = channels.len;
+    const per = buf.len / nch;
+    var i: usize = 0;
+    while (i < frames) {
+        const n = @min(per, frames - i);
+        for (0..n) |j| {
+            for (channels, 0..) |c, ch| buf[j * nch + ch] = c[i + j];
+        }
+        enc.writeF32(buf[0 .. n * nch]) catch |err| return mapWriteError(err);
+        i += n;
+    }
+    return finishAlloc(&enc, &out);
+}
+
 test {
     _ = stream;
+    _ = encoder;
+    _ = @import("flac/lpc.zig");
     _ = decoder;
     _ = @import("flac/bits.zig");
     _ = @import("flac/frame.zig");
@@ -591,4 +672,134 @@ test "番号がサンプル位置の古い形式: ヘッダが壊れても長さ
         defer got.deinit();
         try std.testing.expectEqual(1, (try decode(gpa, bad, .{}, &got)).invalid_frames);
     }
+}
+
+test "encode: WAV → FLAC → 復号で元の PCM に戻る(すべての段階)" {
+    const gpa = std.testing.allocator;
+    const wav_files = [_][]const u8{ testdata.s16_stereo_wav, testdata.u8_mono_wav, testdata.s24_stereo_wav, testdata.s32_3ch_ext_wav };
+    for (wav_files) |w| {
+        for (0..max_compression + 1) |level| {
+            const f = try wav.toFlacAlloc(gpa, w, .{}, .{ .compression = @intCast(level) });
+            defer gpa.free(f.data);
+            const back = try toWavAlloc(gpa, f.data, .{}, .{});
+            defer gpa.free(back.data);
+            try std.testing.expectEqual(0, back.result.invalid_frames);
+            const src = try wav.trimAlloc(gpa, w, .{});
+            defer gpa.free(src.data);
+            try std.testing.expectEqualSlices(u8, try wavData(src.data), try wavData(back.data));
+            // STREAMINFO の総サンプル数と MD5
+            const i = try probe(f.data);
+            try std.testing.expectEqual((try wav.probe(w)).samples, i.samples);
+            try std.testing.expect(!std.mem.allEqual(u8, &i.md5, 0));
+        }
+    }
+}
+
+test "encode: 端のケース(長さ、無音、満幅の値、ビット深度、サンプルレート、チャンネル数)を往復できる" {
+    const gpa = std.testing.allocator;
+    var prng: std.Random.DefaultPrng = .init(0x6B696C6E);
+    const rand = prng.random();
+    const Signal = enum { noise, silence, extremes, ramp };
+    for ([_]u8{ 4, 8, 12, 15, 16, 20, 24, 32 }) |b| {
+        for ([_]u8{ 1, 2, 3 }) |nch| {
+            for ([_]usize{ 1, 2, 15, 1152, 5000 }) |frames| {
+                for ([_]u8{ 0, 5, 8 }) |level| {
+                    for (std.enums.values(Signal)) |sig| {
+                        const lim: i64 = @as(i64, 1) << @intCast(b - 1);
+                        const samples = try gpa.alloc(i32, frames * nch);
+                        defer gpa.free(samples);
+                        for (samples, 0..) |*v, i| v.* = @intCast(switch (sig) {
+                            .noise => rand.intRangeLessThan(i64, -lim, lim),
+                            .silence => 0,
+                            // 満幅の正負を交互に(side が 1 ビット多くなる)
+                            .extremes => if ((i / nch + i % nch) % 2 == 0) lim - 1 else -lim,
+                            .ramp => @mod(@as(i64, @intCast(i * 37)), 2 * lim) - lim,
+                        });
+                        // 珍しいサンプルレート(ヘッダに書けないもの)も混ぜる
+                        const rate: u32 = if (frames == 15) 768000 else if (frames == 2) 39000 else 44100;
+                        var out: Io.Writer.Allocating = .init(gpa);
+                        defer out.deinit();
+                        var enc: Encoder = try .init(gpa, &out.writer, .{
+                            .sample_rate = rate,
+                            .channels = nch,
+                            .bits_per_sample = b,
+                            .compression = level,
+                            .total_samples = frames,
+                        });
+                        defer enc.deinit();
+                        try enc.writeI32(samples);
+                        const data = try finishAlloc(&enc, &out);
+                        defer gpa.free(data);
+
+                        var got: CollectSink = .{};
+                        defer got.deinit();
+                        const r = try decode(gpa, data, .{}, &got);
+                        try std.testing.expectEqual(0, r.invalid_frames);
+                        try std.testing.expectEqual(rate, r.sample_rate);
+                        try std.testing.expectEqualSlices(i32, samples, got.list.items);
+                    }
+                }
+            }
+        }
+    }
+}
+
+test "encode: MD5 は復号した PCM の MD5" {
+    const gpa = std.testing.allocator;
+    const f = try wav.toFlacAlloc(gpa, testdata.u8_mono_wav, .{}, .{});
+    defer gpa.free(f.data);
+    var got: CollectSink = .{};
+    defer got.deinit();
+    _ = try decode(gpa, f.data, .{}, &got);
+    // 8bit は 1 バイトの符号付き
+    var md5: std.crypto.hash.Md5 = .init(.{});
+    for (got.list.items) |v| md5.update(&.{@as(u8, @bitCast(@as(i8, @intCast(v))))});
+    var digest: [16]u8 = undefined;
+    md5.final(&digest);
+    try std.testing.expectEqualSlices(u8, &digest, &(try probe(f.data)).md5);
+}
+
+test "encode: 指定の誤り、長さの食い違い" {
+    const gpa = std.testing.allocator;
+    var discard: Io.Writer.Discarding = .init(&.{});
+    for ([_]EncoderOptions{
+        .{ .sample_rate = 44100, .channels = 0, .bits_per_sample = 16 },
+        .{ .sample_rate = 44100, .channels = 9, .bits_per_sample = 16 },
+        .{ .sample_rate = 44100, .channels = 2, .bits_per_sample = 3 },
+        .{ .sample_rate = 44100, .channels = 2, .bits_per_sample = 33 },
+        .{ .sample_rate = 0, .channels = 2, .bits_per_sample = 16 },
+        .{ .sample_rate = 1 << 20, .channels = 2, .bits_per_sample = 16 },
+        .{ .sample_rate = 44100, .channels = 2, .bits_per_sample = 16, .compression = 9 },
+    }) |o| try std.testing.expectError(error.InvalidOptions, Encoder.init(gpa, &discard.writer, o));
+    var enc: Encoder = try .init(gpa, &discard.writer, .{ .sample_rate = 44100, .channels = 1, .bits_per_sample = 16, .total_samples = 3 });
+    defer enc.deinit();
+    try enc.writeI32(&.{ 1, 2 });
+    try std.testing.expectError(error.LengthMismatch, enc.finish());
+    const l = [_]f32{ 0, 0.5 };
+    try std.testing.expectError(error.InvalidOptions, encodePlanarAlloc(gpa, &.{ &l, l[0..1] }, 44100, .{}));
+    try std.testing.expectError(error.InvalidOptions, encodePlanarAlloc(gpa, &.{}, 44100, .{}));
+}
+
+test "mp3.toFlacAlloc / encodePlanarAlloc" {
+    const gpa = std.testing.allocator;
+    const m = try mp3.toFlacAlloc(gpa, testdata.lyria_like, .{ .start = 100, .end = 5000 }, .{});
+    defer gpa.free(m.data);
+    const i = try probe(m.data);
+    try std.testing.expectEqual(4900, i.samples);
+    try std.testing.expectEqual(16, i.bits_per_sample);
+    try std.testing.expectEqual(0, m.result.invalid_frames);
+    // MP3 → WAV(16bit、同じディザ)と同じ PCM
+    const w = try mp3.toWavAlloc(gpa, testdata.lyria_like, .{ .start = 100, .end = 5000 }, .{});
+    defer gpa.free(w.data);
+    const back = try toWavAlloc(gpa, m.data, .{}, .{});
+    defer gpa.free(back.data);
+    try std.testing.expectEqualSlices(u8, try wavData(w.data), try wavData(back.data));
+
+    const l = [_]f32{ 0, 0.5, -0.5, 1 };
+    const data = try encodePlanarAlloc(gpa, &.{&l}, 8000, .{ .bits_per_sample = 8, .dither = .none });
+    defer gpa.free(data);
+    var got: CollectSink = .{};
+    defer got.deinit();
+    _ = try decode(gpa, data, .{}, &got);
+    try std.testing.expectEqualSlices(i32, &.{ 0, 64, -64, 127 }, got.list.items);
 }
