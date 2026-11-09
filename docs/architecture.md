@@ -19,6 +19,7 @@
 | `cli/main.zig` | CLI | `zig-out/bin/kiln` |
 | `wasm/main.zig` | wasm の export 関数 | `zig-out/wasm/kiln.wasm` |
 | `wasm/kiln.js` | JS ラッパー(ES module。`load()` で wasm を読み込む) | `zig-out/wasm/kiln.js` |
+| `wasm/kiln.d.ts` | JS ラッパーの TypeScript の型定義(TypeScript 5.7 以降) | `zig-out/wasm/kiln.d.ts` |
 | `LICENSE` | MIT の全文。wasm の配布物にも置く | `zig-out/wasm/LICENSE` |
 | `THIRD_PARTY_NOTICES.md` | 外部から取り込んだコードや数表の出所とライセンス(方針は [`draft.md`](draft.md) §2.5) | — |
 | `cli/time.zig` | CLI の時刻指定(`1.5` / `1:02.5` / `66150s`)の解析 | — |
@@ -86,6 +87,8 @@ kiln trim <input> <output> [--start TIME] [--end TIME | --duration TIME]
 
 ### 2.3 wasm と JS
 
+- JS に返すエラーの名前は、wasm/main.zig の `KilnError`(エラーの集合)に限る。`fail` はこの集合しか受け付けないので、export が新しいエラーを返しうるようになるとコンパイルが通らなくなる。kiln.d.ts の `KilnErrorCode` も同じ一覧にする
+- 型定義(kiln.d.ts)の入力は `ArrayBufferLike | ArrayBufferView`(kiln.js がバイト列として読むものすべて)、出力は `Uint8Array<ArrayBuffer>` / `Float32Array<ArrayBuffer>`(そのまま `Blob` などに渡せる)。`wav.encode` は `AudioBuffer` を構造で受ける(Worker の型ライブラリにも通る)
 - export 関数は成功なら true を返し、結果(出力のバイト列や数値)をモジュール内の変数に置く。JS 側は `kiln_output_ptr` / `kiln_output_len` / `kiln_value(i)` で読み出し、失敗時は `kiln_error_ptr` / `kiln_error_len` でエラー名を読む
 - JS ラッパーは `load()` が返すオブジェクトに `mp3.probe(bytes)` / `mp3.trim(bytes, { start, end })`(秒)/ `{ startSample, endSample }`(サンプル数)を持つ。失敗時はコアのエラー名を `code` に持つ `KilnError` を投げる
 - 入力は `BufferSource`(`ArrayBuffer` / TypedArray / `DataView`)。TypedArray と `DataView` は、要素の値ではなく下のバイト列として読む

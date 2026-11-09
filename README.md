@@ -44,7 +44,7 @@ kiln trim in.mp3 out.wav --format wav --sample-format f32 --start 10 --end 20
 
 ### ブラウザ(wasm)
 
-`zig build` で `zig-out/wasm/` にできる `kiln.wasm` と `kiln.js` を同じ場所に置いて使います。配布するときは、同じディレクトリにある `LICENSE` も一緒に置いてください(MIT の著作権表示)。
+`zig build` で `zig-out/wasm/` にできる `kiln.wasm` と `kiln.js` を同じ場所に置いて使います。TypeScript の型定義 `kiln.d.ts`(TypeScript 5.7 以降)も同じ場所にできます。配布するときは、同じディレクトリにある `LICENSE` も一緒に置いてください(MIT の著作権表示)。
 
 ```js
 import { load } from './kiln.js';
@@ -63,6 +63,30 @@ const wavFile = kiln.wav.encode(audioBuffer, { format: 'i16' }); // 既定は 16
 // MP3 をデコードする(ffmpeg と同じ位置で数える。decodeAudioData のようにブラウザで位置がずれない)
 const { channels, sampleRate } = kiln.mp3.decode(bytes, { start: 1.5, end: 10 }); // Float32Array[]
 const { data: wavOfMp3 } = kiln.mp3.toWav(bytes, { start: 1.5, end: 10, format: 'i16' });
+```
+
+- 失敗すると `KilnError` を投げます。`code` はエラーの名前(`'NotMp3'` / `'EmptyRange'` など。一覧は `kiln.d.ts` の `KilnErrorCode`)
+- 処理は同期です。何分もある曲のデコードには数百 ms かかるので、メインスレッドを止めたくなければ Worker で動かしてください
+
+**fetch を使わずに読み込む**: `load()` は既定で `kiln.wasm` を fetch します。CSP で `connect-src` を禁じているときなどは、wasm のバイト列を渡します。wasm のインスタンス化には、CSP の `script-src` に `'wasm-unsafe-eval'` が要ります。
+
+```js
+// Vite なら ?inline で wasm を JS に埋め込める(base64 の data URL になる)
+import wasmUrl from './kiln.wasm?inline';
+const b64 = wasmUrl.slice(wasmUrl.indexOf(',') + 1);
+const kiln = await load(Uint8Array.from(atob(b64), (c) => c.charCodeAt(0)));
+```
+
+**Worker で使う**:
+
+```js
+// kiln-worker.js(new Worker(new URL('./kiln-worker.js', import.meta.url), { type: 'module' }) で起動)
+import { load } from './kiln.js';
+const kiln = load(/* wasm の URL かバイト列 */);
+self.onmessage = async ({ data: { bytes, start, end } }) => {
+  const { data } = (await kiln).mp3.trim(bytes, { start, end });
+  self.postMessage(data, [data.buffer]); // バイト列は転送してコピーを避ける
+};
 ```
 
 ## ディレクトリ構成

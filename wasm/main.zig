@@ -48,7 +48,20 @@ var last_error: []const u8 = "";
 var output: []u8 = &.{};
 var values: [5]u64 = @splat(0);
 
-fn fail(err: anyerror) bool {
+/// JS に返しうるエラー。kiln.d.ts の KilnErrorCode と同じ一覧にする。
+/// fail はこの集合しか受け付けないので、export が新しいエラーを返しうるようになるとコンパイルが通らなくなる
+pub const KilnError = error{
+    NotMp3,
+    NotWav,
+    UnsupportedFormat,
+    InvalidWav,
+    EmptyRange,
+    TooLarge,
+    OutOfMemory,
+    InvalidOptions,
+};
+
+fn fail(err: KilnError) bool {
     last_error = @errorName(err);
     return false;
 }
