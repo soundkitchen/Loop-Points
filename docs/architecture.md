@@ -205,7 +205,7 @@ const r = try kiln.flac.trim(gpa, input, .{ .start = 44100, .end = 88200 }, writ
 const c = try kiln.flac.trimAlloc(gpa, input, .{ .start = 44100 });  // 一括版(書き戻し済み): c.data など
 ```
 
-- 切り出しは、区間に丸ごと入るフレームをコピーし、先頭と末尾にかかるフレームだけを作り直す。出力は可変ブロック長(詳細は [`flac.md`](flac.md) §7)。1 フレームの符号化はエンコーダと共通の `FrameEncoder`(`src/flac/encoder.zig`)
+- 切り出しは、区間に丸ごと入るフレームをコピーし、先頭と末尾にかかるフレームだけを作り直す。出力は、最後を除くフレームの長さがそろえば固定ブロック長、そうでなければ可変ブロック長(Safari が読める形にする。詳細は [`flac.md`](flac.md) §7)。1 フレームの符号化はエンコーダと共通の `FrameEncoder`(`src/flac/encoder.zig`)
 
 ## 3. Zig 0.17.1 で確認したこと
 

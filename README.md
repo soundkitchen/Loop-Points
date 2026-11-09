@@ -38,7 +38,7 @@ kiln trim in.flac out.flac --start 10 --end 20           # FLAC のまま切り�
 ```
 
 - 出力の形式は `--format mp3|wav|flac` で指定できます(省くと入力と同じ)。変換できるのは MP3 / FLAC → WAV と WAV / MP3 → FLAC です
-- FLAC → FLAC は、区間に丸ごと入るフレームをそのままコピーし、先頭と末尾にかかるフレームだけを作り直します(復号すると元の区間と同じ PCM)。タグと画像は残し、シークテーブル・CUE シート・PADDING は捨てます。出力は可変ブロック長の FLAC で、Chrome の `decodeAudioData` でもサンプル単位で元と一致します([`docs/flac.md`](docs/flac.md) §7)
+- FLAC → FLAC は、区間に丸ごと入るフレームをそのままコピーし、先頭と末尾にかかるフレームだけを作り直します(復号すると元の区間と同じ PCM)。タグと画像は残し、シークテーブル・CUE シート・PADDING は捨てます。Chrome / Firefox / Safari の `decodeAudioData` でも、サンプル単位で元と一致します([`docs/flac.md`](docs/flac.md) §7)
 - WAV / MP3 からの FLAC の書き出しは `--compression 0〜8`(flac コマンドの -0〜-8 と同じ。既定は 5)と `--bits 4〜32`(既定は整数の WAV なら元のビット深度、それ以外は 16)で調整できます。大きさは flac コマンドの同じ段階とほぼ同じ(±0.3% 程度)です([`docs/flac.md`](docs/flac.md) §6)
 - MP3 / FLAC → WAV の書き出しは `--sample-format u8|i16|i24|i32|f32|f64` と `--dither tpdf|none` で調整できます。FLAC の既定はビット深度を保つ形式で、元の PCM のまま書き出します(libFLAC・ffmpeg と一致。[`docs/flac.md`](docs/flac.md))。MP3 のデコーダは ffmpeg の float デコーダと長さが一致し、値の差は 5e-6 以内です([`docs/mp3-decoder.md`](docs/mp3-decoder.md))
 - WAV は `data` の中身を切り出すだけなので、元の形式のまま無劣化です

@@ -289,8 +289,9 @@ pub const TrimResult = struct {
 
 /// 区間 `[options.start, options.end)` を FLAC のまま切り出して `w` に書く(範囲外の指定は丸める)。
 /// 区間に丸ごと入るフレームはそのままコピーし、先頭と末尾にかかるフレームだけを作り直す(可逆。
-/// 復号すると元の区間と同じ PCM)。出力は可変ブロック長のストリームになる。Vorbis コメント・画像・
-/// APPLICATION は残し、シークテーブル・CUE シート・PADDING は捨てる。STREAMINFO(長さ・MD5 など)は
+/// 復号すると元の区間と同じ PCM)。出力は、最後を除くフレームの長さがそろえば固定ブロック長、そうでなければ
+/// 可変ブロック長(docs/flac.md §7)。Vorbis コメント・画像・APPLICATION は残し、シークテーブル・
+/// CUE シート・PADDING は捨てる。STREAMINFO(長さ・MD5 など)は
 /// 最後に決まるので、戻り値の `patch` を呼び出し側が出力の先頭に書き戻す。`w.flush()` は呼び出し側が行う
 pub fn trim(gpa: std.mem.Allocator, input: []const u8, options: DecodeOptions, w: *Io.Writer) !TrimResult {
     var ix: Index = try .init(gpa, input);
@@ -982,8 +983,9 @@ test "trim: 丸ごと入るフレームはコピーする。タグは残し、PA
         const fb = b.next().?;
         const ha = fa.header.?;
         const hb = fb.header.?;
-        try std.testing.expect(hb.variable);
-        try std.testing.expectEqual((k - 2) * 1152, hb.number);
+        // フレームの境目ちょうどなので、固定ブロック長(番号はフレーム番号)
+        try std.testing.expect(!hb.variable);
+        try std.testing.expectEqual(k - 2, hb.number);
         try std.testing.expectEqualSlices(u8, fa.bytes(in)[ha.len .. fa.end - fa.start - 2], fb.bytes(t.data)[hb.len .. fb.end - fb.start - 2]);
     }
     try std.testing.expectEqual(null, b.next());
@@ -1007,6 +1009,50 @@ fn metadataKinds(data: []const u8, meta: metadata.Metadata) struct { metadata.Bl
         pos += 4 + @as(usize, len);
     }
     return .{ kinds[0], kinds[1], n };
+}
+
+/// テスト用: 切り出した FLAC のフレームの長さとブロック長の方式
+fn frameLayout(data: []const u8, sizes: []u32) !struct { n: usize, variable: bool } {
+    const st = try stream.Stream.parse(data);
+    var it = st.iterator(data);
+    var n: usize = 0;
+    var variable = false;
+    while (it.next()) |f| : (n += 1) {
+        sizes[n] = f.header.?.block_size;
+        variable = f.header.?.variable;
+    }
+    return .{ .n = n, .variable = variable };
+}
+
+test "trim: 固定ブロック長にできるときは固定、そうでなければ可変で最初のフレームは 192 以上(Safari 向け)" {
+    const gpa = std.testing.allocator;
+    const in = testdata.s16_stereo_flac;
+    var sizes: [64]u32 = undefined;
+    const Case = struct { start: u64, end: u64, variable: bool };
+    for ([_]Case{
+        // フレームの境目ちょうど、1 フレームに収まる短い区間: 固定
+        .{ .start = 1152, .end = 5 * 1152, .variable = false },
+        .{ .start = 1000, .end = 1010, .variable = false },
+        .{ .start = 0, .end = 11025, .variable = false },
+        // 先頭が途中から: 可変(最初のフレームが 47 サンプルにならないよう、次のフレームとまとめて作り直す)
+        .{ .start = 2 * 1152 - 47, .end = 8 * 1152, .variable = true },
+        .{ .start = 12, .end = 11025, .variable = true },
+    }) |c| {
+        const t = try trimAlloc(gpa, in, .{ .start = c.start, .end = c.end });
+        defer gpa.free(t.data);
+        const l = try frameLayout(t.data, &sizes);
+        try std.testing.expectEqual(c.variable, l.variable);
+        const m = (try metadata.Metadata.parse(t.data)).info;
+        if (c.variable) {
+            // 最後を除くフレームは 192 以上で、STREAMINFO の最小と最大は違う値
+            for (sizes[0 .. l.n - 1]) |n| try std.testing.expect(n >= 192);
+            try std.testing.expect(m.min_block_size != m.max_block_size);
+        } else {
+            for (sizes[0 .. l.n - 1]) |n| try std.testing.expectEqual(sizes[0], n);
+            try std.testing.expect(sizes[l.n - 1] <= sizes[0]);
+            try std.testing.expectEqual(m.min_block_size, m.max_block_size);
+        }
+    }
 }
 
 test "trim: 壊れたフレームは無音として作り直す" {
