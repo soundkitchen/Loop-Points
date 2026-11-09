@@ -39,7 +39,7 @@ const comm_body_len = 1 + 3 + 9 + smpb_value_len;
 pub const itunsmpb_tag_len = 10 + 10 + comm_body_len;
 
 /// `COMM` フレーム(説明 `iTunSMPB`)を 1 つだけ持つ ID3v2.3 タグを書く。
-/// priming / padding は LAME タグの delay / padding と同じ値、samples は有効なサンプル数(docs/lyria-mp3.md §5.3)
+/// priming / padding は LAME タグの delay / padding と同じ値、samples は有効なサンプル数(docs/lyria-mp3.md §4 の手順 4)
 pub fn writeItunSmpbTag(w: *Io.Writer, priming: u32, padding: u32, samples: u64) Io.Writer.Error!void {
     // タグヘッダ: ID3v2.3.0、フラグなし、サイズは syncsafe
     try w.writeAll("ID3\x03\x00\x00");

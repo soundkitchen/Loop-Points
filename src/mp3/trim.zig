@@ -68,8 +68,10 @@ pub fn trim(input: []const u8, options: Options, w: *Io.Writer) Error!Result {
     const n = e0 - s0;
     const k = s0 / spf; // 開始フレーム
     const a = s0 % spf; // 開始フレーム内の端数
-    // 最後のサンプルを含むフレームまで
+    // 最後のサンプルを含むフレームまで。Stream.parse がタイムラインの終わりを frames * spf 以下に
+    // しているので、入力のフレーム数を超えない
     const end_frame = (e0 - 1) / spf + 1;
+    std.debug.assert(end_frame <= s.frames);
 
     // 開始フレームの手前 max_back 個を覚えておき、開始フレームから連結範囲の終わりまでの
     // ビットレートが揃っているか(CBR か)を調べる
@@ -235,12 +237,13 @@ fn expectTrim(input: []const u8, options: Options) !Result {
     try std.testing.expect(std.mem.indexOf(u8, input, body) != null);
 
     // iTunSMPB の priming / padding は LAME タグの delay / padding と同じ(delay = skip - 529)。
-    // padding は 529 以上(0 だと Safari の <audio> が iTunSMPB を使わない)
+    // 連結は最後のサンプルを含むフレームまでなので、padding は 529 以上 529 + 1151 以下
+    // (0 だと Safari の <audio> が iTunSMPB を使わない。余分なフレームを含めると上限を超える)
     const smpb = data[10 + 10 + 13 ..][0..116];
     var expect_buf: [116]u8 = undefined;
     const delay = s.skip - decoder_delay;
     const pad = s.frames * spf - delay - s.samples;
-    try std.testing.expect(pad >= decoder_delay);
+    try std.testing.expect(pad >= decoder_delay and pad <= decoder_delay + spf - 1);
     const expect = try std.fmt.bufPrint(&expect_buf, " 00000000 {X:0>8} {X:0>8} {X:0>16}", .{ delay, pad, s.samples });
     try std.testing.expectEqualStrings(expect, smpb[0..expect.len]);
     return r;
