@@ -18,6 +18,18 @@ export fn kiln_free(ptr: ?[*]u8, len: usize) void {
     gpa.free(p[0..len]);
 }
 
+/// linear memory に f32 を `count` 個ぶん確保する(4 バイト境界に揃う)。失敗時は 0(null)を返す
+export fn kiln_alloc_f32(count: usize) ?[*]f32 {
+    const buf = gpa.alloc(f32, count) catch return null;
+    return buf.ptr;
+}
+
+/// kiln_alloc_f32 で確保した領域を解放する
+export fn kiln_free_f32(ptr: ?[*]f32, count: usize) void {
+    const p = ptr orelse return;
+    gpa.free(p[0..count]);
+}
+
 /// バージョン文字列の先頭ポインタ(長さは kiln_version_len)
 export fn kiln_version_ptr() [*]const u8 {
     return kiln.version.ptr;
@@ -90,5 +102,45 @@ export fn kiln_mp3_trim(ptr: [*]const u8, len: usize, start: u64, end: u64, has_
     }) catch |err| return fail(err);
     output = t.data;
     values = .{ t.start, t.end, t.sample_rate, 0, 0 };
+    return true;
+}
+
+/// WAV を解析する。成功すると kiln_value に
+/// 0: サンプルレート、1: チャンネル数、2: サンプル形式(kiln.pcm.Format の番号)、3: サンプル数
+/// を置く
+export fn kiln_wav_probe(ptr: [*]const u8, len: usize) bool {
+    const info = kiln.wav.probe(ptr[0..len]) catch |err| return fail(err);
+    values = .{ info.sample_rate, info.channels, @backingInt(info.format), info.samples, 0 };
+    return true;
+}
+
+/// WAV を区間 [start, end) で切り出す(位置はサンプル数。has_end が false なら末尾まで)。
+/// 成功すると出力を kiln_output_* に、実際に切り出した区間を kiln_value の 0: start、1: end に、
+/// 入力のサンプルレートを 2 に置く
+export fn kiln_wav_trim(ptr: [*]const u8, len: usize, start: u64, end: u64, has_end: bool) bool {
+    kiln_output_free();
+    const t = kiln.wav.trimAlloc(gpa, ptr[0..len], .{
+        .start = start,
+        .end = if (has_end) end else null,
+    }) catch |err| return fail(err);
+    output = t.data;
+    values = .{ t.start, t.end, t.sample_rate, 0, 0 };
+    return true;
+}
+
+/// チャンネルごとに並べた f32(`channels` 個のチャンネルが、それぞれ `frames` 個ずつ続く)を WAV にする。
+/// format は kiln.pcm.Format の番号、dither は 0: なし、1: TPDF。成功すると出力を kiln_output_* に置く
+export fn kiln_wav_encode(ptr: [*]const f32, channels: u32, frames: usize, sample_rate: u32, format: u32, dither: u32) bool {
+    kiln_output_free();
+    const fmt = std.enums.fromInt(kiln.pcm.Format, format) orelse return fail(error.InvalidOptions);
+    if (dither > 1 or channels == 0) return fail(error.InvalidOptions);
+    const slices = gpa.alloc([]const f32, channels) catch |err| return fail(err);
+    defer gpa.free(slices);
+    for (slices, 0..) |*c, i| c.* = ptr[i * frames ..][0..frames];
+    output = kiln.wav.encodePlanarAlloc(gpa, slices, .{
+        .sample_rate = sample_rate,
+        .format = fmt,
+        .dither = if (dither == 1) .tpdf else .none,
+    }) catch |err| return fail(err);
     return true;
 }

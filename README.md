@@ -51,6 +51,11 @@ const bytes = new Uint8Array(await file.arrayBuffer());
 const info = kiln.mp3.probe(bytes);                 // { sampleRate, channels, samples, duration, ... }
 const { data } = kiln.mp3.trim(bytes, { start: 1.5, end: 10 }); // 秒。startSample / endSample でサンプル数も可
 const blob = new Blob([data], { type: 'audio/mpeg' });
+
+// WAV の切り出しも同じ形。decodeAudioData の結果を WAV にすることもできる
+const wav = kiln.wav.trim(wavBytes, { start: 0.5, end: 3 }).data;
+const audioBuffer = await new AudioContext().decodeAudioData(await file.arrayBuffer());
+const wavFile = kiln.wav.encode(audioBuffer, { format: 'i16' }); // 既定は 16bit、TPDF ディザ
 ```
 
 ## ディレクトリ構成
