@@ -6,13 +6,18 @@ const time = @import("time.zig");
 
 const usage =
     \\Usage:
-    \\  kiln trim <input> <output> [--start TIME] [--end TIME | --duration TIME]
+    \\  kiln trim <input> <output> [--start TIME] [--end TIME | --duration TIME] [--format FORMAT]
     \\  kiln --version
     \\  kiln --help
     \\
     \\Commands:
-    \\  trim    Cut an MP3 without re-encoding, accurate to the sample.
+    \\  trim    Cut an MP3 or WAV file, accurate to the sample, without re-encoding.
     \\          <input> / <output> may be "-" for stdin / stdout.
+    \\          The input format is detected from its contents.
+    \\
+    \\Options:
+    \\  --format FORMAT   output format: mp3 or wav (default: same as the input).
+    \\                    Converting between formats is not supported yet, so it must match the input.
     \\
     \\TIME:
     \\  1.5         seconds
@@ -63,6 +68,7 @@ const TrimArgs = struct {
     start: ?time.Time = null,
     end: ?time.Time = null,
     duration: ?time.Time = null,
+    format: ?kiln.Format = null,
 };
 
 /// trim の引数を解析する。誤りがあれば stderr に書いて null を返す
@@ -81,7 +87,17 @@ fn parseTrimArgs(args: []const [:0]const u8, stderr: *Io.Writer) !?TrimArgs {
             &r.duration
         else
             null;
-        if (slot) |s| {
+        if (std.mem.eql(u8, arg, "--format")) {
+            i += 1;
+            if (i == args.len) {
+                try stderr.print("error: {s} needs a value\n", .{arg});
+                return null;
+            }
+            r.format = std.meta.stringToEnum(kiln.Format, args[i]) orelse {
+                try stderr.print("error: unknown format '{s}' (mp3 or wav)\n", .{args[i]});
+                return null;
+            };
+        } else if (slot) |s| {
             i += 1;
             if (i == args.len) {
                 try stderr.print("error: {s} needs a value\n", .{arg});
@@ -130,8 +146,17 @@ fn trim(init: std.process.Init, args: []const [:0]const u8, stdout: *Io.Writer, 
     };
     defer gpa.free(input);
 
-    const info = kiln.mp3.probe(input) catch |err| {
-        try stderr.print("error: {s}: {s}\n", .{ a.input, describe(err) });
+    const in_format = kiln.detect(input) orelse {
+        try stderr.print("error: {s}: unknown format (not an MP3 or WAV file)\n", .{a.input});
+        return 1;
+    };
+    const out_format = a.format orelse in_format;
+    if (out_format != in_format) {
+        try stderr.print("error: converting {s} to {s} is not supported\n", .{ in_format.name(), out_format.name() });
+        return 1;
+    }
+    const info = probe(in_format, input) catch |err| {
+        try stderr.print("error: {s}: {s}\n", .{ a.input, describe(in_format, err) });
         return 1;
     };
 
@@ -145,14 +170,13 @@ fn trim(init: std.process.Init, args: []const [:0]const u8, stdout: *Io.Writer, 
     else
         null;
 
-    const options: kiln.mp3.TrimOptions = .{ .start = start, .end = end };
-    const r = writeOutput(io, a.output, input, options, stdout) catch |err| switch (err) {
+    const r = writeOutput(io, a.output, in_format, input, .{ .start = start, .end = end }, stdout) catch |err| switch (err) {
         error.EmptyRange => {
             try stderr.print("error: empty range (input has {d} samples)\n", .{info.samples});
             return 1;
         },
         else => {
-            try stderr.print("error: cannot write '{s}': {s}\n", .{ a.output, describe(err) });
+            try stderr.print("error: cannot write '{s}': {s}\n", .{ a.output, describe(in_format, err) });
             return 1;
         },
     };
@@ -176,11 +200,52 @@ fn readInput(io: Io, gpa: std.mem.Allocator, path: []const u8) ![]u8 {
     return Io.Dir.cwd().readFileAlloc(io, path, gpa, .limited(max_input_len));
 }
 
+/// トリムに使う入力の情報(形式によらないもの)
+const Info = struct {
+    sample_rate: u32,
+    /// 長さ(サンプル数)
+    samples: u64,
+    /// 指定できる先頭の最小値(タグなしの MP3 では 529、それ以外は 0)
+    min_start: u64,
+};
+
+fn probe(format: kiln.Format, input: []const u8) !Info {
+    return switch (format) {
+        .mp3 => blk: {
+            const i = try kiln.mp3.probe(input);
+            break :blk .{ .sample_rate = i.sample_rate, .samples = i.samples, .min_start = i.min_start };
+        },
+        .wav => blk: {
+            const i = try kiln.wav.probe(input);
+            break :blk .{ .sample_rate = i.sample_rate, .samples = i.samples, .min_start = 0 };
+        },
+    };
+}
+
+/// 切り出す区間の指定(end が null なら末尾まで)
+const Range = struct { start: u64, end: ?u64 };
+/// 実際に切り出した区間
+const Trimmed = struct { start: u64, end: u64 };
+
+/// 区間を切り出して `w` に書き、実際に切り出した区間を返す
+fn trimTo(format: kiln.Format, input: []const u8, range: Range, w: *Io.Writer) !Trimmed {
+    return switch (format) {
+        .mp3 => blk: {
+            const r = try kiln.mp3.trim(input, .{ .start = range.start, .end = range.end }, w);
+            break :blk .{ .start = r.start, .end = r.end };
+        },
+        .wav => blk: {
+            const r = try kiln.wav.trim(input, .{ .start = range.start, .end = range.end }, w);
+            break :blk .{ .start = r.start, .end = r.end };
+        },
+    };
+}
+
 /// トリムした結果を書き出す。ファイルへは一時ファイルに書き、最後まで書けたときだけ
 /// 出力先に置き換える(失敗しても、既存の出力先のファイルは元のまま残る)
-fn writeOutput(io: Io, path: []const u8, input: []const u8, options: kiln.mp3.TrimOptions, stdout: *Io.Writer) !kiln.mp3.TrimResult {
+fn writeOutput(io: Io, path: []const u8, format: kiln.Format, input: []const u8, range: Range, stdout: *Io.Writer) !Trimmed {
     if (std.mem.eql(u8, path, "-")) {
-        const r = try kiln.mp3.trim(input, options, stdout);
+        const r = try trimTo(format, input, range, stdout);
         try stdout.flush();
         return r;
     }
@@ -188,17 +253,22 @@ fn writeOutput(io: Io, path: []const u8, input: []const u8, options: kiln.mp3.Tr
     defer af.deinit(io);
     var buf: [64 * 1024]u8 = undefined;
     var fw = af.file.writer(io, &buf);
-    const r = try kiln.mp3.trim(input, options, &fw.interface);
+    const r = try trimTo(format, input, range, &fw.interface);
     try fw.interface.flush();
     try af.replace(io);
     return r;
 }
 
 /// コアのエラーを利用者向けの説明にする
-fn describe(err: anyerror) []const u8 {
+fn describe(format: kiln.Format, err: anyerror) []const u8 {
     return switch (err) {
         error.NotMp3 => "not an MP3 file",
-        error.UnsupportedFormat => "unsupported MPEG audio (only MPEG-1 Layer III is supported)",
+        error.NotWav => "not a WAV file",
+        error.InvalidWav => "broken WAV file (missing or invalid fmt / data chunk)",
+        error.UnsupportedFormat => switch (format) {
+            .mp3 => "unsupported MPEG audio (only MPEG-1 Layer III is supported)",
+            .wav => "unsupported WAV (only little-endian RIFF with PCM or IEEE float is supported; RF64, RIFX and compressed encodings are not)",
+        },
         error.EmptyRange => "empty range",
         error.TooLarge => "output is too large",
         else => @errorName(err),
@@ -210,7 +280,7 @@ test {
 }
 
 test parseTrimArgs {
-    var buf: [256]u8 = undefined;
+    var buf: [4096]u8 = undefined;
     var w: Io.Writer = .fixed(&buf);
     const ok = (try parseTrimArgs(&.{ "in.mp3", "--start", "1.5", "out.mp3", "--duration", "2s" }, &w)).?;
     try std.testing.expectEqualStrings("in.mp3", ok.input);
@@ -218,8 +288,10 @@ test parseTrimArgs {
     try std.testing.expectEqual(66150, try ok.start.?.toSamples(44100));
     try std.testing.expectEqual(2, try ok.duration.?.toSamples(44100));
     try std.testing.expectEqual(null, ok.end);
+    try std.testing.expectEqual(null, ok.format);
     // "-" は stdin / stdout
     _ = (try parseTrimArgs(&.{ "-", "-" }, &w)).?;
+    try std.testing.expectEqual(kiln.Format.wav, (try parseTrimArgs(&.{ "a", "b", "--format", "wav" }, &w)).?.format.?);
 
     for ([_][]const [:0]const u8{
         &.{"in.mp3"},
@@ -228,6 +300,8 @@ test parseTrimArgs {
         &.{ "in.mp3", "out.mp3", "--start", "abc" },
         &.{ "in.mp3", "out.mp3", "--end", "1", "--duration", "1" },
         &.{ "in.mp3", "out.mp3", "--bogus" },
+        &.{ "in.mp3", "out.mp3", "--format" },
+        &.{ "in.mp3", "out.mp3", "--format", "flac" },
     }) |bad| {
         try std.testing.expectEqual(null, try parseTrimArgs(bad, &w));
     }
