@@ -30,7 +30,8 @@ kiln trim in.mp3 out.mp3 --start 1:02.5 --duration 30
 kiln trim in.mp3 - --start 66150s > out.mp3         # サンプル数で指定。- は stdout
 ```
 
-- 再エンコードせずに切り出し、ffmpeg や Chrome / Safari でデコードしたときに、元ファイルの該当区間とサンプル単位で一致します(方式は [`docs/lyria-mp3.md`](docs/lyria-mp3.md))
+- 再エンコードせずに切り出します。ffmpeg でデコードすると、元ファイルの該当区間とサンプル単位で一致します。Chrome / Firefox / Safari(`decodeAudioData` と `<audio>`)、mpg123、macOS の CoreAudio でも、位置と長さは同じで、違いはデコーダごとの丸めの差だけです(方式と検証結果は [`docs/lyria-mp3.md`](docs/lyria-mp3.md))
+- Safari などは、LAME タグのない元ファイル(Lyria の出力など)を ffmpeg より 529 サンプル(約 12ms)前にずらして再生します。そうしたプレーヤーで元ファイルを聴きながら位置を選ぶと、その分ずれます
 - 位置は ffmpeg でデコードしたときの先頭を 0 とします。LAME タグのない MP3(Lyria の出力など)では、先頭 529 サンプルより前からは切り出せません(指定すると 529 に切り上げます)
 - 入力の ID3v2 タグ(Lyria の C2PA マニフェストを含む)は引き継ぎません
 
