@@ -19,6 +19,8 @@
 | `cli/main.zig` | CLI | `zig-out/bin/kiln` |
 | `wasm/main.zig` | wasm の export 関数 | `zig-out/wasm/kiln.wasm` |
 | `wasm/kiln.js` | JS ラッパー(ES module。`load()` で wasm を読み込む) | `zig-out/wasm/kiln.js` |
+| `wasm/kiln.d.ts` | JS ラッパーの TypeScript の型定義(TypeScript 5.7 以降) | `zig-out/wasm/kiln.d.ts` |
+| `wasm/types/` | kiln.d.ts の型検査用のファイル(DOM / WebWorker / ES だけの 3 通り)。配布物には含めない | — |
 | `LICENSE` | MIT の全文。wasm の配布物にも置く | `zig-out/wasm/LICENSE` |
 | `THIRD_PARTY_NOTICES.md` | 外部から取り込んだコードや数表の出所とライセンス(方針は [`draft.md`](draft.md) §2.5) | — |
 | `cli/time.zig` | CLI の時刻指定(`1.5` / `1:02.5` / `66150s`)の解析 | — |
@@ -86,9 +88,13 @@ kiln trim <input> <output> [--start TIME] [--end TIME | --duration TIME]
 
 ### 2.3 wasm と JS
 
+- JS に返すエラーの名前は、wasm/main.zig の `KilnError`(エラーの集合)に限る。`fail` はこの集合しか受け付けないので、export が新しいエラーを返しうるようになるとコンパイルが通らなくなる。kiln.d.ts の `KilnErrorCode` も同じ一覧にする(この同期は手作業。両方の定義の横に、もう一方を指すコメントがある)
+- `InternalError` は kiln の不具合(起きるはずのない食い違い。たとえば MP3 → WAV で書いた長さが WAV のヘッダと違う)のときに返す。止めずにエラーとして返すので、wasm のインスタンスはそのまま使い続けられる。CLI は終了コード 1
+- 型定義(kiln.d.ts)は ES の標準の型だけを使い、DOM / WebWorker の型(`BufferSource`、`URL`、`WebAssembly` など)に頼らない。入力は `ArrayBufferLike | ArrayBufferView`(kiln.js がバイト列として読むものすべて)、出力は `Uint8Array<ArrayBuffer>` / `Float32Array<ArrayBuffer>`(そのまま `Blob` などに渡せる)。`wav.encode` は `AudioBuffer` を構造で受け(Worker の型ライブラリにも通る)、`Float32Array[]` を渡すときは `sampleRate` が必須。`load` の URL は文字列か、`href` を持つもの(`URL` など)
+- kiln.d.ts か kiln.js の API を変えたら、TypeScript 5.7 以降の tsc で `wasm/types/` の 3 つの設定(`tsconfig.dom.json` / `tsconfig.worker.json` / `tsconfig.es.json`)の型検査を通す(`tsc -p wasm/types/tsconfig.dom.json` など)。誤った使い方が型エラーになることも `@ts-expect-error` で確かめている。zig build は型検査をしない(Node と tsc を前提にしないため)
 - export 関数は成功なら true を返し、結果(出力のバイト列や数値)をモジュール内の変数に置く。JS 側は `kiln_output_ptr` / `kiln_output_len` / `kiln_value(i)` で読み出し、失敗時は `kiln_error_ptr` / `kiln_error_len` でエラー名を読む
 - JS ラッパーは `load()` が返すオブジェクトに `mp3.probe(bytes)` / `mp3.trim(bytes, { start, end })`(秒)/ `{ startSample, endSample }`(サンプル数)を持つ。失敗時はコアのエラー名を `code` に持つ `KilnError` を投げる
-- 入力は `BufferSource`(`ArrayBuffer` / TypedArray / `DataView`)。TypedArray と `DataView` は、要素の値ではなく下のバイト列として読む
+- 入力は `ArrayBuffer` / `SharedArrayBuffer` / TypedArray / `DataView`(型定義の `BytesInput`)。TypedArray と `DataView` は、要素の値ではなく下のバイト列として読む
 - `wav.probe(bytes)` / `wav.trim(bytes, options)` は MP3 と同じ形(`probe` の `format` は `'u8'` / `'i16'` / `'i24'` / `'i32'` / `'f32'` / `'f64'`)。`wav.encode(source, { sampleRate, format = 'i16', dither = 'tpdf' })` は、`decodeAudioData` が返す `AudioBuffer`(`sampleRate` は省ける)か、チャンネルごとの `Float32Array` の配列から WAV のバイト列を作る
 - `mp3.decode(bytes, options)` は、区間をデコードしてチャンネルごとの `Float32Array` を `channels` に返す(`AudioBuffer` の `getChannelData` と同じ並び)。`mp3.toWav(bytes, { ...区間, format = 'i16', dither = 'tpdf' })` は WAV のバイト列を返し、大きな PCM を JS に引き出さずに済む。位置の指定は `trim` と同じ
 - `mp3.decode` / `mp3.toWav` の戻り値の `invalidFrames` は、復号できなかった(無音にした)フレームの数

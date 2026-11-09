@@ -15,15 +15,17 @@ export class KilnError extends Error {
 
 /**
  * kiln.wasm を読み込んで初期化する。
- * @param {URL | string | BufferSource} source wasm の URL、またはバイト列
+ * @param {string | { href: string } | ArrayBuffer | ArrayBufferView} source wasm の URL(文字列か、URL のように
+ *   `href` を持つもの)、またはバイト列
  */
 export async function load(source = new URL('./kiln.wasm', import.meta.url)) {
   let instance;
-  if (source instanceof URL || typeof source === 'string') {
-    const response = await fetch(source);
+  const url = typeof source === 'string' ? source : typeof source?.href === 'string' ? source.href : null;
+  if (url !== null) {
+    const response = await fetch(url);
     // 404 の HTML などを wasm として解釈して分かりにくいエラーにならないよう、先に確認する
     if (!response.ok) {
-      throw new Error(`failed to fetch ${source}: ${response.status} ${response.statusText}`);
+      throw new Error(`failed to fetch ${url}: ${response.status} ${response.statusText}`);
     }
     // ダウンロードしながらコンパイルする。サーバが application/wasm を返さない場合は
     // instantiateStreaming が失敗するので、バイト列での読み込みに切り替える
@@ -152,7 +154,7 @@ export async function load(source = new URL('./kiln.wasm', import.meta.url)) {
   const mp3 = {
     /**
      * MP3 を解析する。
-     * @param {BufferSource} input MP3 ファイル全体
+     * @param {ArrayBufferLike | ArrayBufferView} input MP3 ファイル全体
      * @returns {{ sampleRate: number, channels: number, samples: number, frames: number,
      *             minStart: number, duration: number }}
      *   samples はタイムラインの長さ、minStart はトリムで指定できる先頭の最小値(サンプル数)
@@ -176,7 +178,7 @@ export async function load(source = new URL('./kiln.wasm', import.meta.url)) {
     /**
      * MP3 を再エンコードせずにトリムする。範囲外の指定は丸める。
      * 位置は秒(start / end)かサンプル数(startSample / endSample)で指定する。end を省くと末尾まで。
-     * @param {BufferSource} input MP3 ファイル全体
+     * @param {ArrayBufferLike | ArrayBufferView} input MP3 ファイル全体
      * @param {{ start?: number, end?: number, startSample?: number | bigint, endSample?: number | bigint }} options
      * @returns {{ data: Uint8Array, startSample: number, endSample: number, start: number, end: number }}
      *   data はトリムした MP3。startSample / endSample(秒は start / end)は実際に切り出した区間
@@ -187,7 +189,7 @@ export async function load(source = new URL('./kiln.wasm', import.meta.url)) {
 
     /**
      * MP3 をデコードする。位置の指定は trim と同じ(タグなしの入力でも先頭を 529 に切り上げない)。
-     * @param {BufferSource} input MP3 ファイル全体
+     * @param {ArrayBufferLike | ArrayBufferView} input MP3 ファイル全体
      * @param {{ start?: number, end?: number, startSample?: number | bigint, endSample?: number | bigint }} options
      * @returns {{ channels: Float32Array[], sampleRate: number, startSample: number, endSample: number, start: number, end: number,
      *             invalidFrames: number }}
@@ -208,7 +210,7 @@ export async function load(source = new URL('./kiln.wasm', import.meta.url)) {
 
     /**
      * MP3 をデコードして WAV にする。位置の指定は decode と同じ。
-     * @param {BufferSource} input MP3 ファイル全体
+     * @param {ArrayBufferLike | ArrayBufferView} input MP3 ファイル全体
      * @param {{ start?: number, end?: number, startSample?: number | bigint, endSample?: number | bigint,
      *           format?: string, dither?: 'tpdf' | 'none' }} options format の既定は 'i16'、dither の既定は 'tpdf'
      * @returns {{ data: Uint8Array, startSample: number, endSample: number, start: number, end: number, invalidFrames: number }}
@@ -225,7 +227,7 @@ export async function load(source = new URL('./kiln.wasm', import.meta.url)) {
   const wav = {
     /**
      * WAV を解析する。
-     * @param {BufferSource} input WAV ファイル全体
+     * @param {ArrayBufferLike | ArrayBufferView} input WAV ファイル全体
      * @returns {{ sampleRate: number, channels: number, format: string, samples: number, duration: number }}
      *   format はサンプル形式('u8' / 'i16' / 'i24' / 'i32' / 'f32' / 'f64')
      */
@@ -247,7 +249,7 @@ export async function load(source = new URL('./kiln.wasm', import.meta.url)) {
     /**
      * WAV をサンプル単位で切り出す(元の形式のまま)。範囲外の指定は丸める。
      * 位置の指定と戻り値は mp3.trim と同じ
-     * @param {BufferSource} input WAV ファイル全体
+     * @param {ArrayBufferLike | ArrayBufferView} input WAV ファイル全体
      * @param {{ start?: number, end?: number, startSample?: number | bigint, endSample?: number | bigint }} options
      * @returns {{ data: Uint8Array, startSample: number, endSample: number, start: number, end: number }}
      */

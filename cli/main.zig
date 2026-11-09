@@ -348,6 +348,7 @@ fn describe(format: kiln.Format, err: anyerror) []const u8 {
         },
         error.EmptyRange => "empty range",
         error.TooLarge => "output is too large",
+        error.InternalError => "internal error (a bug in kiln; please report it)",
         else => @errorName(err),
     };
 }

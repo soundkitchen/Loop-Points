@@ -37,6 +37,11 @@ pub const Error = Io.Writer.Error || error{
     LengthMismatch,
 };
 
+/// `Encoder.init` が返しうるエラー(`LengthMismatch` は `finish` だけが返す)
+pub const InitError = Io.Writer.Error || error{ InvalidOptions, TooLarge };
+/// `writeF32` などの書き込みが返しうるエラー
+pub const WriteError = Io.Writer.Error || error{TooLarge};
+
 /// `fmt ` チャンクの最大長(WAVE_FORMAT_EXTENSIBLE)
 const max_fmt_len = 40;
 /// ヘッダの最大長
@@ -64,7 +69,7 @@ pub const Encoder = struct {
     written: u64 = 0,
 
     /// ヘッダを書いてエンコーダを作る
-    pub fn init(w: *Io.Writer, options: Options) Error!Encoder {
+    pub fn init(w: *Io.Writer, options: Options) InitError!Encoder {
         try validate(options);
         var e: Encoder = .{
             .w = w,
@@ -116,14 +121,14 @@ pub const Encoder = struct {
     }
 
     /// インターリーブした f32 のサンプルを書く。長さはチャンネル数の倍数
-    pub fn writeF32(e: *Encoder, samples: []const f32) Error!void {
+    pub fn writeF32(e: *Encoder, samples: []const f32) WriteError!void {
         std.debug.assert(samples.len % e.channels == 0);
         try e.writeSamples(samples);
     }
 
     /// チャンネルごとに分かれた f32 のサンプル(Web Audio の AudioBuffer と同じ並び)を書く。
     /// `channels.len` はチャンネル数で、どのチャンネルも同じ長さ
-    pub fn writePlanarF32(e: *Encoder, channels: []const []const f32) Error!void {
+    pub fn writePlanarF32(e: *Encoder, channels: []const []const f32) WriteError!void {
         std.debug.assert(channels.len == e.channels);
         const frames = channels[0].len;
         for (channels) |c| std.debug.assert(c.len == frames);
@@ -144,7 +149,7 @@ pub const Encoder = struct {
     }
 
     /// インターリーブした f32 のサンプルを書く(フレームの途中で区切ってよい)
-    fn writeSamples(e: *Encoder, samples: []const f32) Error!void {
+    fn writeSamples(e: *Encoder, samples: []const f32) WriteError!void {
         var buf: [4096]u8 = undefined;
         const per = buf.len / e.format.bytes();
         var i: usize = 0;
@@ -158,12 +163,12 @@ pub const Encoder = struct {
     }
 
     /// 書き出す形式のバイト列をそのまま書く。長さはフレームの倍数
-    pub fn writeRaw(e: *Encoder, bytes: []const u8) Error!void {
+    pub fn writeRaw(e: *Encoder, bytes: []const u8) WriteError!void {
         std.debug.assert(bytes.len % e.frameLen() == 0);
         try e.writeBytes(bytes);
     }
 
-    fn writeBytes(e: *Encoder, bytes: []const u8) Error!void {
+    fn writeBytes(e: *Encoder, bytes: []const u8) WriteError!void {
         const total = e.written + bytes.len;
         if (header.riffSize(e.fmtChunk(), total) == null) return error.TooLarge;
         try e.w.writeAll(bytes);
