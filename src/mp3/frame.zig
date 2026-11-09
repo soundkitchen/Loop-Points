@@ -33,7 +33,8 @@ pub const Header = struct {
         const bi = h.bitrateIndex();
         if (bi == 0 or bi == 15) return null;
         if (h.field(10, 2) == 0b11) return null; // サンプルレートの予約値
-        // emphasis(予約値の 2 を含む)は音声データに関係しないので見ない(ffmpeg と同じ)
+        // emphasis(予約値の 2 を含む)は音声データに関係しないので見ない(ffmpeg と同じ)。
+        // 最初のフレームを探すときだけ、予約値を候補から外す(stream.findFirstFrame)
         return h;
     }
 

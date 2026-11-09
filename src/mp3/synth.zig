@@ -51,22 +51,33 @@ const synth_matrix = blk: {
 
 /// 1 チャンネルの合成フィルタバンクの状態
 pub const Synth = struct {
-    v: [1024]f64 = @splat(0),
+    /// 規格の V(1024 個のリングバッファ)。剰余なしで読めるよう、同じ値を `i` と `i + 1024` の 2 か所に置く
+    v: [2048]f64 = @splat(0),
     offset: usize = 0,
 
     /// 32 サブバンドの 1 時刻分のサンプルから、PCM を 32 個作る
     pub fn run(s: *Synth, sub: *const [32]f64, out: *[32]f32) void {
         s.offset = (s.offset + 1024 - 64) % 1024;
-        for (0..64) |i| {
-            var acc: f64 = 0;
-            for (sub, synth_matrix[i]) |x, c| acc += x * c;
-            s.v[s.offset + i] = acc;
+        // 行列 N の対称性(N[32 - i] = -N[i]、N[96 - i] = N[i])により、計算するのは i = 0〜16 と 33〜48 だけ
+        var v: [64]f64 = undefined;
+        for ([2][2]usize{ .{ 0, 17 }, .{ 33, 49 } }) |range| {
+            for (range[0]..range[1]) |i| {
+                var acc: f64 = 0;
+                for (sub, synth_matrix[i]) |x, c| acc += x * c;
+                v[i] = acc;
+            }
         }
+        for (17..33) |i| v[i] = -v[32 - i];
+        for (49..64) |i| v[i] = v[96 - i];
+        @memcpy(s.v[s.offset..][0..64], &v);
+        @memcpy(s.v[s.offset + 1024 ..][0..64], &v);
+
+        const base = s.v[s.offset..][0..1024];
         for (0..32) |j| {
             var acc: f64 = 0;
             for (0..8) |i| {
-                acc += window[64 * i + j] * s.v[(s.offset + 128 * i + j) % 1024];
-                acc += window[64 * i + 32 + j] * s.v[(s.offset + 128 * i + 96 + j) % 1024];
+                acc += window[64 * i + j] * base[128 * i + j];
+                acc += window[64 * i + 32 + j] * base[128 * i + 96 + j];
             }
             out[j] = @floatCast(acc);
         }
@@ -155,6 +166,15 @@ test "合成窓: 規格書の代表値" {
     try std.testing.expectApproxEqAbs(0.003250122, window[64], 1e-9);
     try std.testing.expectApproxEqAbs(1.144989014, window[256], 1e-9);
     try std.testing.expectApproxEqAbs(1.144287109, window[257], 1e-9);
+}
+
+test "合成フィルタの行列の対称性" {
+    for (0..17) |i| for (0..32) |k| {
+        try std.testing.expectApproxEqAbs(-synth_matrix[i][k], synth_matrix[32 - i][k], 1e-12);
+    };
+    for (49..64) |i| for (0..32) |k| {
+        try std.testing.expectApproxEqAbs(synth_matrix[96 - i][k], synth_matrix[i][k], 1e-12);
+    };
 }
 
 test "合成フィルタ: 無音からは無音" {

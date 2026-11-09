@@ -24,20 +24,37 @@ pub const Decoder = struct {
     /// グラニュール 0 のスケールファクタ(scfsi でグラニュール 1 が使い回す)
     scalefactors: [2]layer3.Scalefactors = .{ .{}, .{} },
 
-    /// 1 フレーム(ヘッダから始まるフレーム全体)を復号し、PCM を `out[チャンネル]` に書く。
-    /// 戻り値はチャンネル数。サイド情報が壊れているフレームは無音を書き、`InvalidFrame` を返す
-    /// (デコーダの状態は保ち、次のフレームから続けられる)
+    /// 1 フレーム(ヘッダから始まるフレーム。`bytes` はフレーム長以上あればよい)を復号し、
+    /// PCM を `out[チャンネル]` に書く。戻り値はチャンネル数。
+    ///
+    /// 復号できないフレームは `InvalidFrame` を返す:
+    /// - MPEG-1 Layer III のヘッダでない、またはフレームが途中で切れている: `out` に無音を書き、状態は変えない
+    /// - サイド情報が壊れている: スペクトルを 0 として IMDCT と合成フィルタを進め(前のフレームの
+    ///   重ね合わせの残りが出る)、`out` に書く。ビットリザーバには ffmpeg と同じくフレームの末尾を持ち越す
     pub fn decodeFrame(d: *Decoder, bytes: []const u8, out: *[2][1152]f32) Error!u8 {
-        const h = Header.parse(bytes).?;
+        const h = Header.parse(bytes) orelse {
+            for (out) |*o| @memset(o, 0);
+            return error.InvalidFrame;
+        };
         const nch = h.channels();
-        const sr: usize = h.sampleRateIndex();
+        const len = h.frameLen();
         const side_start: usize = 4 + @as(usize, if (h.hasCrc()) 2 else 0);
-        var sr_reader: Reader = .{ .data = bytes[side_start..] };
+        if (bytes.len < len or len < side_start + layer3.sideInfoLen(nch)) {
+            for (out) |*o| @memset(o, 0);
+            return error.InvalidFrame;
+        }
+        const fr = bytes[0..len];
+        const sr: usize = h.sampleRateIndex();
+        var sr_reader: Reader = .{ .data = fr[side_start..] };
         const si = layer3.readSideInfo(&sr_reader, nch) catch |err| {
-            for (out[0..nch]) |*o| @memset(o, 0);
+            // 状態を進める(重ね合わせの残りを出し、次のフレームでクリックが出ないように)
+            for (0..2) |gr| {
+                for (0..nch) |ch| d.synthesize(ch, gr, &@as([576]f64, @splat(0)), 0, false, out);
+            }
+            d.keepTail(fr);
             return err;
         };
-        const main = bytes[side_start + layer3.sideInfoLen(nch) ..];
+        const main = fr[side_start + layer3.sideInfoLen(nch) ..];
 
         // リザーバと、このフレームのメインデータを続けて読む
         var buf: [max_reservoir + frame.max_frame_len]u8 = undefined;
@@ -77,12 +94,8 @@ pub const Decoder = struct {
                 const g = &si.granules[gr][ch];
                 layer3.reorder(g, sr, &xr[ch]);
                 layer3.antialias(g, &xr[ch]);
-                var sub: [18][32]f64 = undefined;
                 const block_type: u2 = if (g.window_switching) g.block_type else 0;
-                synth.imdct(&xr[ch], &d.overlap[ch], block_type, g.window_switching and g.mixed, &sub);
-                for (0..18) |t| {
-                    d.synth[ch].run(&sub[t], out[ch][gr * 576 + t * 32 ..][0..32]);
-                }
+                d.synthesize(ch, gr, &xr[ch], block_type, g.window_switching and g.mixed, out);
             }
         }
 
@@ -94,10 +107,43 @@ pub const Decoder = struct {
             d.reservoir_len = n;
         } else {
             // 読みすぎたときは、フレームの末尾をそのまま残す
-            const n = @min(max_reservoir, bytes.len - 4);
-            @memcpy(d.reservoir[0..n], bytes[bytes.len - n ..]);
-            d.reservoir_len = n;
+            d.keepTail(fr);
         }
         return nch;
     }
+
+    /// 1 グラニュール・1 チャンネルの IMDCT と合成フィルタ
+    fn synthesize(d: *Decoder, ch: usize, gr: usize, xr: *const [576]f64, block_type: u2, mixed: bool, out: *[2][1152]f32) void {
+        var sub: [18][32]f64 = undefined;
+        synth.imdct(xr, &d.overlap[ch], block_type, mixed, &sub);
+        for (0..18) |t| {
+            d.synth[ch].run(&sub[t], out[ch][gr * 576 + t * 32 ..][0..32]);
+        }
+    }
+
+    /// フレームの末尾(最大 512 バイト。ヘッダは含めない)を次のフレームのリザーバにする(ffmpeg と同じ)
+    fn keepTail(d: *Decoder, fr: []const u8) void {
+        const n = @min(max_reservoir, fr.len - 4);
+        @memcpy(d.reservoir[0..n], fr[fr.len - n ..]);
+        d.reservoir_len = n;
+    }
 };
+
+test "decodeFrame: 扱えない入力は InvalidFrame" {
+    var d: Decoder = .{};
+    var out: [2][1152]f32 = undefined;
+    // MPEG-2 のヘッダ、短すぎる入力
+    try std.testing.expectError(error.InvalidFrame, d.decodeFrame("\xFF\xF3\x90\x64" ++ @as([300]u8, @splat(0)), &out));
+    try std.testing.expectError(error.InvalidFrame, d.decodeFrame("\xFF\xFB\xB0\x64\x00", &out));
+    try std.testing.expectError(error.InvalidFrame, d.decodeFrame("", &out));
+    // サイド情報が壊れている(big_values > 288): 状態は進み、無音(前の重ね合わせは 0 なので 0)
+    var f: [626]u8 = @splat(0);
+    f[0..4].* = .{ 0xFF, 0xFB, 0xB0, 0x64 };
+    // main_data_begin(9)、private(3)、scfsi(8) の後に part2_3_length(12)、big_values(9) = 511
+    var w: std.Io.Writer = .fixed(f[4..12]);
+    const bits: u64 = (@as(u64, 511) << (64 - 41));
+    try w.writeInt(u64, bits, .big);
+    try std.testing.expectError(error.InvalidFrame, d.decodeFrame(&f, &out));
+    for (out[0]) |v| try std.testing.expectEqual(0, v);
+    try std.testing.expectEqual(512, d.reservoir_len);
+}

@@ -189,8 +189,10 @@ export async function load(source = new URL('./kiln.wasm', import.meta.url)) {
      * MP3 をデコードする。位置の指定は trim と同じ(タグなしの入力でも先頭を 529 に切り上げない)。
      * @param {BufferSource} input MP3 ファイル全体
      * @param {{ start?: number, end?: number, startSample?: number | bigint, endSample?: number | bigint }} options
-     * @returns {{ channels: Float32Array[], sampleRate: number, startSample: number, endSample: number, start: number, end: number }}
-     *   channels はチャンネルごとの PCM(AudioBuffer の getChannelData と同じ並び)
+     * @returns {{ channels: Float32Array[], sampleRate: number, startSample: number, endSample: number, start: number, end: number,
+     *             invalidFrames: number }}
+     *   channels はチャンネルごとの PCM(AudioBuffer の getChannelData と同じ並び)。invalidFrames は
+     *   復号できなかった(無音にした)フレームの数
      */
     decode(input, options = {}) {
       return rangeWith(e.kiln_mp3_probe, input, options, (ptr, len, s, t) => {
@@ -200,7 +202,7 @@ export async function load(source = new URL('./kiln.wasm', import.meta.url)) {
         const all = new Float32Array(bytes.buffer, bytes.byteOffset, bytes.byteLength / 4);
         const frames = all.length / nch;
         const channels = Array.from({ length: nch }, (_, i) => all.subarray(i * frames, (i + 1) * frames));
-        return { channels, sampleRate: Number(e.kiln_value(2)) };
+        return { channels, sampleRate: Number(e.kiln_value(2)), invalidFrames: Number(e.kiln_value(4)) };
       });
     },
 
@@ -209,13 +211,13 @@ export async function load(source = new URL('./kiln.wasm', import.meta.url)) {
      * @param {BufferSource} input MP3 ファイル全体
      * @param {{ start?: number, end?: number, startSample?: number | bigint, endSample?: number | bigint,
      *           format?: string, dither?: 'tpdf' | 'none' }} options format の既定は 'i16'、dither の既定は 'tpdf'
-     * @returns {{ data: Uint8Array, startSample: number, endSample: number, start: number, end: number }}
+     * @returns {{ data: Uint8Array, startSample: number, endSample: number, start: number, end: number, invalidFrames: number }}
      */
     toWav(input, options = {}) {
       const { format, dither } = formatOptions(options);
       return rangeWith(e.kiln_mp3_probe, input, options, (ptr, len, s, t) => {
         check(e.kiln_mp3_to_wav(ptr, len, s, t ?? 0n, t !== null, format, dither));
-        return { data: takeOutput() };
+        return { data: takeOutput(), invalidFrames: Number(e.kiln_value(3)) };
       });
     },
   };

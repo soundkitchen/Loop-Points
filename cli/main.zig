@@ -80,6 +80,17 @@ const TrimArgs = struct {
     dither: ?kiln.pcm.Dither = null,
 };
 
+/// `args[i.*]` のオプションの値を読み、`i` を進める。値がなければ stderr に書いて null を返す
+fn optionValue(args: []const [:0]const u8, i: *usize, stderr: *Io.Writer) !?[]const u8 {
+    const name = args[i.*];
+    i.* += 1;
+    if (i.* == args.len) {
+        try stderr.print("error: {s} needs a value\n", .{name});
+        return null;
+    }
+    return args[i.*];
+}
+
 /// trim の引数を解析する。誤りがあれば stderr に書いて null を返す
 fn parseTrimArgs(args: []const [:0]const u8, stderr: *Io.Writer) !?TrimArgs {
     var positional: [2][]const u8 = undefined;
@@ -96,23 +107,18 @@ fn parseTrimArgs(args: []const [:0]const u8, stderr: *Io.Writer) !?TrimArgs {
             &r.duration
         else
             null;
-        if (std.mem.eql(u8, arg, "--sample-format") or std.mem.eql(u8, arg, "--dither")) {
-            i += 1;
-            if (i == args.len) {
-                try stderr.print("error: {s} needs a value\n", .{arg});
+        if (std.mem.eql(u8, arg, "--sample-format")) {
+            const v = try optionValue(args, &i, stderr) orelse return null;
+            r.sample_format = std.meta.stringToEnum(kiln.pcm.Format, v) orelse {
+                try stderr.print("error: unknown sample format '{s}' (u8, i16, i24, i32, f32 or f64)\n", .{v});
                 return null;
-            }
-            if (arg[2] == 's') {
-                r.sample_format = std.meta.stringToEnum(kiln.pcm.Format, args[i]) orelse {
-                    try stderr.print("error: unknown sample format '{s}' (u8, i16, i24, i32, f32 or f64)\n", .{args[i]});
-                    return null;
-                };
-            } else {
-                r.dither = std.meta.stringToEnum(kiln.pcm.Dither, args[i]) orelse {
-                    try stderr.print("error: unknown dither '{s}' (tpdf or none)\n", .{args[i]});
-                    return null;
-                };
-            }
+            };
+        } else if (std.mem.eql(u8, arg, "--dither")) {
+            const v = try optionValue(args, &i, stderr) orelse return null;
+            r.dither = std.meta.stringToEnum(kiln.pcm.Dither, v) orelse {
+                try stderr.print("error: unknown dither '{s}' (tpdf or none)\n", .{v});
+                return null;
+            };
         } else if (std.mem.eql(u8, arg, "--format")) {
             i += 1;
             if (i == args.len) {
@@ -232,6 +238,9 @@ fn trim(init: std.process.Init, args: []const [:0]const u8, stdout: *Io.Writer, 
     if (end) |e| if (r.end != e) {
         try stderr.print("warning: end clamped to the end of the input ({d} samples)\n", .{r.end});
     };
+    if (r.invalid_frames > 0) {
+        try stderr.print("warning: {d} frame(s) could not be decoded (broken side information) and were output as silence\n", .{r.invalid_frames});
+    }
     return 0;
 }
 
@@ -269,7 +278,12 @@ fn probe(format: kiln.Format, input: []const u8) !Info {
 /// 切り出す区間の指定(end が null なら末尾まで)
 const Range = struct { start: u64, end: ?u64 };
 /// 実際に切り出した区間
-const Trimmed = struct { start: u64, end: u64 };
+const Trimmed = struct {
+    start: u64,
+    end: u64,
+    /// MP3 をデコードしたとき、復号できなかったフレームの数
+    invalid_frames: u64 = 0,
+};
 
 /// 書き出しの内容
 const Job = struct {
@@ -283,20 +297,11 @@ const Job = struct {
 /// 区間を切り出して(またはデコードして WAV にして)`w` に書き、実際に書いた区間を返す
 fn run(job: Job, w: *Io.Writer) !Trimmed {
     const c = job.convert orelse return trimTo(job.format, job.input, job.range, w);
-    const info = try kiln.mp3.probe(job.input);
-    const end = @min(job.range.end orelse info.samples, info.samples);
-    // 空の区間は、ヘッダを書く前に弾く
-    if (job.range.start >= end) return error.EmptyRange;
-    var enc: kiln.wav.Encoder = try .init(w, .{
-        .sample_rate = info.sample_rate,
-        .channels = info.channels,
+    const r = try kiln.mp3.toWav(job.input, .{ .start = job.range.start, .end = job.range.end }, .{
         .format = c.format,
         .dither = c.dither,
-        .frames = end - job.range.start,
-    });
-    const r = try kiln.mp3.decode(job.input, .{ .start = job.range.start, .end = end }, &enc);
-    _ = try enc.finish();
-    return .{ .start = r.start, .end = r.end };
+    }, w);
+    return .{ .start = r.start, .end = r.end, .invalid_frames = r.invalid_frames };
 }
 
 /// 区間を切り出して `w` に書き、実際に切り出した区間を返す
