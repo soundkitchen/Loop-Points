@@ -1,10 +1,14 @@
 // 波形の表示と、マーカーのドラッグ・拡大縮小・スクロール
-export type Marker = 'start' | 'end';
+export type Marker = 'start' | 'end' | 'cropStart' | 'cropEnd';
+export type Mode = 'loop' | 'crop';
 
 // 描くたびに main から受け取る値 (位置はすべてサンプル)
 export interface WaveState {
+  mode: Mode;              // 動かせる線の組を決める。もう一方の組は薄く表示するだけ
   start: number;
   end: number;
+  cropStart: number;
+  cropEnd: number;
   cursor: number;
   playhead: number | null;
 }
@@ -12,6 +16,7 @@ export interface WaveState {
 const RULER = 20;        // 上の目盛りの高さ (CSS px)
 const HIT = 7;           // マーカーをつかめる距離 (CSS px)
 const MAX_PX_PER_SAMPLE = 64;
+const INACTIVE_ALPHA = 0.45;   // 今のモードで動かせない線の濃さ
 // Canvas の色は index.html の CSS 変数で決める。テーマが変わったら refreshColors で読み直す
 const COLOR_VARS = {
   bg: '--wave-bg',
@@ -20,11 +25,13 @@ const COLOR_VARS = {
   label: '--wave-label',
   zero: '--wave-zero',
   wave: '--wave-in',
-  waveOut: '--wave-out',    // ループ区間の外
+  waveOut: '--wave-out',    // 動かしている区間の外
   overview: '--wave-overview',
   region: '--wave-region',
+  cropShade: '--wave-crop-shade',   // クロップで切り落とす部分
   start: '--start',
   end: '--end',
+  crop: '--crop',
   cursor: '--wave-cursor',
   playhead: '--wave-playhead',
   view: '--wave-view',
@@ -83,6 +90,9 @@ function drawWave(g: CanvasRenderingContext2D, d: Float32Array, x0: number, spp:
     }
   }
 }
+
+// 今のモードで動かしている区間
+const activeRange = (st: WaveState) => (st.mode === 'crop' ? { a: st.cropStart, z: st.cropEnd } : { a: st.start, z: st.end });
 
 function fitCanvas(c: HTMLCanvasElement) {
   const dpr = devicePixelRatio;
@@ -174,10 +184,12 @@ export class WaveformView {
 
   private hitMarker(clientX: number): Marker | null {
     const x = clientX - this.canvas.getBoundingClientRect().left;
-    const { start, end } = this.state();
-    const ds = Math.abs(this.sampleToX(start) - x), de = Math.abs(this.sampleToX(end) - x);
-    if (Math.min(ds, de) > HIT) return null;
-    return ds <= de ? 'start' : 'end';
+    const st = this.state();
+    const { a, z } = activeRange(st);
+    const da = Math.abs(this.sampleToX(a) - x), dz = Math.abs(this.sampleToX(z) - x);
+    if (Math.min(da, dz) > HIT) return null;
+    if (st.mode === 'crop') return da <= dz ? 'cropStart' : 'cropEnd';
+    return da <= dz ? 'start' : 'end';
   }
 
   private onWheel(e: WheelEvent) {
@@ -278,9 +290,10 @@ export class WaveformView {
     if (fitCanvas(this.overview)) this.overviewDirty = true;
     if (this.data.length === 0) return;
     const st = this.state();
-    const key = `${st.start}:${st.end}`;
+    const { a, z } = activeRange(st);
+    const key = `${a}:${z}`;
     if (this.dirty || key !== this.lastKey) {
-      this.renderCache(st.start, st.end);
+      this.renderCache(a, z);
       this.dirty = false;
       this.lastKey = key;
     }
@@ -298,9 +311,15 @@ export class WaveformView {
     const h = this.canvas.height, ruler = RULER * dpr;
     g.drawImage(this.cache, 0, 0);
     const X = (s: number) => Math.round(this.sampleToX(s) * dpr);
+    const { a, z } = activeRange(st);
 
     g.fillStyle = this.color.region;
-    g.fillRect(X(st.start), ruler, X(st.end) - X(st.start), h - ruler);
+    g.fillRect(X(a), ruler, X(z) - X(a), h - ruler);
+    // 切り落とす部分を暗くする
+    g.fillStyle = this.color.cropShade;
+    const shadeL = Math.max(0, X(st.cropStart)), shadeR = Math.max(0, X(st.cropEnd));
+    g.fillRect(0, ruler, shadeL, h - ruler);
+    g.fillRect(shadeR, ruler, this.canvas.width - shadeR, h - ruler);
 
     const line = (s: number, color: string, width: number, dash: number[] = []) => {
       g.strokeStyle = color;
@@ -313,14 +332,28 @@ export class WaveformView {
       g.setLineDash([]);
     };
     line(st.cursor, this.color.cursor, 1, [4, 4]);
-    for (const [s, color, label] of [[st.start, this.color.start, '開始'], [st.end, this.color.end, '終了']] as const) {
+    const inCrop = st.mode === 'crop';
+    // 動かせない組は薄く描くだけで、旗を付けない。クロップしていなければ線は音源の両端なので描かない
+    g.globalAlpha = INACTIVE_ALPHA;
+    if (inCrop) {
+      line(st.start, this.color.start, 1);
+      line(st.end, this.color.end, 1);
+    } else if (st.cropStart > 0 || st.cropEnd < this.data.length) {
+      line(st.cropStart, this.color.crop, 1);
+      line(st.cropEnd, this.color.crop, 1);
+    }
+    g.globalAlpha = 1;
+    const flags = inCrop
+      ? [[a, this.color.crop, '前端', true], [z, this.color.crop, '後端', false]] as const
+      : [[a, this.color.start, '開始', true], [z, this.color.end, '終了', false]] as const;
+    for (const [s, color, label, opensRight] of flags) {
       line(s, color, 2);
       g.fillStyle = color;
       g.font = `bold ${11 * dpr}px system-ui, sans-serif`;
       g.textBaseline = 'middle';
       const tw = g.measureText(label).width + 8 * dpr;
-      // 旗は開始なら右、終了なら左に出して、区間の内側を向ける
-      const fx = label === '開始' ? X(s) : X(s) - tw;
+      // 旗は始まりの線なら右、終わりの線なら左に出して、区間の内側を向ける
+      const fx = opensRight ? X(s) : X(s) - tw;
       g.fillRect(fx, 0, tw, ruler);
       g.fillStyle = this.color.flagText;
       g.fillText(label, fx + 4 * dpr, ruler / 2);
@@ -332,13 +365,18 @@ export class WaveformView {
     const g = this.overview.getContext('2d')!;
     const w = this.overview.width, h = this.overview.height;
     const X = (s: number) => Math.round((s / this.data.length) * w);
+    const { a, z } = activeRange(st);
+    const inCrop = st.mode === 'crop';
     g.drawImage(this.overviewCache, 0, 0);
     g.fillStyle = this.color.region;
-    g.fillRect(X(st.start), 0, X(st.end) - X(st.start), h);
-    g.fillStyle = this.color.start;
-    g.fillRect(X(st.start), 0, 2, h);
-    g.fillStyle = this.color.end;
-    g.fillRect(X(st.end) - 2, 0, 2, h);
+    g.fillRect(X(a), 0, X(z) - X(a), h);
+    g.fillStyle = this.color.cropShade;
+    g.fillRect(0, 0, X(st.cropStart), h);
+    g.fillRect(X(st.cropEnd), 0, w - X(st.cropEnd), h);
+    g.fillStyle = inCrop ? this.color.crop : this.color.start;
+    g.fillRect(X(a), 0, 2, h);
+    g.fillStyle = inCrop ? this.color.crop : this.color.end;
+    g.fillRect(X(z) - 2, 0, 2, h);
     if (st.playhead !== null) {
       g.fillStyle = this.color.playhead;
       g.fillRect(X(st.playhead), 0, 1, h);

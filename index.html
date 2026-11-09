@@ -7,16 +7,16 @@
     <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%230e1216'/%3E%3Cpath d='M10 16h1M13 11v10M16 7v18M19 11v10M22 16h-1' stroke='%235fa8d3' stroke-width='2' stroke-linecap='round'/%3E%3Cpath d='M6 5v22' stroke='%234cd98a' stroke-width='3' stroke-linecap='round'/%3E%3Cpath d='M26 5v22' stroke='%23ff8a4c' stroke-width='3' stroke-linecap='round'/%3E%3C/svg%3E" />
     <script src="/theme-init.js"></script>
     <style>
-      /* 配色。--wave- で始まるものと --start、--end は src/waveform.ts が Canvas の描画で読む */
+      /* 配色。--wave- で始まるものと --start、--end、--crop は src/waveform.ts が Canvas の描画で読む */
       :root[data-theme=dark] {
         color-scheme: dark;
         --bg: #0e1216; --fg: #d8dee6; --dim: #8b95a3; --line: #2a313b; --panel: #171c23;
         --control: #222933; --control-border: #343d49; --control-hover: #2b3440;
         --primary: #2d5f86; --primary-border: #3b76a3; --primary-fg: #d8dee6;
         --warn: #ffcf66; --warn-border: #6b5720; --overlay: rgba(14, 18, 22, 0.85); --kbd-border: #3a4350;
-        --start: #4cd98a; --end: #ff8a4c;
+        --start: #4cd98a; --end: #ff8a4c; --crop: #c9a0ff;
         --wave-bg: #12161c; --wave-ruler: #1b2129; --wave-tick: #56606d; --wave-label: #8b95a3; --wave-zero: #2c343f;
-        --wave-in: #5fa8d3; --wave-out: #35556b; --wave-overview: #35556b; --wave-region: rgba(95, 168, 211, 0.10);
+        --wave-in: #5fa8d3; --wave-out: #35556b; --wave-overview: #35556b; --wave-region: rgba(95, 168, 211, 0.10); --wave-crop-shade: rgba(0, 0, 0, 0.6);
         --wave-cursor: #e6e6e6; --wave-playhead: #ffd84c; --wave-view: rgba(255, 255, 255, 0.14); --wave-flag-text: #0b0e12;
       }
       :root[data-theme=light] {
@@ -25,9 +25,9 @@
         --control: #ffffff; --control-border: #c3cbd6; --control-hover: #e9edf2;
         --primary: #2a6a9c; --primary-border: #215681; --primary-fg: #ffffff;
         --warn: #8a5a00; --warn-border: #d9b55a; --overlay: rgba(245, 247, 250, 0.85); --kbd-border: #c3cbd6;
-        --start: #0d8450; --end: #c2500f;
+        --start: #0d8450; --end: #c2500f; --crop: #7a3fb0;
         --wave-bg: #ffffff; --wave-ruler: #eef1f5; --wave-tick: #9aa5b1; --wave-label: #5a6573; --wave-zero: #d5dbe3;
-        --wave-in: #2f7fb5; --wave-out: #a9c4d8; --wave-overview: #4f8fbb; --wave-region: rgba(47, 127, 181, 0.10);
+        --wave-in: #2f7fb5; --wave-out: #a9c4d8; --wave-overview: #4f8fbb; --wave-region: rgba(47, 127, 181, 0.10); --wave-crop-shade: rgba(90, 101, 115, 0.45);
         --wave-cursor: #1f2730; --wave-playhead: #b87f00; --wave-view: rgba(0, 0, 0, 0.18); --wave-flag-text: #ffffff;
       }
       html, body { margin: 0; background: var(--bg); color: var(--fg); font: 13px/1.5 system-ui, sans-serif; }
@@ -44,11 +44,13 @@
       button:hover { background: var(--control-hover); }
       button:disabled { opacity: 0.4; cursor: default; }
       button.primary { background: var(--primary); border-color: var(--primary-border); color: var(--primary-fg); }
-      #theme { display: inline-flex; }
-      #theme button { display: flex; padding: 5px 8px; border-radius: 0; margin-left: -1px; color: var(--dim); }
-      #theme button:first-child { border-radius: 4px 0 0 4px; margin-left: 0; }
-      #theme button:last-child { border-radius: 0 4px 4px 0; }
-      #theme button[aria-pressed=true] { position: relative; background: var(--primary); border-color: var(--primary-border); color: var(--primary-fg); }
+      #theme, #mode { display: inline-flex; }
+      #theme button, #mode button { padding: 5px 8px; border-radius: 0; margin-left: -1px; color: var(--dim); }
+      #theme button { display: flex; }
+      #mode button { padding: 4px 14px; }
+      #theme button:first-child, #mode button:first-child { border-radius: 4px 0 0 4px; margin-left: 0; }
+      #theme button:last-child, #mode button:last-child { border-radius: 0 4px 4px 0; }
+      #theme button[aria-pressed=true], #mode button[aria-pressed=true] { position: relative; background: var(--primary); border-color: var(--primary-border); color: var(--primary-fg); }
       /* クリックの対象をボタンにする。アイコンが対象になると src/main.ts のフォーカスを外す処理が効かない */
       #theme svg { pointer-events: none; width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
       input[type=number] { width: 7em; padding: 3px 6px; font-family: ui-monospace, monospace; }
@@ -61,8 +63,9 @@
       .marker h2 { margin: 0; font-size: 13px; color: var(--c); display: flex; align-items: center; gap: 8px; }
       .marker button { padding: 2px 8px; }
       #status.dirty { color: var(--warn); }
-      #warning { color: var(--warn); border: 1px solid var(--warn-border); border-radius: 4px; padding: 6px 10px; }
+      #warning { color: var(--warn); border: 1px solid var(--warn-border); border-radius: 4px; padding: 6px 10px; white-space: pre-line; }
       #warning:empty { display: none; }
+      #crop-tools[hidden] { display: none; }
       body.dragging::after { content: '音源や JSON をドロップ'; position: fixed; inset: 8px; display: flex; align-items: center; justify-content: center; font-size: 18px; background: var(--overlay); border: 2px dashed var(--primary-border); border-radius: 8px; pointer-events: none; }
       details { color: var(--dim); }
       details ul { margin: 6px 0; padding-left: 20px; }
@@ -123,6 +126,10 @@
     </section>
     <main>
       <div id="warning"></div>
+      <div id="mode" role="group" aria-label="モード">
+        <button data-mode="loop" aria-pressed="true">ループ</button>
+        <button data-mode="crop" aria-pressed="false">クロップ</button>
+      </div>
       <canvas id="wave"></canvas>
       <canvas id="overview"></canvas>
 
@@ -140,8 +147,13 @@
       <div class="markers" id="markers"></div>
 
       <div class="row">
-        <span class="dim">ループの長さ</span>
+        <span id="length-label" class="dim">ループの長さ</span>
         <span id="length" class="mono"></span>
+        <span id="crop-tools" class="row" hidden>
+          <!-- 選べる形式は src/main.ts が音源に合わせて入れる -->
+          <label>形式 <select id="out-format"></select></label>
+          <button id="export-crop" class="primary" disabled>切り出して保存</button>
+        </span>
         <span class="spacer"></span>
         <label><input id="snap" type="checkbox" checked /> ドラッグでゼロクロスに吸着</label>
         <button id="fit">全体を表示</button>
@@ -158,6 +170,8 @@
           <li>「JSON を書き出す」で保存先を選んで保存する。「JSON をコピー」でクリップボードに写す。どちらも、読み込んだ JSON にある音源の項目も含めて書き出す</li>
           <li>読み込んだ、または保存した JSON に「上書き保存」できる。読み込んだあとにファイルが変更されていたら確認を出す</li>
           <li>JSON の <code>duration</code> と音源の長さが違うと警告を出す</li>
+          <li>「クロップ」では、波形の <b>前端</b>・<b>後端</b> の線で残す範囲を決め、「切り出して保存」で書き出す。mp3 は再エンコードせずに mp3 で切り出すか、WAV にするかを選べる。WAV は WAV のまま切り出し、ほかの形式は WAV にする。書き出すと、その音源を開いてループのモードに戻り、ループの秒数も合わせる。JSON の保存は別に行う</li>
+          <li>クロップの範囲がループ区間にかかっている間は書き出せない。再生は前端から後端まで 1 回で止まり、線を動かすと止まる</li>
         </ul>
       </details>
     </main>
