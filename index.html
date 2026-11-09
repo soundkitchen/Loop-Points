@@ -65,6 +65,12 @@
       #status.dirty { color: var(--warn); }
       #warning { color: var(--warn); border: 1px solid var(--warn-border); border-radius: 4px; padding: 6px 10px; white-space: pre-line; }
       #warning:empty { display: none; }
+      /* この行は波形のすぐ上にあるので、中身の幅が変わって折り返しが変わると波形が上下に動き、
+         後ろのボタンも左右に動く。長さ、形式、ラベルの幅を固定し、行の幅はウィンドウの幅でしか変わらないようにする */
+      #mode-bar { gap: 12px; }
+      #length-label { min-width: 8em; }
+      #length { min-width: 32ch; }   /* 59:59.999 (158760000 サンプル) まで。全角の文字は 2ch で、少し余裕を持たせる */
+      #out-format { width: 10em; }
       #crop-tools[hidden] { display: none; }
       body.dragging::after { content: '音源や JSON をドロップ'; position: fixed; inset: 8px; display: flex; align-items: center; justify-content: center; font-size: 18px; background: var(--overlay); border: 2px dashed var(--primary-border); border-radius: 8px; pointer-events: none; }
       details { color: var(--dim); }
@@ -126,9 +132,19 @@
     </section>
     <main>
       <div id="warning"></div>
-      <div id="mode" role="group" aria-label="モード">
-        <button data-mode="loop" aria-pressed="true">ループ</button>
-        <button data-mode="crop" aria-pressed="false">クロップ</button>
+      <!-- モードのタブの横に、そのモードの長さとクロップの書き出しを置く -->
+      <div id="mode-bar" class="row">
+        <div id="mode" role="group" aria-label="モード">
+          <button data-mode="loop" aria-pressed="true">ループ</button>
+          <button data-mode="crop" aria-pressed="false">クロップ</button>
+        </div>
+        <span id="length-label" class="dim">ループの長さ</span>
+        <span id="length" class="mono"></span>
+        <span id="crop-tools" class="row" hidden>
+          <!-- 選べる形式は src/main.ts が音源に合わせて入れる -->
+          <label>形式 <select id="out-format"></select></label>
+          <button id="export-crop" class="primary" disabled>切り出して保存</button>
+        </span>
       </div>
       <canvas id="wave"></canvas>
       <canvas id="overview"></canvas>
@@ -147,13 +163,6 @@
       <div class="markers" id="markers"></div>
 
       <div class="row">
-        <span id="length-label" class="dim">ループの長さ</span>
-        <span id="length" class="mono"></span>
-        <span id="crop-tools" class="row" hidden>
-          <!-- 選べる形式は src/main.ts が音源に合わせて入れる -->
-          <label>形式 <select id="out-format"></select></label>
-          <button id="export-crop" class="primary" disabled>切り出して保存</button>
-        </span>
         <span class="spacer"></span>
         <label><input id="snap" type="checkbox" checked /> ドラッグでゼロクロスに吸着</label>
         <button id="fit">全体を表示</button>
