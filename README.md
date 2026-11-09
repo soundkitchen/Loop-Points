@@ -2,7 +2,7 @@
 
 音声を読み込み、クロップして、任意の形式で書き出すための Zig 製ライブラリです。CLI とブラウザ(wasm)の両方で動かすことを目指しています。
 
-最初の到達点は、Google Gemini Lyria が出力する MP3 を、再エンコードせずにサンプル精度でトリムすることです。今のところ、MP3(MPEG-1 Layer III)の無劣化トリムだけができます。
+最初の到達点は、Google Gemini Lyria が出力する MP3 を、再エンコードせずにサンプル精度でトリムすることです。今のところ、MP3(MPEG-1 Layer III)と WAV(PCM・浮動小数点)を、形式を変えずにサンプル精度で切り出せます。
 
 - 表示名は `K!LN`、識別子(リポジトリ名・モジュール名・実行ファイル名)は `kiln` です。
 
@@ -28,7 +28,11 @@ zig build wasm     # wasm と JS ラッパーだけをビルド
 kiln trim in.mp3 out.mp3 --start 1.5 --end 10       # 1.5 秒から 10 秒まで
 kiln trim in.mp3 out.mp3 --start 1:02.5 --duration 30
 kiln trim in.mp3 - --start 66150s > out.mp3         # サンプル数で指定。- は stdout
+kiln trim in.wav out.wav --start 0.5 --end 3        # WAV も同じ。形式は中身から判定する
 ```
+
+- 出力の形式は `--format mp3|wav` で指定できます(省くと入力と同じ)。形式の変換(MP3 → WAV など)にはまだ対応していません
+- WAV は `data` の中身を切り出すだけなので、元の形式のまま無劣化です
 
 - 再エンコードせずに切り出します。ffmpeg でデコードすると、元ファイルの該当区間とサンプル単位で一致します。Chrome / Firefox / Safari の `decodeAudioData`、mpg123、macOS の CoreAudio でも、位置と長さは同じで、違いはデコーダごとの丸めの差だけです。`<audio>` 要素では、Chrome / Firefox はサンプル単位で正確、Safari は長さと末尾が正確で、再生開始直後(数十 ms)は確かめられていません(方式と検証結果は [`docs/lyria-mp3.md`](docs/lyria-mp3.md))
 - Safari などは、LAME タグのない元ファイル(Lyria の出力など)を ffmpeg より 529 サンプル(約 12ms)前にずらして再生します。そうしたプレーヤーで元ファイルを聴きながら位置を選ぶと、その分ずれます

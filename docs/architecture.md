@@ -12,7 +12,7 @@
 
 | パス | 内容 | ビルド成果物 |
 |---|---|---|
-| `src/root.zig` | コアのルート。モジュール名 `kiln` | — |
+| `src/root.zig` | コアのルート。モジュール名 `kiln`。入力の形式の判定(`kiln.detect`)もここに置く | — |
 | `src/pcm.zig` | PCM のサンプル形式と、f32 との変換(`kiln.pcm`) | — |
 | `src/mp3.zig`, `src/mp3/` | MP3 の解析と無劣化トリム(`kiln.mp3`)。`frame`(フレームヘッダ)/ `id3` / `xing`(Xing・LAME タグ)/ `stream`(入力の解析)/ `trim` に分ける | — |
 | `src/wav.zig`, `src/wav/` | WAV の解析とサンプル精度のトリム、エンコーダ(`kiln.wav`)。`parse`(チャンクの解析)/ `header`(ヘッダの書き出し)/ `encoder` に分ける | — |
@@ -54,14 +54,16 @@ const t = try kiln.mp3.trimAlloc(gpa, input, .{ .start = 66150 }); // t.data / t
 ### 2.2 CLI
 
 ```sh
-kiln trim <input> <output> [--start TIME] [--end TIME | --duration TIME]
+kiln trim <input> <output> [--start TIME] [--end TIME | --duration TIME] [--format FORMAT]
 ```
 
 - `<input>` / `<output>` は `-` で stdin / stdout
+- 入力の形式(MP3 / WAV)は、コアの `kiln.detect` が先頭のバイト列(マジックバイト)から判定する。拡張子は見ない
+- `--format mp3|wav` で出力の形式を指定する。省くと入力と同じ形式。形式の変換はまだできないので、入力と違う形式を指定するとエラー(終了コード 1)
 - TIME は秒(`1.5`)、分:秒 / 時:分:秒(`1:02.5`)、サンプル数(`66150s`)。秒は浮動小数点を使わずに解析し、切り捨てでサンプル位置にする
 - `--duration` は、切り上げた後の実際の開始位置から数える(タグなしの入力で `--start` を省いても、出力の長さは指定どおり)
 - 出力ファイルは一時ファイルに書き、最後まで書けたときだけ置き換える(`Dir.createFileAtomic`)。失敗したときは、既存の出力ファイルは元のまま残る。置き換えはリネームなので、出力先がシンボリックリンクならリンク自体が置き換わる
-- 終了コード: 0 = 成功、1 = 処理の失敗(入力が MP3 でない、区間が空など)、2 = 引数の誤り
+- 終了コード: 0 = 成功、1 = 処理の失敗(入力が MP3 / WAV でない、区間が空など)、2 = 引数の誤り
 
 ### 2.3 wasm と JS
 
