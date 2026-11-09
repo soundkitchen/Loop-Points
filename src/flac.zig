@@ -18,7 +18,7 @@ pub const Info = struct {
     channels: u8,
     /// ビット深度(4〜32)
     bits_per_sample: u8,
-    /// 長さ(サンプル数)。実際のフレームから数えたもの
+    /// 長さ(サンプル数)。実際のフレームから数えたもの(壊れて失われたフレームの分を含む)
     samples: u64,
     /// フレームの数
     frames: u64,
@@ -30,6 +30,19 @@ pub const Info = struct {
 pub fn probe(input: []const u8) ParseError!Info {
     const s = try stream.Stream.parse(input);
     return infoOf(&s);
+}
+
+pub const StreamFormat = struct {
+    sample_rate: u32,
+    channels: u8,
+    bits_per_sample: u8,
+};
+
+/// メタデータ(STREAMINFO)だけを読み、サンプルレートなどを返す。フレームは見ないので `probe` より軽い
+/// (秒をサンプル位置に直すときなどに使う)
+pub fn streamFormat(input: []const u8) ParseError!StreamFormat {
+    const si = (try metadata.Metadata.parse(input)).info;
+    return .{ .sample_rate = si.sample_rate, .channels = si.channels, .bits_per_sample = si.bits };
 }
 
 /// 先頭(ID3v2 タグがあればその後)が FLAC の印(`fLaC`、または Ogg FLAC)か。フレームは見ない
@@ -65,76 +78,9 @@ pub const DecodeResult = struct {
     sample_rate: u32,
     channels: u8,
     bits_per_sample: u8,
-    /// 復号できなかった(CRC が合わない、中身が壊れている)フレームの数。そのフレームは無音になっている
+    /// 復号できなかった(CRC が合わない、中身が壊れている、失われた)フレームの数。その分は無音になっている
     invalid_frames: u64,
 };
-
-pub const DecodeError = ParseError || error{ EmptyRange, OutOfMemory };
-
-/// 入力全体を解析し、区間 `[options.start, options.end)` の PCM を、チャンネルをインターリーブした
-/// 整数(`bits_per_sample` ビットの符号付き)で `sink.writeI32(samples)` に渡す。末尾は入力の長さで切り詰める。
-/// フレームは互いに独立しているので、区間の先頭を含むフレームから復号する。
-/// `gpa` はフレームの復号に使う作業領域(チャンネル数 × ブロック長の i64)の確保に使う
-pub fn decode(gpa: std.mem.Allocator, input: []const u8, options: DecodeOptions, sink: anytype) !DecodeResult {
-    const s = try stream.Stream.parse(input);
-    const range = try clampRange(&s, options);
-    return decodeParsed(gpa, input, &s, range, sink);
-}
-
-const Range = struct { start: u64, end: u64 };
-
-fn clampRange(s: *const stream.Stream, options: DecodeOptions) error{EmptyRange}!Range {
-    const end = @min(options.end orelse s.samples, s.samples);
-    if (options.start >= end) return error.EmptyRange;
-    return .{ .start = options.start, .end = end };
-}
-
-fn decodeParsed(gpa: std.mem.Allocator, input: []const u8, s: *const stream.Stream, range: Range, sink: anytype) !DecodeResult {
-    const si = s.info();
-    const nch: usize = si.channels;
-    var d: decoder.Decoder = .init(gpa);
-    defer d.deinit();
-    var inter: [4096]i32 = undefined;
-    const chunk = inter.len / nch;
-    var invalid: u64 = 0;
-    var it = s.iterator(input);
-    while (it.next()) |f| {
-        const bs = f.header.block_size;
-        if (f.sample >= range.end) break;
-        if (f.sample + bs <= range.start) continue;
-        const bits = if (f.header.bits != 0) f.header.bits else si.bits;
-        const samples: ?[]const i64 = if (f.ok)
-            d.decodeFrame(f.bytes(input), f.header, bits) catch |err| switch (err) {
-                error.OutOfMemory => return error.OutOfMemory,
-                error.InvalidFrame => null,
-            }
-        else
-            null;
-        if (samples == null) invalid += 1;
-
-        const lo: usize = @intCast(@max(range.start, f.sample) - f.sample);
-        const hi: usize = @intCast(@min(range.end, f.sample + bs) - f.sample);
-        var i = lo;
-        while (i < hi) {
-            const n = @min(chunk, hi - i);
-            for (0..n) |j| {
-                for (0..nch) |ch| {
-                    inter[j * nch + ch] = if (samples) |x| @intCast(x[ch * bs + i + j]) else 0;
-                }
-            }
-            try sink.writeI32(inter[0 .. n * nch]);
-            i += n;
-        }
-    }
-    return .{
-        .start = range.start,
-        .end = range.end,
-        .sample_rate = si.sample_rate,
-        .channels = si.channels,
-        .bits_per_sample = si.bits,
-        .invalid_frames = invalid,
-    };
-}
 
 pub const WavOptions = struct {
     /// 書き出すサンプル形式。null ならビット深度を保つ形式(8bit 以下は u8、16bit 以下は i16、
@@ -147,6 +93,125 @@ pub const WavOptions = struct {
 /// ビット深度を保つ WAV のサンプル形式
 pub fn wavFormat(bits_per_sample: u8) pcm.Format {
     return if (bits_per_sample <= 8) .u8 else if (bits_per_sample <= 16) .i16 else if (bits_per_sample <= 24) .i24 else .i32;
+}
+
+/// 解析済みの FLAC(フレームの一覧)。フレームの区切りを探す走査を 1 回で済ませるためのもので、
+/// `decode` / `toWav` / `toWavAlloc` は中でこれを作る。入力のスライスを参照する
+pub const Index = struct {
+    input: []const u8,
+    s: stream.Index,
+
+    pub fn init(gpa: std.mem.Allocator, input: []const u8) (ParseError || error{OutOfMemory})!Index {
+        return .{ .input = input, .s = try .init(gpa, input) };
+    }
+
+    pub fn deinit(ix: *Index, gpa: std.mem.Allocator) void {
+        ix.s.deinit(gpa);
+    }
+
+    pub fn info(ix: *const Index) Info {
+        return infoOf(&ix.s.stream);
+    }
+
+    /// 区間を丸める(末尾は入力の長さまで)
+    fn clamp(ix: *const Index, options: DecodeOptions) error{EmptyRange}!Range {
+        const total = ix.s.stream.samples;
+        const end = @min(options.end orelse total, total);
+        if (options.start >= end) return error.EmptyRange;
+        return .{ .start = options.start, .end = end };
+    }
+
+    /// `kiln.flac.decode` と同じ。`gpa` は復号の作業領域に使う
+    pub fn decode(ix: *const Index, gpa: std.mem.Allocator, options: DecodeOptions, sink: anytype) !DecodeResult {
+        return ix.decodeRange(gpa, try ix.clamp(options), sink);
+    }
+
+    fn decodeRange(ix: *const Index, gpa: std.mem.Allocator, range: Range, sink: anytype) !DecodeResult {
+        const si = ix.s.stream.info();
+        const nch: usize = si.channels;
+        var d: decoder.Decoder = .init(gpa);
+        defer d.deinit();
+        var inter: [4096]i32 = undefined;
+        const chunk = inter.len / nch;
+        var invalid: u64 = 0;
+        for (ix.s.frames) |f| {
+            if (f.sample >= range.end) break;
+            if (f.sample + f.samples <= range.start) continue;
+            const samples: ?[]const i64 = if (f.header) |h|
+                d.decodeFrame(f.bytes(ix.input), h, if (h.bits != 0) h.bits else si.bits) catch |err| switch (err) {
+                    error.OutOfMemory => return error.OutOfMemory,
+                    error.InvalidFrame => null,
+                }
+            else
+                null;
+            if (samples == null) invalid += f.count;
+
+            const bs: usize = @intCast(f.samples);
+            const lo: usize = @intCast(@max(range.start, f.sample) - f.sample);
+            const hi: usize = @intCast(@min(range.end, f.sample + f.samples) - f.sample);
+            var i = lo;
+            while (i < hi) {
+                const n = @min(chunk, hi - i);
+                for (0..n) |j| {
+                    for (0..nch) |ch| {
+                        inter[j * nch + ch] = if (samples) |x| @intCast(x[ch * bs + i + j]) else 0;
+                    }
+                }
+                try sink.writeI32(inter[0 .. n * nch]);
+                i += n;
+            }
+        }
+        return .{
+            .start = range.start,
+            .end = range.end,
+            .sample_rate = si.sample_rate,
+            .channels = si.channels,
+            .bits_per_sample = si.bits,
+            .invalid_frames = invalid,
+        };
+    }
+
+    /// `kiln.flac.toWav` と同じ
+    pub fn toWav(ix: *const Index, gpa: std.mem.Allocator, options: DecodeOptions, wav_options: WavOptions, w: *Io.Writer) !DecodeResult {
+        return ix.toWavRange(gpa, try ix.clamp(options), wav_options, w);
+    }
+
+    fn toWavRange(ix: *const Index, gpa: std.mem.Allocator, range: Range, wav_options: WavOptions, w: *Io.Writer) !DecodeResult {
+        var enc: wav.Encoder = try .init(w, ix.wavEncoderOptions(range, wav_options));
+        const si = ix.s.stream.info();
+        const format = wav_options.format orelse wavFormat(si.bits);
+        var sink: WavSink = .{ .enc = &enc, .format = format, .bits = si.bits, .q = .init(wav_options.dither) };
+        const r = try ix.decodeRange(gpa, range, &sink);
+        _ = enc.finish() catch |err| switch (err) {
+            // decodeRange は区間のサンプル数ちょうどを書くので、食い違うのは kiln の不具合
+            error.LengthMismatch => return error.InternalError,
+            else => |e| return e,
+        };
+        return r;
+    }
+
+    fn wavEncoderOptions(ix: *const Index, range: Range, wav_options: WavOptions) wav.EncoderOptions {
+        const si = ix.s.stream.info();
+        return .{
+            .sample_rate = si.sample_rate,
+            .channels = si.channels,
+            .format = wav_options.format orelse wavFormat(si.bits),
+            .dither = wav_options.dither,
+            .frames = range.end - range.start,
+        };
+    }
+};
+
+const Range = struct { start: u64, end: u64 };
+
+/// 入力全体を解析し、区間 `[options.start, options.end)` の PCM を、チャンネルをインターリーブした
+/// 整数(`bits_per_sample` ビットの符号付き)で `sink.writeI32(samples)` に渡す。末尾は入力の長さで切り詰める。
+/// フレームは互いに独立しているので、区間の先頭を含むフレームから復号する。
+/// `gpa` はフレームの一覧と、復号の作業領域(チャンネル数 × ブロック長の i64)の確保に使う
+pub fn decode(gpa: std.mem.Allocator, input: []const u8, options: DecodeOptions, sink: anytype) !DecodeResult {
+    var ix: Index = try .init(gpa, input);
+    defer ix.deinit(gpa);
+    return ix.decode(gpa, options, sink);
 }
 
 /// 復号した整数を WAV のサンプル形式に変換して書く sink
@@ -174,29 +239,9 @@ const WavSink = struct {
 
 /// `decode` した区間を WAV にして `w` に書く(入力の解析は 1 回)。`w.flush()` は呼び出し側が行う
 pub fn toWav(gpa: std.mem.Allocator, input: []const u8, options: DecodeOptions, wav_options: WavOptions, w: *Io.Writer) !DecodeResult {
-    const s = try stream.Stream.parse(input);
-    const range = try clampRange(&s, options);
-    return toWavParsed(gpa, input, &s, range, wav_options, w);
-}
-
-fn toWavParsed(gpa: std.mem.Allocator, input: []const u8, s: *const stream.Stream, range: Range, wav_options: WavOptions, w: *Io.Writer) !DecodeResult {
-    const si = s.info();
-    const format = wav_options.format orelse wavFormat(si.bits);
-    var enc: wav.Encoder = try .init(w, .{
-        .sample_rate = si.sample_rate,
-        .channels = si.channels,
-        .format = format,
-        .dither = wav_options.dither,
-        .frames = range.end - range.start,
-    });
-    var sink: WavSink = .{ .enc = &enc, .format = format, .bits = si.bits, .q = .init(wav_options.dither) };
-    const r = try decodeParsed(gpa, input, s, range, &sink);
-    _ = enc.finish() catch |err| switch (err) {
-        // decodeParsed は区間のサンプル数ちょうどを書くので、食い違うのは kiln の不具合
-        error.LengthMismatch => return error.InternalError,
-        else => |e| return e,
-    };
-    return r;
+    var ix: Index = try .init(gpa, input);
+    defer ix.deinit(gpa);
+    return ix.toWav(gpa, options, wav_options, w);
 }
 
 pub const WavDecoded = struct {
@@ -207,18 +252,13 @@ pub const WavDecoded = struct {
 
 /// `toWav` の一括版。出力の大きさを前もって計算して一度に確保する
 pub fn toWavAlloc(gpa: std.mem.Allocator, input: []const u8, options: DecodeOptions, wav_options: WavOptions) !WavDecoded {
-    const s = try stream.Stream.parse(input);
-    const range = try clampRange(&s, options);
-    const si = s.info();
-    const len = try wav.Encoder.fileLen(.{
-        .sample_rate = si.sample_rate,
-        .channels = si.channels,
-        .format = wav_options.format orelse wavFormat(si.bits),
-        .frames = range.end - range.start,
-    });
+    var ix: Index = try .init(gpa, input);
+    defer ix.deinit(gpa);
+    const range = try ix.clamp(options);
+    const len = try wav.Encoder.fileLen(ix.wavEncoderOptions(range, wav_options));
     var out = try Io.Writer.Allocating.initCapacity(gpa, std.math.cast(usize, len) orelse return error.TooLarge);
     defer out.deinit();
-    const r = toWavParsed(gpa, input, &s, range, wav_options, &out.writer) catch |err| switch (err) {
+    const r = ix.toWavRange(gpa, range, wav_options, &out.writer) catch |err| switch (err) {
         error.WriteFailed => return error.OutOfMemory,
         else => |e| return e,
     };
@@ -359,17 +399,13 @@ fn frameRange(input: []const u8, index: usize) ![2]usize {
     return error.TestUnexpectedResult;
 }
 
-test "壊れたフレームは無音にして数える" {
+/// テスト用: s16-stereo.flac を壊した `bad` で、フレーム 3 だけが無音になり、ほかは元と同じこと
+fn expectFrame3Silenced(bad: []const u8) !void {
     const gpa = std.testing.allocator;
-    const in = testdata.s16_stereo_flac;
     var all: CollectSink = .{};
     defer all.deinit();
-    _ = try decode(gpa, in, .{}, &all);
+    _ = try decode(gpa, testdata.s16_stereo_flac, .{}, &all);
 
-    const fr = try frameRange(in, 3);
-    const bad = try gpa.dupe(u8, in);
-    defer gpa.free(bad);
-    bad[(fr[0] + fr[1]) / 2] ^= 0x10;
     const i = try probe(bad);
     try std.testing.expectEqual(11025, i.samples);
     try std.testing.expectEqual(10, i.frames);
@@ -379,6 +415,7 @@ test "壊れたフレームは無音にして数える" {
     try std.testing.expectEqual(1, r.invalid_frames);
     const a = 3 * 1152 * 2;
     const b = 4 * 1152 * 2;
+    try std.testing.expectEqual(all.list.items.len, got.list.items.len);
     try std.testing.expectEqualSlices(i32, all.list.items[0..a], got.list.items[0..a]);
     try std.testing.expect(std.mem.allEqual(i32, got.list.items[a..b], 0));
     try std.testing.expectEqualSlices(i32, all.list.items[b..], got.list.items[b..]);
@@ -386,6 +423,38 @@ test "壊れたフレームは無音にして数える" {
     var part: CollectSink = .{};
     defer part.deinit();
     try std.testing.expectEqual(0, (try decode(gpa, bad, .{ .end = 3 * 1152 }, &part)).invalid_frames);
+}
+
+test "壊れたフレームは無音にして数える(中身、ヘッダ、フレームの欠落、偽の同期コード)" {
+    const gpa = std.testing.allocator;
+    const in = testdata.s16_stereo_flac;
+    const fr = try frameRange(in, 3);
+    const next = try frameRange(in, 4);
+
+    // 中身の 1 ビット
+    const body = try gpa.dupe(u8, in);
+    defer gpa.free(body);
+    body[(fr[0] + fr[1]) / 2] ^= 0x10;
+    try expectFrame3Silenced(body);
+
+    // ヘッダの 1 ビット(CRC-8 が合わなくなる)。後ろのフレームは失われない
+    const head = try gpa.dupe(u8, in);
+    defer gpa.free(head);
+    head[fr[0] + 2] ^= 0x01;
+    try expectFrame3Silenced(head);
+
+    // フレームがまるごと欠けている: フレーム番号の飛びから長さを求めて無音にする
+    const cut = try std.mem.concat(gpa, u8, &.{ in[0..fr[0]], in[fr[1]..] });
+    defer gpa.free(cut);
+    try expectFrame3Silenced(cut);
+
+    // 壊れたフレームの中に、次のフレームと同じヘッダ(CRC-8 も番号も正しい)が現れても、そこで区切らない
+    const fake = try gpa.dupe(u8, in);
+    defer gpa.free(fake);
+    // s16-stereo.flac のフレームヘッダは 6 バイト。サブフレームの先頭まで少し余分に写す
+    const hlen = 8;
+    @memcpy(fake[(fr[0] + fr[1]) / 2 ..][0..hlen], in[next[0]..][0..hlen]);
+    try expectFrame3Silenced(fake);
 }
 
 test "最後のフレームが途中で切れていたら数えない。後ろのタグや前の ID3v2 タグは読み飛ばす" {

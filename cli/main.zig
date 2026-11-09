@@ -13,9 +13,9 @@ const usage =
     \\  kiln --help
     \\
     \\Commands:
-    \\  trim    Cut an MP3, WAV or FLAC file, accurate to the sample.
-    \\          MP3 and WAV are cut without re-encoding.
-    \\          With --format wav, an MP3 or FLAC input is decoded and written as WAV.
+    \\  trim    Cut an MP3 or WAV file, accurate to the sample, without re-encoding.
+    \\          With --format wav, an MP3 or FLAC input is decoded and written as WAV
+    \\          (FLAC needs --format wav, as writing FLAC is not supported yet).
     \\          <input> / <output> may be "-" for stdin / stdout.
     \\          The input format is detected from its contents.
     \\

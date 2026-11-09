@@ -343,7 +343,7 @@ export async function load(source = new URL('./kiln.wasm', import.meta.url)) {
      *             invalidFrames: number }}
      */
     decode(input, options = {}) {
-      return decodeWith(e.kiln_flac_probe, e.kiln_flac_decode, input, options);
+      return decodeWith(e.kiln_flac_format, e.kiln_flac_decode, input, options);
     },
 
     /**
@@ -356,7 +356,7 @@ export async function load(source = new URL('./kiln.wasm', import.meta.url)) {
      */
     toWav(input, options = {}) {
       const { format, dither } = formatOptions(options, null);
-      return rangeWith(e.kiln_flac_probe, input, options, (ptr, len, s, t) => {
+      return rangeWith(e.kiln_flac_format, input, options, (ptr, len, s, t) => {
         check(e.kiln_flac_to_wav(ptr, len, s, t ?? 0n, t !== null, Math.max(format, 0), format >= 0, dither));
         return { data: takeOutput(), invalidFrames: Number(e.kiln_value(4)) };
       });
