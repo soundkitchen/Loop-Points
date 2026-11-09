@@ -14,7 +14,7 @@
 |---|---|---|
 | `src/root.zig` | コアのルート。モジュール名 `kiln`。入力の形式の判定(`kiln.detect`)もここに置く | — |
 | `src/pcm.zig` | PCM のサンプル形式と、f32 との変換(`kiln.pcm`) | — |
-| `src/mp3.zig`, `src/mp3/` | MP3 の解析と無劣化トリム(`kiln.mp3`)。`frame`(フレームヘッダ)/ `id3` / `xing`(Xing・LAME タグ)/ `stream`(入力の解析)/ `trim` に分ける。デコーダは `bits`(ビット読み取り)/ `huffman` ほか(設計は [`mp3-decoder.md`](mp3-decoder.md)) | — |
+| `src/mp3.zig`, `src/mp3/` | MP3 の解析と無劣化トリム(`kiln.mp3`)。`frame`(フレームヘッダ)/ `id3` / `xing`(Xing・LAME タグ)/ `stream`(入力の解析)/ `trim` に分ける。デコーダは `bits`(ビット読み取り)/ `huffman` / `layer3`(周波数領域の処理)/ `synth`(IMDCT と合成フィルタ)/ `decoder`(設計は [`mp3-decoder.md`](mp3-decoder.md)) | — |
 | `src/wav.zig`, `src/wav/` | WAV の解析とサンプル精度のトリム、エンコーダ(`kiln.wav`)。`parse`(チャンクの解析)/ `header`(ヘッダの書き出し)/ `encoder` に分ける | — |
 | `cli/main.zig` | CLI | `zig-out/bin/kiln` |
 | `wasm/main.zig` | wasm の export 関数 | `zig-out/wasm/kiln.wasm` |
@@ -52,6 +52,15 @@ const t = try kiln.mp3.trimAlloc(gpa, input, .{ .start = 66150 }); // t.data / t
 - 位置はタイムライン上のサンプル位置([`lyria-mp3.md`](lyria-mp3.md) §5.1)。秒からの変換は CLI と JS 側で行う
 - 範囲外の指定はコアが丸め、実際に切り出した区間を返す。丸めたことを利用者に伝えるのは呼び出し側(CLI は stderr に警告を出す)
 - `trim` は入力のスライスをそのまま `Writer` に書くため、アロケータを使わない
+
+```zig
+// デコード: 区間の PCM をインターリーブした f32 で sink.writeF32 に渡す(kiln.wav.Encoder をそのまま渡せる)
+const d = try kiln.mp3.decode(input, .{ .start = 0, .end = 44100 }, &encoder); // d.start / d.end / d.sample_rate / d.channels
+var dec: kiln.mp3.Decoder = .{};                  // 1 フレームずつの低レベル API
+const nch = try dec.decodeFrame(frame_bytes, &pcm); // pcm: [2][1152]f32
+```
+
+- `decode` の位置はトリムと同じタイムライン。ただしタグなしの入力でも先頭を 529 に切り上げない(デコードでは先頭のデコーダ遅延も出力できるため)
 
 ### 2.2 CLI
 
