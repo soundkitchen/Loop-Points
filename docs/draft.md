@@ -25,7 +25,7 @@
 - **Zig のバージョン**: 0.17.1。`.envrc`(direnv)で `~/Zig/0.17` を PATH に通す。
 - **テスト用の音声**: Lyria の実ファイル(`samples/`)は git に入れない。テストには lame で作った、Lyria と同じ構成(CBR 192kbps、Xing なし)の短い MP3 を使い、リポジトリに入れる。
 - **MP3 トリムで付ける LAME タグのエンコーダ名**: `LAMEK!LN `(末尾の空白を含めて 9 バイト。LAME タグのこのフィールドは 9 バイト固定)。`LAME` で始めるのは ffmpeg / Chrome に delay / padding を読ませるため。
-- **Safari 対応**: トリム結果に ID3v2 の `iTunSMPB` を付け、末尾に 1 フレーム余分に含める(詳細は [`lyria-mp3.md`](lyria-mp3.md))。これで一致を確認したのは `decodeAudioData` だけで、`<audio>` 要素での再生は未確認。Firefox の確認も後回し。
+- **Safari 対応**: トリム結果に ID3v2 の `iTunSMPB` を付ける(値は LAME タグの delay / padding と同じ。詳細は [`lyria-mp3.md`](lyria-mp3.md) §4)。当初は priming に 529 を足し、末尾に 1 フレーム余分に含めていたが、同じ日の再確認で直した(§2.3)。
 - **コア API**: [`architecture.md`](architecture.md) の方針で進める。
 
 ### 2.2 2026-11-09 に決めたこと(MP3 トリマーの実装)
@@ -36,6 +36,13 @@
 - **入力の範囲**: MPEG-1 Layer III なら、Xing / LAME タグ付き(他のエンコーダの出力)も受け付ける。位置は ffmpeg がデコードしたときの先頭を 0 とする(LAME タグの delay を除いた位置)。MPEG-2 / 2.5 は扱わない
 - **API**: `kiln.mp3.probe` / `trim`(`*std.Io.Writer` に書く)/ `trimAlloc`。範囲外の丸めはコアが行い、実際に切り出した区間を返す。JS は `mp3.probe` / `mp3.trim`(秒またはサンプル数)。詳細は [`architecture.md`](architecture.md) §2.1〜2.3
 - **低ビットレートの入力**: 開始位置の手前に必要なフレームが LAME タグの delay(12bit)に収まらないときだけ、ビットリザーバの中身を詰めた無音フレーム(carrier)を使う。Lyria のような入力では従来どおり元のフレームだけを連結する(詳細は [`lyria-mp3.md`](lyria-mp3.md) §5.2)
+
+### 2.3 2026-11-09 に決めたこと(MP3 トリムの再生確認)
+
+- **`iTunSMPB` の値**: priming / padding を LAME タグの delay / padding と同じ値にする(以前は `delay + 529` / `padding - 529`)。CoreAudio(Safari)はデコーダ遅延の 529 を除いた出力に `iTunSMPB` を当てるため、529 を足すと 529 サンプル余分に落としていた。これで Safari でも ffmpeg / Chrome / Firefox と同じ位置・長さになる
+- **末尾のフレーム**: 最後のサンプルを含むフレームまでにする(以前は Safari 向けに 1 フレーム余分に含めていた。余分に落としていた 529 サンプルを補うためのもので、不要になった)。padding が 0 にならないので、Safari の `<audio>` も `iTunSMPB` を使う
+- **既知の差として残すもの**: Safari などデコーダ遅延を隠すデコーダは、タグのない元ファイル(Lyria の出力を含む)を ffmpeg より 529 サンプル前にずらして再生する。位置の基準は ffmpeg のまま変えない(詳細は [`lyria-mp3.md`](lyria-mp3.md) §6)
+- **Firefox と `<audio>` 要素**: Chrome / Firefox / Safari で確認した(結果は [`lyria-mp3.md`](lyria-mp3.md) §5.4)
 
 ## 3. まだ決めていないこと(論点と、ここまでの見立て)
 

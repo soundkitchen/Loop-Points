@@ -68,8 +68,10 @@ pub fn trim(input: []const u8, options: Options, w: *Io.Writer) Error!Result {
     const n = e0 - s0;
     const k = s0 / spf; // 開始フレーム
     const a = s0 % spf; // 開始フレーム内の端数
-    // 最後のサンプルを含むフレームの 1 つ後まで含める(Safari 向け。ある分だけ)
-    const end_frame = @min((e0 - 1) / spf + 2, s.frames);
+    // 最後のサンプルを含むフレームまで。Stream.parse がタイムラインの終わりを frames * spf 以下に
+    // しているので、入力のフレーム数を超えない
+    const end_frame = (e0 - 1) / spf + 1;
+    std.debug.assert(end_frame <= s.frames);
 
     // 開始フレームの手前 max_back 個を覚えておき、開始フレームから連結範囲の終わりまでの
     // ビットレートが揃っているか(CBR か)を調べる
@@ -121,7 +123,9 @@ pub fn trim(input: []const u8, options: Options, w: *Io.Writer) Error!Result {
     var toc: [100]u8 = undefined;
     if (!cbr) buildToc(&toc, input, carrier.len, first_offset, end_offset, frames);
 
-    try id3.writeItunSmpbTag(w, @intCast(delay + decoder_delay), @intCast(padding - decoder_delay), n);
+    // iTunSMPB の priming / padding は LAME タグと同じ値にする。CoreAudio(Safari)はデコーダ遅延の
+    // 529 を除いた出力に iTunSMPB を当てるため、529 を足すと 529 サンプル余分に落としてしまう
+    try id3.writeItunSmpbTag(w, @intCast(delay), @intCast(padding), n);
     try xing.writeInfoFrame(w, .{
         .header = info_header,
         .vbr = !cbr,
@@ -232,11 +236,15 @@ fn expectTrim(input: []const u8, options: Options) !Result {
     }
     try std.testing.expect(std.mem.indexOf(u8, input, body) != null);
 
-    // iTunSMPB の priming = delay + 529、padding = 連結した長さ - priming - N
+    // iTunSMPB の priming / padding は LAME タグの delay / padding と同じ(delay = skip - 529)。
+    // 連結は最後のサンプルを含むフレームまでなので、padding は 529 以上 529 + 1151 以下
+    // (0 だと Safari の <audio> が iTunSMPB を使わない。余分なフレームを含めると上限を超える)
     const smpb = data[10 + 10 + 13 ..][0..116];
     var expect_buf: [116]u8 = undefined;
-    const pad = s.frames * spf - s.skip - s.samples;
-    const expect = try std.fmt.bufPrint(&expect_buf, " 00000000 {X:0>8} {X:0>8} {X:0>16}", .{ s.skip, pad, s.samples });
+    const delay = s.skip - decoder_delay;
+    const pad = s.frames * spf - delay - s.samples;
+    try std.testing.expect(pad >= decoder_delay and pad <= decoder_delay + spf - 1);
+    const expect = try std.fmt.bufPrint(&expect_buf, " 00000000 {X:0>8} {X:0>8} {X:0>16}", .{ delay, pad, s.samples });
     try std.testing.expectEqualStrings(expect, smpb[0..expect.len]);
     return r;
 }
