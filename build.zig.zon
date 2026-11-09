@@ -15,6 +15,7 @@
         "src",
         "cli",
         "wasm",
+        "testdata",
         "README.md",
     },
 }

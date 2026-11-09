@@ -6,6 +6,13 @@ const build_options = @import("build_options");
 /// ライブラリのバージョン(build.zig.zon の `.version`)
 pub const version: []const u8 = build_options.version;
 
+/// MP3 の解析と無劣化トリム
+pub const mp3 = @import("mp3.zig");
+
+test {
+    _ = mp3;
+}
+
 test version {
     _ = try std.SemanticVersion.parse(version);
 }
