@@ -128,6 +128,12 @@ pub const Iterator = struct {
     by_sample: ?bool = null,
     /// 次のフレームの番号の条件
     want: Number = .any,
+    /// 直前に受け付けたヘッダ(壊れたフレームのヘッダも含む。失われた長さを番号の差から求めるのに使う)
+    prev: ?Header = null,
+
+    /// 番号の飛びから求める、失われた長さの上限(STREAMINFO の総サンプル数が分からないとき)。
+    /// 偽のヘッダで長さが際限なく延びないようにする
+    const max_unknown_gap = 1 << 20;
 
     /// `pos` にあるフレームヘッダを解析する。ストリームの設定(STREAMINFO のサンプルレート・
     /// チャンネル数・ビット深度、ブロック長の方式)と食い違うもの、番号が条件に合わないものは受け付けない
@@ -155,27 +161,26 @@ pub const Iterator = struct {
                 it.variable = h.variable;
                 if (it.first_block == null) it.first_block = h.block_size;
                 it.learnNumbering(h);
-                const after = it.nextNumber(h);
+                it.prev = h;
                 if (it.validEnd(start, h)) |end| {
-                    return it.emit(.{ .start = start, .end = end, .header = h, .sample = it.sample, .samples = h.block_size, .count = 1 }, end, after);
+                    return it.emit(.{ .start = start, .end = end, .header = h, .sample = it.sample, .samples = h.block_size, .count = 1 }, end, it.nextNumber(h));
                 }
                 // CRC-16 が合わない: 次の正しいフレームまでを壊れた区間にする
-                const c = it.resync(start + h.len, after.min()) orelse return null;
-                const gap = it.lost(c.header, after.min());
+                const c = it.resync(start + h.len, it.nextNumber(h).min(), h.block_size) orelse return null;
                 return it.emit(.{
                     .start = start,
                     .end = c.pos,
                     .header = null,
                     .sample = it.sample,
-                    .samples = h.block_size + gap.samples,
-                    .count = 1 + gap.frames,
+                    .samples = h.block_size + c.gap.samples,
+                    .count = 1 + c.gap.frames,
                 }, c.pos, .{ .exactly = c.header.number });
             }
             // ヘッダが読めない(壊れている、番号が飛んでいる、フレームの間にゴミがある)
-            const expected = it.want.min();
-            const c = it.resync(start, expected) orelse return null;
-            const gap = it.lost(c.header, expected);
-            if (gap.samples == 0) {
+            const c = it.resync(start, it.want.min(), 0) orelse return null;
+            // 番号の付け方が決まる前なら、見つけたヘッダの番号の差から決める
+            if (it.by_sample == null) it.by_sample = it.bySampleFor(c.header);
+            if (c.gap.samples == 0) {
                 // 失われたフレームはない(フレームの間のゴミ)。読み飛ばして続ける
                 it.pos = c.pos;
                 it.want = .{ .exactly = c.header.number };
@@ -186,8 +191,8 @@ pub const Iterator = struct {
                 .end = c.pos,
                 .header = null,
                 .sample = it.sample,
-                .samples = gap.samples,
-                .count = @max(gap.frames, 1),
+                .samples = c.gap.samples,
+                .count = @max(c.gap.frames, 1),
             }, c.pos, .{ .exactly = c.header.number });
         }
     }
@@ -214,6 +219,18 @@ pub const Iterator = struct {
         }
     }
 
+    /// 番号の付け方(true ならサンプル位置)。まだ決まっていなければ、ヘッダ `h` の番号と直前のヘッダの
+    /// 番号(なければ 0)の差がブロック長の倍数かで推し量る(フレーム番号の差がブロック長以上になるほど
+    /// フレームが失われることは、長さの上限があるのでまずない)
+    fn bySampleFor(it: *const Iterator, h: Header) bool {
+        if (h.variable) return true;
+        if (it.by_sample) |b| return b;
+        const base = if (it.prev) |p| p.number else 0;
+        const block: u64 = if (it.prev) |p| p.block_size else h.block_size;
+        const d = h.number -| base;
+        return d >= block and d % block == 0;
+    }
+
     /// ヘッダ `h` のフレームの次のフレームの番号の条件
     fn nextNumber(it: *const Iterator, h: Header) Number {
         const by_frame = h.number + 1;
@@ -225,26 +242,38 @@ pub const Iterator = struct {
 
     const Gap = struct { samples: u64, frames: u64 };
 
-    /// 番号 `expected` のはずの位置に番号 `h.number` のフレームがあるとき、その間で失われた長さ
-    fn lost(it: *const Iterator, h: Header, expected: u64) Gap {
-        const d = h.number - expected;
-        if (h.variable or it.by_sample == true) return .{ .samples = d, .frames = @intFromBool(d > 0) };
+    /// 次のフレームのはずの位置に、ヘッダ `h` のフレームがあるとき、その間で失われた長さ
+    fn lost(it: *const Iterator, h: Header) Gap {
+        const by_sample = it.bySampleFor(h);
+        const expected: u64 = if (it.prev) |p| (if (by_sample) p.number + p.block_size else p.number + 1) else 0;
+        const d = h.number -| expected;
+        if (by_sample) return .{ .samples = d, .frames = @intFromBool(d > 0) };
         return .{ .samples = d * (it.first_block orelse h.block_size), .frames = d };
     }
 
-    const Candidate = struct { pos: usize, header: Header };
+    const Candidate = struct { pos: usize, header: Header, gap: Gap };
 
     /// `from` 以降で、番号が `expected` 以上のヘッダを持ち、そのフレームの CRC-16 も合う位置を探す
-    /// (壊れたフレームの中に偶然できた同期コードは、番号か CRC-16 で弾く)
-    fn resync(it: *const Iterator, from: usize, expected: u64) ?Candidate {
+    /// (壊れたフレームの中に偶然できた同期コードは、番号か CRC-16 で弾く)。
+    /// 失われた長さが上限を超える候補は使わない: STREAMINFO の総サンプル数が分かれば、その候補のフレームが
+    /// 総サンプル数より前から始まること(`extra` は、壊れたフレームのうち長さが分かっている分)。
+    /// 分からなければ `max_unknown_gap` まで
+    fn resync(it: *const Iterator, from: usize, expected: u64, extra: u64) ?Candidate {
         const input = it.input;
+        const total = it.info.total_samples;
         var p = from;
         while (std.mem.indexOfScalarPos(u8, input, p, 0xFF)) |q| : (p = q + 1) {
             const h = it.headerAt(q, .{ .at_least = expected }) orelse continue;
+            const g = it.lost(h);
+            const ok_len = if (total != 0)
+                it.sample + extra + g.samples < total
+            else
+                g.samples <= max_unknown_gap;
+            if (!ok_len) continue;
             var probe = it.*;
             probe.variable = h.variable;
             if (probe.validEnd(q, h) == null) continue;
-            return .{ .pos = q, .header = h };
+            return .{ .pos = q, .header = h, .gap = g };
         }
         return null;
     }

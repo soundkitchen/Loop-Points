@@ -146,16 +146,21 @@ pub const Index = struct {
                 null;
             if (samples == null) invalid += f.count;
 
-            const bs: usize = @intCast(f.samples);
-            const lo: usize = @intCast(@max(range.start, f.sample) - f.sample);
-            const hi: usize = @intCast(@min(range.end, f.sample + f.samples) - f.sample);
+            // 壊れた区間は長いことがある(wasm32 の usize に収まらないこともある)ので、位置は u64 で数える
+            const lo = @max(range.start, f.sample) - f.sample;
+            const hi = @min(range.end, f.sample + f.samples) - f.sample;
             var i = lo;
             while (i < hi) {
-                const n = @min(chunk, hi - i);
-                for (0..n) |j| {
-                    for (0..nch) |ch| {
-                        inter[j * nch + ch] = if (samples) |x| @intCast(x[ch * bs + i + j]) else 0;
+                const n: usize = @intCast(@min(chunk, hi - i));
+                if (samples) |x| {
+                    // 復号できたフレームの長さはブロック長(65536 以下)
+                    const bs: usize = f.header.?.block_size;
+                    const off: usize = @intCast(i);
+                    for (0..n) |j| {
+                        for (0..nch) |ch| inter[j * nch + ch] = @intCast(x[ch * bs + off + j]);
                     }
+                } else {
+                    @memset(inter[0 .. n * nch], 0);
                 }
                 try sink.writeI32(inter[0 .. n * nch]);
                 i += n;
@@ -477,4 +482,113 @@ test "最後のフレームが途中で切れていたら数えない。後ろ�
     const b = try toWavAlloc(gpa, id3, .{}, .{});
     defer gpa.free(b.data);
     try std.testing.expectEqualSlices(u8, a.data, b.data);
+}
+
+/// テスト用: 可変長の番号(UTF-8 に似た符号)を書く
+fn putCodedNumber(list: *std.ArrayList(u8), v: u64) !void {
+    const gpa = std.testing.allocator;
+    // バイト数ごとに書けるビット数(1 バイトなら 7、2 バイトなら 5 + 6 …)
+    const caps = [_]u6{ 7, 11, 16, 21, 26, 31, 36 };
+    var len: usize = 1;
+    while (v >> caps[len - 1] != 0) len += 1;
+    if (len == 1) return list.append(gpa, @intCast(v));
+    const cont: u6 = @intCast(len - 1);
+    // 先頭のバイト: len 個の 1 と 0 に続けて、上位のビット
+    const lead: u8 = @truncate(@as(u16, 0xFF00) >> @intCast(len));
+    try list.append(gpa, lead | @as(u8, @intCast(v >> (6 * cont))));
+    var k = cont;
+    while (k > 0) {
+        k -= 1;
+        try list.append(gpa, 0x80 | @as(u8, @intCast((v >> (6 * k)) & 0x3F)));
+    }
+}
+
+/// テスト用: s16-stereo.flac の各フレームの番号を `numbers[i]` に書き換え、CRC-8 と CRC-16 を付け直す。
+/// `keep` 個目より後のフレームは捨てる。`total` があれば STREAMINFO の総サンプル数も書き換える
+fn renumbered(numbers: []const u64, keep: usize, total: ?u64) ![]u8 {
+    const gpa = std.testing.allocator;
+    const frame = @import("flac/frame.zig");
+    const in = testdata.s16_stereo_flac;
+    const s = try stream.Stream.parse(in);
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(gpa);
+    try out.appendSlice(gpa, in[0..s.meta.frames_start]);
+    if (total) |t| {
+        // STREAMINFO は fLaC(4)とブロックのヘッダ(4)の後。総サンプル数は 13 バイト目からの 36 ビット
+        const si = out.items[8..][0..34];
+        const v = std.mem.readInt(u64, si[10..18], .big);
+        std.mem.writeInt(u64, si[10..18], (v & ~@as(u64, (1 << 36) - 1)) | t, .big);
+    }
+    var it = s.iterator(in);
+    var i: usize = 0;
+    while (it.next()) |f| : (i += 1) {
+        if (i == keep) break;
+        const h = f.header.?;
+        const fr = f.bytes(in);
+        const begin = out.items.len;
+        try out.appendSlice(gpa, fr[0..4]);
+        try putCodedNumber(&out, numbers[i]);
+        // 番号の後のブロック長・サンプルレート(あれば)はそのまま写す
+        const old_len: usize = if (fr[4] < 0x80) 1 else @clz(~fr[4]);
+        try out.appendSlice(gpa, fr[4 + old_len .. h.len - 1]);
+        try out.append(gpa, frame.Crc8.hash(out.items[begin..]));
+        try out.appendSlice(gpa, fr[h.len .. fr.len - 2]);
+        var crc: [2]u8 = undefined;
+        std.mem.writeInt(u16, &crc, frame.Crc16.hash(out.items[begin..]), .big);
+        try out.appendSlice(gpa, &crc);
+    }
+    return out.toOwnedSlice(gpa);
+}
+
+test "番号が大きく飛んだフレームでは区切り直さない(失われた長さに上限)" {
+    const gpa = std.testing.allocator;
+    // フレーム 0 の次が番号 10 億のフレーム(CRC は正しい)
+    for ([_]?u64{ null, 0 }) |total| {
+        const in = try renumbered(&.{ 0, 1_000_000_000 }, 2, total);
+        defer gpa.free(in);
+        const i = try probe(in);
+        try std.testing.expectEqual(1152, i.samples);
+        try std.testing.expectEqual(1, i.frames);
+    }
+    // 小さな飛び(フレーム 1 が失われた)なら無音で埋める
+    const ok = try renumbered(&.{ 0, 2, 3 }, 3, null);
+    defer gpa.free(ok);
+    try std.testing.expectEqual(4 * 1152, (try probe(ok)).samples);
+}
+
+test "番号がサンプル位置の古い形式: ヘッダが壊れても長さは変わらない" {
+    const gpa = std.testing.allocator;
+    var nums: [10]u64 = undefined;
+    for (&nums, 0..) |*n, k| n.* = k * 1152;
+    const base = try renumbered(&nums, 10, null);
+    defer gpa.free(base);
+    try std.testing.expectEqual(11025, (try probe(base)).samples);
+    // 番号を書き換えても PCM は元と同じ
+    var all: CollectSink = .{};
+    defer all.deinit();
+    _ = try decode(gpa, base, .{}, &all);
+    var orig: CollectSink = .{};
+    defer orig.deinit();
+    _ = try decode(gpa, testdata.s16_stereo_flac, .{}, &orig);
+    try std.testing.expectEqualSlices(i32, orig.list.items, all.list.items);
+    // 最初のフレーム、2 つ目のフレーム(番号の付け方を決める前)、途中のフレームのヘッダを壊す
+    for ([_]usize{ 0, 1, 3 }) |k| {
+        const bad = try gpa.dupe(u8, base);
+        defer gpa.free(bad);
+        const s = try stream.Stream.parse(base);
+        var it = s.iterator(base);
+        var j: usize = 0;
+        while (it.next()) |f| : (j += 1) {
+            if (j == k) {
+                bad[f.start + 2] ^= 0x01;
+                break;
+            }
+        }
+        const i = try probe(bad);
+        try std.testing.expectEqual(11025, i.samples);
+        try std.testing.expectEqual(10, i.frames);
+        var got: CollectSink = .{};
+        defer got.deinit();
+        try std.testing.expectEqual(1, (try decode(gpa, bad, .{}, &got)).invalid_frames);
+    }
 }
