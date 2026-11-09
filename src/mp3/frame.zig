@@ -118,6 +118,56 @@ pub fn frameLenFor(bitrate_index: u4, sample_rate: u32, padding: bool) usize {
     return 144 * @as(usize, bitrates[bitrate_index]) * 1000 / sample_rate + @intFromBool(padding);
 }
 
+/// MPEG オーディオ全般(MPEG-1 / 2 / 2.5、Layer I / II / III)のフレームヘッダ。
+/// 扱わない形式のファイルを「MP3 ではない」ではなく「対応していない形式」と報告するために、
+/// フレームの長さと形式だけを読む
+pub const AnyHeader = struct {
+    /// フレーム全体のバイト数(ヘッダを含む)
+    len: usize,
+    /// 同じストリームのフレームか比べるための値(バージョン・レイヤー・サンプルレートのビット)
+    kind: u32,
+
+    /// [バージョン(0: MPEG-1、1: MPEG-2 / 2.5)][レイヤー(0: I、1: II、2: III)] のビットレート(kbps)
+    const any_bitrates = [2][3][15]u16{
+        .{
+            .{ 0, 32, 64, 96, 128, 160, 192, 224, 256, 288, 320, 352, 384, 416, 448 },
+            .{ 0, 32, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 384 },
+            bitrates,
+        },
+        .{
+            .{ 0, 32, 48, 56, 64, 80, 96, 112, 128, 144, 160, 176, 192, 224, 256 },
+            .{ 0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160 },
+            .{ 0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160 },
+        },
+    };
+
+    /// MPEG オーディオの有効なヘッダなら返す(free format と予約値は null)
+    pub fn parse(bytes: []const u8) ?AnyHeader {
+        if (bytes.len < 4 or !isSync(bytes)) return null;
+        const raw = std.mem.readInt(u32, bytes[0..4], .big);
+        const version: u2 = @intCast((raw >> 19) & 3); // 0: 2.5、1: 予約、2: MPEG-2、3: MPEG-1
+        const layer_bits: u2 = @intCast((raw >> 17) & 3); // 0: 予約、1: III、2: II、3: I
+        const bi: u4 = @intCast((raw >> 12) & 0xF);
+        const sri: u2 = @intCast((raw >> 10) & 3);
+        if (version == 1 or layer_bits == 0 or bi == 0 or bi == 15 or sri == 3 or raw & 3 == 2) return null;
+        const layer: usize = 3 - @as(usize, layer_bits); // 0: I、1: II、2: III
+        const mpeg1 = version == 3;
+        const kbps: usize = any_bitrates[@intFromBool(!mpeg1)][layer][bi];
+        const sr = sample_rates[sri] >> switch (version) {
+            3 => 0,
+            2 => 1,
+            else => 2,
+        };
+        const padding: usize = (raw >> 9) & 1;
+        const len = switch (layer) {
+            0 => (12 * kbps * 1000 / sr + padding) * 4,
+            1 => 144 * kbps * 1000 / sr + padding,
+            else => (if (mpeg1) @as(usize, 144) else 72) * kbps * 1000 / sr + padding,
+        };
+        return .{ .len = len, .kind = raw & 0x001E0C00 };
+    }
+};
+
 /// 連続するフレームを先頭から順にたどる
 pub const Iterator = struct {
     data: []const u8,
@@ -160,6 +210,23 @@ test "Header.parse: 扱えないヘッダは null" {
     try std.testing.expectEqual(null, Header.parse(&.{ 0xFF, 0xFB, 0xBC, 0x64 })); // 予約サンプルレート
     try std.testing.expectEqual(null, Header.parse(&.{ 0x54, 0x41, 0x47, 0x00 })); // "TAG"
     try std.testing.expectEqual(null, Header.parse(&.{ 0xFF, 0xFB }));
+}
+
+test "AnyHeader.parse" {
+    // MPEG-1 Layer III は Header と同じ長さ
+    try std.testing.expectEqual(626, AnyHeader.parse(&.{ 0xFF, 0xFB, 0xB0, 0x64 }).?.len);
+    // MPEG-2 Layer III 80kbps 22.05kHz: 72 * 80000 / 22050 = 261
+    try std.testing.expectEqual(261, AnyHeader.parse(&.{ 0xFF, 0xF3, 0x90, 0x64 }).?.len);
+    // MPEG-2.5 Layer III 8kbps 8kHz: 72 * 8000 / 8000 = 72
+    try std.testing.expectEqual(72, AnyHeader.parse(&.{ 0xFF, 0xE3, 0x18, 0x64 }).?.len);
+    // MPEG-1 Layer II 192kbps 48kHz: 144 * 192000 / 48000 = 576
+    try std.testing.expectEqual(576, AnyHeader.parse(&.{ 0xFF, 0xFD, 0xA4, 0x04 }).?.len);
+    // MPEG-1 Layer I 32kbps 44.1kHz、padding あり: (12 * 32000 / 44100 + 1) * 4 = 36
+    try std.testing.expectEqual(36, AnyHeader.parse(&.{ 0xFF, 0xFF, 0x12, 0x04 }).?.len);
+    // バージョンの予約値、レイヤーの予約値、free format
+    try std.testing.expectEqual(null, AnyHeader.parse(&.{ 0xFF, 0xEB, 0x90, 0x64 }));
+    try std.testing.expectEqual(null, AnyHeader.parse(&.{ 0xFF, 0xF9, 0x90, 0x64 }));
+    try std.testing.expectEqual(null, AnyHeader.parse(&.{ 0xFF, 0xF3, 0x00, 0x64 }));
 }
 
 test "Header.forInfoFrame" {

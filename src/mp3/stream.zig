@@ -13,7 +13,7 @@ pub const decoder_delay = 529;
 pub const Error = error{
     /// MPEG オーディオのフレームが見つからない
     NotMp3,
-    /// MPEG オーディオだが、MPEG-1 Layer III ではない(MPEG-2 / 2.5、Layer I / II、free format)
+    /// MPEG オーディオだが、MPEG-1 Layer III ではない(MPEG-2 / 2.5、Layer I / II)
     UnsupportedFormat,
 };
 
@@ -36,9 +36,7 @@ pub const Stream = struct {
     /// (途中でフレームが途切れたり、サンプルレートやチャンネル数が変わったりしたら、そこで終わりとみなす。
     /// 末尾の ID3v1 / APE タグなどもここで除かれる)
     pub fn parse(data: []const u8) Error!Stream {
-        const start = id3.skipTags(data);
-        if (frame.isSync(data[start..]) and Header.parse(data[start..]) == null) return error.UnsupportedFormat;
-        var pos = findFirstFrame(data, start) orelse return error.NotMp3;
+        var pos = try findFirstFrame(data, id3.skipTags(data));
 
         const first_header = Header.parse(data[pos..]).?;
         const tag = xing.parse(data[pos..][0..first_header.frameLen()], first_header);
@@ -83,18 +81,25 @@ pub const Stream = struct {
 };
 
 /// `start` 以降で最初のフレームの位置。誤検出を避けるため、直後にもう 1 つ同じ形式の
-/// フレームが続くこと(またはフレームが入力の終わりまでぴったり収まること)を確かめる
-fn findFirstFrame(data: []const u8, start: usize) ?usize {
+/// フレームが続くこと(またはフレームが入力の終わりまでぴったり収まること)を確かめる。
+/// 先に MPEG-1 Layer III 以外の MPEG オーディオのフレームが見つかったら `UnsupportedFormat`
+fn findFirstFrame(data: []const u8, start: usize) Error!usize {
     var pos = start;
     while (pos + 4 <= data.len) : (pos += 1) {
-        const h = Header.parse(data[pos..]) orelse continue;
-        const next = pos + h.frameLen();
+        if (Header.parse(data[pos..])) |h| {
+            const next = pos + h.frameLen();
+            if (next == data.len) return pos;
+            if (next < data.len) if (Header.parse(data[next..])) |h2| if (h2.compatible(h)) return pos;
+            continue;
+        }
+        const any = frame.AnyHeader.parse(data[pos..]) orelse continue;
+        const next = pos + any.len;
         if (next > data.len) continue;
-        if (next == data.len) return pos;
-        const h2 = Header.parse(data[next..]) orelse continue;
-        if (h2.compatible(h)) return pos;
+        if (next == data.len) return error.UnsupportedFormat;
+        const any2 = frame.AnyHeader.parse(data[next..]) orelse continue;
+        if (any2.kind == any.kind) return error.UnsupportedFormat;
     }
-    return null;
+    return error.NotMp3;
 }
 
 const testdata = @import("testdata");
@@ -129,5 +134,17 @@ test "parse: 末尾のゴミと、フレームのない入力" {
 
     try std.testing.expectError(error.NotMp3, Stream.parse("RIFF\x00\x00\x00\x00WAVEfmt "));
     try std.testing.expectError(error.NotMp3, Stream.parse(""));
-    try std.testing.expectError(error.UnsupportedFormat, Stream.parse("\xFF\xF3\x90\x64" ++ @as([200]u8, @splat(0))));
+}
+
+test "parse: MPEG-1 Layer III 以外の MPEG オーディオは UnsupportedFormat" {
+    // MPEG-2 Layer III 80kbps 22.05kHz のフレーム(261 バイト)を 2 つ。ID3v2 タグの後に
+    // ゼロ埋めがあっても、MP3 ではない(NotMp3)ではなく対応していない形式と報告する
+    const mpeg2 = "\xFF\xF3\x90\x64" ++ @as([257]u8, @splat(0));
+    const id3_tag = "ID3\x03\x00\x00\x00\x00\x00\x00";
+    try std.testing.expectError(error.UnsupportedFormat, Stream.parse(mpeg2 ++ mpeg2));
+    try std.testing.expectError(error.UnsupportedFormat, Stream.parse(id3_tag ++ @as([16]u8, @splat(0)) ++ mpeg2 ++ mpeg2));
+    // フレームが入力の終わりにぴったり収まる 1 つだけの場合も同じ
+    try std.testing.expectError(error.UnsupportedFormat, Stream.parse(mpeg2));
+    // フレームの長さが合わない同期ワードだけなら MP3 ではない
+    try std.testing.expectError(error.NotMp3, Stream.parse("\xFF\xF3\x90\x64" ++ @as([200]u8, @splat(0))));
 }

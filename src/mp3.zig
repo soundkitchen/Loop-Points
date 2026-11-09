@@ -42,7 +42,7 @@ pub fn probe(input: []const u8) ParseError!Info {
 }
 
 /// 区間 `[options.start, options.end)` を再エンコードせずに切り出し、`w` に書く。
-/// 範囲外の指定は丸め、実際に切り出した区間を返す。`w.flush()` は呼び出し側が行う。
+/// 範囲外の指定は丸め、実際に切り出した区間(と入力のサンプルレート)を返す。`w.flush()` は呼び出し側が行う。
 /// 出力の構成は docs/lyria-mp3.md §4
 pub const trim = trim_impl.trim;
 
@@ -50,6 +50,7 @@ pub const Trimmed = struct {
     data: []u8,
     start: u64,
     end: u64,
+    sample_rate: u32,
 };
 
 /// `trim` の一括版。返した `data` は呼び出し側が `gpa` で解放する
@@ -64,7 +65,7 @@ pub fn trimAlloc(
         error.WriteFailed => return error.OutOfMemory,
         else => |e| return e,
     };
-    return .{ .data = try out.toOwnedSlice(), .start = r.start, .end = r.end };
+    return .{ .data = try out.toOwnedSlice(), .start = r.start, .end = r.end, .sample_rate = r.sample_rate };
 }
 
 test {
@@ -93,5 +94,6 @@ test trimAlloc {
     defer std.testing.allocator.free(t.data);
     try std.testing.expectEqual(529, t.start);
     try std.testing.expectEqual(44100, t.end);
+    try std.testing.expectEqual(44100, t.sample_rate);
     try std.testing.expectEqual(44100 - 529, (try probe(t.data)).samples);
 }

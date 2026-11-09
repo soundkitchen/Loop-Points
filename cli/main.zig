@@ -140,20 +140,21 @@ fn trim(init: std.process.Init, args: []const [:0]const u8, stdout: *Io.Writer, 
     const end: ?u64 = if (a.end) |t|
         t.toSamples(sr) catch info.samples
     else if (a.duration) |t|
-        std.math.add(u64, start, t.toSamples(sr) catch info.samples) catch info.samples
+        // 長さは、切り上げた後の実際の開始位置から数える(出力の長さが指定どおりになるように)
+        std.math.add(u64, @max(start, info.min_start), t.toSamples(sr) catch info.samples) catch info.samples
     else
         null;
 
-    // 出力を開く前に区間を確かめ、空の区間で出力ファイルを作ってしまわないようにする
-    if (@max(start, info.min_start) >= @min(end orelse info.samples, info.samples)) {
-        try stderr.print("error: empty range (input has {d} samples)\n", .{info.samples});
-        return 1;
-    }
-
     const options: kiln.mp3.TrimOptions = .{ .start = start, .end = end };
-    const r = writeOutput(io, a.output, input, options, stdout) catch |err| {
-        try stderr.print("error: cannot write '{s}': {s}\n", .{ a.output, describe(err) });
-        return 1;
+    const r = writeOutput(io, a.output, input, options, stdout) catch |err| switch (err) {
+        error.EmptyRange => {
+            try stderr.print("error: empty range (input has {d} samples)\n", .{info.samples});
+            return 1;
+        },
+        else => {
+            try stderr.print("error: cannot write '{s}': {s}\n", .{ a.output, describe(err) });
+            return 1;
+        },
     };
 
     // 先頭を指定しなかったときの切り上げ(タグなしの入力で 0 → 529)は、利用者の意図どおりなので黙っておく
@@ -175,18 +176,21 @@ fn readInput(io: Io, gpa: std.mem.Allocator, path: []const u8) ![]u8 {
     return Io.Dir.cwd().readFileAlloc(io, path, gpa, .limited(max_input_len));
 }
 
+/// トリムした結果を書き出す。ファイルへは一時ファイルに書き、最後まで書けたときだけ
+/// 出力先に置き換える(失敗しても、既存の出力先のファイルは元のまま残る)
 fn writeOutput(io: Io, path: []const u8, input: []const u8, options: kiln.mp3.TrimOptions, stdout: *Io.Writer) !kiln.mp3.TrimResult {
     if (std.mem.eql(u8, path, "-")) {
         const r = try kiln.mp3.trim(input, options, stdout);
         try stdout.flush();
         return r;
     }
-    const file = try Io.Dir.cwd().createFile(io, path, .{});
-    defer file.close(io);
+    var af = try Io.Dir.cwd().createFileAtomic(io, path, .{ .replace = true });
+    defer af.deinit(io);
     var buf: [64 * 1024]u8 = undefined;
-    var fw = file.writer(io, &buf);
+    var fw = af.file.writer(io, &buf);
     const r = try kiln.mp3.trim(input, options, &fw.interface);
     try fw.interface.flush();
+    try af.replace(io);
     return r;
 }
 

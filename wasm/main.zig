@@ -80,7 +80,8 @@ export fn kiln_mp3_probe(ptr: [*]const u8, len: usize) bool {
 }
 
 /// MP3 を区間 [start, end) でトリムする(位置はサンプル数。has_end が false なら末尾まで)。
-/// 成功すると出力を kiln_output_* に、実際に切り出した区間を kiln_value の 0: start、1: end に置く
+/// 成功すると出力を kiln_output_* に、実際に切り出した区間を kiln_value の 0: start、1: end に、
+/// 入力のサンプルレートを 2 に置く
 export fn kiln_mp3_trim(ptr: [*]const u8, len: usize, start: u64, end: u64, has_end: bool) bool {
     kiln_output_free();
     const t = kiln.mp3.trimAlloc(gpa, ptr[0..len], .{
@@ -88,6 +89,6 @@ export fn kiln_mp3_trim(ptr: [*]const u8, len: usize, start: u64, end: u64, has_
         .end = if (has_end) end else null,
     }) catch |err| return fail(err);
     output = t.data;
-    values = .{ t.start, t.end, 0, 0, 0 };
+    values = .{ t.start, t.end, t.sample_rate, 0, 0 };
     return true;
 }

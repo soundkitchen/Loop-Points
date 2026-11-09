@@ -22,6 +22,8 @@ pub const Options = struct {
 pub const Result = struct {
     start: u64,
     end: u64,
+    /// 入力のサンプルレート(位置を秒に直すため)
+    sample_rate: u32,
 };
 
 pub const Error = stream.Error || Io.Writer.Error || error{
@@ -44,7 +46,7 @@ pub fn clamp(s: stream.Stream, options: Options) error{EmptyRange}!Result {
     const start = @max(options.start, decoder_delay -| s.skip);
     const end = @min(options.end orelse s.samples, s.samples);
     if (start >= end) return error.EmptyRange;
-    return .{ .start = start, .end = end };
+    return .{ .start = start, .end = end, .sample_rate = s.header.sampleRate() };
 }
 
 /// フレームの情報(開始フレームの手前を振り返るために覚えておく分)
@@ -258,7 +260,7 @@ test "trim: Lyria と同じ構成" {
 test "trim: 範囲外は丸める" {
     const in = testdata.lyria_like;
     const r = try expectTrim(in, .{ .start = 0, .end = 1 << 40 });
-    try std.testing.expectEqual(Result{ .start = 529, .end = 78 * spf }, r);
+    try std.testing.expectEqual(Result{ .start = 529, .end = 78 * spf, .sample_rate = 44100 }, r);
     var discard: Io.Writer.Discarding = .init(&.{});
     try std.testing.expectError(error.EmptyRange, trim(in, .{ .start = 100, .end = 529 }, &discard.writer));
     try std.testing.expectError(error.EmptyRange, trim(in, .{ .start = 78 * spf }, &discard.writer));
@@ -268,7 +270,7 @@ test "trim: 範囲外は丸める" {
 test "trim: LAME タグ付きの入力" {
     for ([_][]const u8{ testdata.cbr128_lame, testdata.vbr_lame }) |in| {
         // タグ付きの入力ではタイムラインの 0 から切れる
-        try std.testing.expectEqual(Result{ .start = 0, .end = 88200 }, try expectTrim(in, .{}));
+        try std.testing.expectEqual(Result{ .start = 0, .end = 88200, .sample_rate = 44100 }, try expectTrim(in, .{}));
         _ = try expectTrim(in, .{ .start = 12345, .end = 67890 });
         _ = try expectTrim(in, .{ .start = 80000 });
     }

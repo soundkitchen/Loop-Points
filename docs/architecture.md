@@ -22,7 +22,8 @@
 
 - `zig build` は CLI と wasm の両方をビルドする。wasm は `-Dtarget` に関係なく常に `wasm32-freestanding` 向けで、最適化モードが debug のときは small でビルドする
 - `zig build test` はコアと CLI のテストを実行し、wasm のビルドが通ることも確かめる(wasm はネイティブで実行できないため)
-- コアのテストは、`testdata` モジュールを import できるテスト専用のモジュール(ルートは同じ `src/root.zig`)で実行する。ライブラリとしての `kiln` モジュールには `testdata` を含めない(`@import("testdata")` は `test` ブロックの中でだけ使う)
+- コアのテストは、`testdata` モジュールを import できるテスト専用のモジュール(ルートは同じ `src/root.zig`)で実行する。ライブラリとしての `kiln` モジュールには `testdata` を含めない。`src/` の各ファイルはトップレベルに `const testdata = @import("testdata");` を置き、`test` ブロックからだけ参照する(Zig はトップレベルの宣言を参照されたときにだけ解析するため、テスト以外のビルドでは import が解決されない)
+- ライブラリ・wasm・テストの各ビルドで使うコアのモジュールは、`build.zig` の `kilnModuleOptions` で同じ定義から作る。テスト用のモジュールは、それに `testdata` の import を足したもの
 - バージョンは `build.zig.zon` の `.version` だけを出所にし、ビルドオプション経由でコアの `kiln.version` に渡す
 
 ## 2. コア API の方針
@@ -40,8 +41,8 @@
 ```zig
 const info = try kiln.mp3.probe(input);          // sample_rate, channels, samples, frames, min_start
 const r = try kiln.mp3.trim(input, .{ .start = 66150, .end = 441000 }, writer); // *std.Io.Writer
-// r.start / r.end: 丸めた後の区間。end を null にすると末尾まで
-const t = try kiln.mp3.trimAlloc(gpa, input, .{ .start = 66150 }); // t.data / t.start / t.end
+// r.start / r.end: 丸めた後の区間。end を null にすると末尾まで。r.sample_rate: 入力のサンプルレート
+const t = try kiln.mp3.trimAlloc(gpa, input, .{ .start = 66150 }); // t.data / t.start / t.end / t.sample_rate
 ```
 
 - 位置はタイムライン上のサンプル位置([`lyria-mp3.md`](lyria-mp3.md) §5.1)。秒からの変換は CLI と JS 側で行う
@@ -56,12 +57,17 @@ kiln trim <input> <output> [--start TIME] [--end TIME | --duration TIME]
 
 - `<input>` / `<output>` は `-` で stdin / stdout
 - TIME は秒(`1.5`)、分:秒 / 時:分:秒(`1:02.5`)、サンプル数(`66150s`)。秒は浮動小数点を使わずに解析し、切り捨てでサンプル位置にする
+- `--duration` は、切り上げた後の実際の開始位置から数える(タグなしの入力で `--start` を省いても、出力の長さは指定どおり)
+- 出力ファイルは一時ファイルに書き、最後まで書けたときだけ置き換える(`Dir.createFileAtomic`)。失敗したときは、既存の出力ファイルは元のまま残る。置き換えはリネームなので、出力先がシンボリックリンクならリンク自体が置き換わる
 - 終了コード: 0 = 成功、1 = 処理の失敗(入力が MP3 でない、区間が空など)、2 = 引数の誤り
 
 ### 2.3 wasm と JS
 
 - export 関数は成功なら true を返し、結果(出力のバイト列や数値)をモジュール内の変数に置く。JS 側は `kiln_output_ptr` / `kiln_output_len` / `kiln_value(i)` で読み出し、失敗時は `kiln_error_ptr` / `kiln_error_len` でエラー名を読む
 - JS ラッパーは `load()` が返すオブジェクトに `mp3.probe(bytes)` / `mp3.trim(bytes, { start, end })`(秒)/ `{ startSample, endSample }`(サンプル数)を持つ。失敗時はコアのエラー名を `code` に持つ `KilnError` を投げる
+- 入力は `BufferSource`(`ArrayBuffer` / TypedArray / `DataView`)。TypedArray と `DataView` は、要素の値ではなく下のバイト列として読む
+- `mp3.trim` は、秒で指定されたときだけ、サンプルレートを知るために先に `kiln_mp3_probe` を呼ぶ。サンプル数だけの指定では入力の解析は 1 回で済む(戻り値の秒は `kiln_mp3_trim` が返すサンプルレートで計算する)
+- `startSample` / `endSample` に BigInt を渡すときは 0 以上 2^64 未満でなければ `RangeError` にする(u64 の引数で桁あふれしないように)
 - サンプル位置は u64 なので、export 関数の引数・戻り値は JS では BigInt になる
 
 ## 3. Zig 0.17.1 で確認したこと
