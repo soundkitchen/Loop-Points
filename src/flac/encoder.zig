@@ -431,6 +431,8 @@ pub const Encoder = struct {
                 lpc.autocorrelation(sig, e.windows[wi * n ..][0..n], e.wbuf, autoc[0 .. max_order + 1]);
                 if (autoc[0] <= 0) continue;
                 const got = lpc.levinson(autoc[0 .. max_order + 1], max_order, &coefs, &errors);
+                // 次数 1 から不安定なら係数がない(自己相関の性質から起きないはずだが、念のため)
+                if (got == 0) continue;
                 const order = lpc.bestOrder(errors[0..got], n, @floatFromInt(@as(u32, p.bps) + base_precision));
                 var precision: u32 = base_precision;
                 // 32 ビットの整数で予測を計算するデコーダでもあふれないように(libFLAC と同じ)
