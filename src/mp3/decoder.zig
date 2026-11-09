@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 //! MPEG-1 Layer III のデコーダ。音声フレームを先頭から順に渡すと、1 フレーム(1152 サンプル)ずつ PCM を返す。
 //!
 //! ビットリザーバの扱いは ffmpeg に合わせている(docs/mp3-decoder.md):

@@ -11,7 +11,7 @@ MPEG-1 Layer III のデコーダ(`src/mp3/` の `bits` / `huffman` / `layer3` / 
 | ハフマン符号表(big_values 用の 15 表 + linbits、count1 の表 A / B) | minimp3 の `tabs` / `tab32` / `tab33` / `tabindex` / `g_linbits` を、先読みで引ける木の形のまま使う(形式は `src/mp3/huffman.zig` の冒頭) | どの表も符号が完全(Kraft の和が 1)で、(x, y) がすべて 1 回ずつ現れる。表 1 の全符号と、表 13 / 15 / 16 / 24 の (0,0) の符号が規格書と一致する(テスト) |
 | 合成窓 D[i](Table B.3) | minimp3 の `g_win`(D[i] × 65536 の整数を並べ替えたもの)と `mp3d_synth_pair` の定数から D[0..256] を組み立て、D[512 - i] は対称性(i が 64 の倍数でなければ符号を反転)で作る | 組み立てた 257 個が、ffmpeg の `ff_mpa_enwindow` として知られる値と全項目一致し、規格書の代表値(D[1] = -0.000015259、D[256] = 1.144989014 など)とも一致する |
 
-表はスクリプトで minimp3 のソースから抜き出して Zig のソースに書き出した(手で写していない)。
+表はスクリプトで minimp3 のソース(コミット ea99364)から抜き出して Zig のソースに書き出した(手で写していない)。出所は [`THIRD_PARTY_NOTICES.md`](../THIRD_PARTY_NOTICES.md) にも記録し、表を含むファイルの SPDX は `MIT AND CC0-1.0` にしている。
 
 計算で作る表: スケールファクタ帯の境界(規格の値を書き、minimp3 の表と照合した)、pretab、scalefac_compress の (slen1, slen2)、エイリアス削減の係数(c_i から計算)、インテンシティステレオの比(tan から計算)、IMDCT の係数と窓、合成フィルタの行列。
 

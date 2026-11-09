@@ -1,6 +1,8 @@
+// SPDX-License-Identifier: MIT AND CC0-1.0
 //! Layer III のハフマン復号(big_values の領域の 2 値の組と、count1 の領域の 4 値の組)。
 //!
-//! 表は minimp3(https://github.com/lieff/minimp3、CC0 1.0)の `L3_huffman` から取った。
+//! 表は minimp3(https://github.com/lieff/minimp3、CC0 1.0、コミット ea99364)の `L3_huffman` から取った
+//! (THIRD_PARTY_NOTICES.md)。表のデータは CC0 1.0、それ以外のコードは MIT。
 //! 規格(ISO/IEC 11172-3 Table B.7)の符号表を、先読みで引ける木の形に詰めたもの:
 //!
 //! - big_values の表: 先頭 5 ビットを先読みして `tabs[tab_index[表番号] + 先読み値]` を引く。

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 //! ビット単位の読み取り(上位ビットから)。データの終わりを越えた分は 0 として読む。
 const std = @import("std");
 

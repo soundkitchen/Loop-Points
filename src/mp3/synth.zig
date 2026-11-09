@@ -1,8 +1,10 @@
+// SPDX-License-Identifier: MIT AND CC0-1.0
 //! Layer III の時間領域の処理: IMDCT(窓、重ね合わせ、周波数反転を含む)と、32 帯の合成フィルタバンク。
 //! どちらも規格の式どおりに倍精度で計算する。
 //!
-//! 合成窓の係数は minimp3(CC0 1.0)の `g_win` と `mp3d_synth_pair` の定数から組み立てた
-//! (規格 Table B.3 の D[i] × 65536。docs/mp3-decoder.md §1)。
+//! 合成窓の係数は minimp3(CC0 1.0、コミット ea99364)の `g_win` と `mp3d_synth_pair` の定数から組み立てた
+//! (規格 Table B.3 の D[i] × 65536。docs/mp3-decoder.md §1、THIRD_PARTY_NOTICES.md)。
+//! 係数のデータは CC0 1.0、それ以外のコードは MIT。
 const std = @import("std");
 
 /// 合成窓の係数 D[i] × 65536(i = 0〜256。規格 Table B.3)。D[512 - i] は i が 64 の倍数でなければ -D[i]、64 の倍数なら D[i]
