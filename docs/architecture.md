@@ -15,11 +15,12 @@
 | `src/root.zig` | コアのルート。モジュール名 `kiln` | — |
 | `src/pcm.zig` | PCM のサンプル形式と、f32 との変換(`kiln.pcm`) | — |
 | `src/mp3.zig`, `src/mp3/` | MP3 の解析と無劣化トリム(`kiln.mp3`)。`frame`(フレームヘッダ)/ `id3` / `xing`(Xing・LAME タグ)/ `stream`(入力の解析)/ `trim` に分ける | — |
+| `src/wav.zig`, `src/wav/` | WAV の解析とサンプル精度のトリム(`kiln.wav`)。`parse`(チャンクの解析)/ `header`(ヘッダの書き出し)に分ける | — |
 | `cli/main.zig` | CLI | `zig-out/bin/kiln` |
 | `wasm/main.zig` | wasm の export 関数 | `zig-out/wasm/kiln.wasm` |
 | `wasm/kiln.js` | JS ラッパー(ES module。`load()` で wasm を読み込む) | `zig-out/wasm/kiln.js` |
 | `cli/time.zig` | CLI の時刻指定(`1.5` / `1:02.5` / `66150s`)の解析 | — |
-| `testdata/` | テスト用の音声と、それを `@embedFile` するモジュール(`testdata.zig`)。作り方は `testdata/README.md` | — |
+| `testdata/` | テスト用の音声(MP3 と WAV)と、それを `@embedFile` するモジュール(`testdata.zig`)。作り方は `testdata/README.md` | — |
 
 - `zig build` は CLI と wasm の両方をビルドする。wasm は `-Dtarget` に関係なく常に `wasm32-freestanding` 向けで、最適化モードが debug のときは small でビルドする
 - `zig build test` はコアと CLI のテストを実行し、wasm のビルドが通ることも確かめる(wasm はネイティブで実行できないため)
@@ -83,6 +84,20 @@ kiln.pcm.fromF32(.i16, samples, bytes, &q);      // f32 → バイト列
 - PCM は読み込んだ元の形式のまま持ち、必要なときだけ f32 と変換する(WAV → WAV などを無劣化にするため)
 - 整数と浮動小数点の対応は `値 / 2^(bits - 1)`。16 / 24bit と 8bit は、整数 → f32 → 整数で元に戻る
 - 整数への変換では、既定で TPDF ディザ(振幅 ±1 LSB)をかける。乱数の種は固定なので、同じ入力からは毎回同じ結果になる。範囲外の値はクリップし、NaN は 0 にする。浮動小数点への変換ではクリップしない
+
+### 2.5 WAV
+
+```zig
+const info = try kiln.wav.probe(input);          // sample_rate, channels, format(kiln.pcm.Format), samples
+const r = try kiln.wav.trim(input, .{ .start = 44100, .end = 88200 }, writer);
+const t = try kiln.wav.trimAlloc(gpa, input, .{ .start = 44100 });
+```
+
+- 扱う形式: RIFF / WAVE の PCM(8bit 符号なし、16 / 24 / 32bit 整数)と浮動小数点(32 / 64bit)。WAVE_FORMAT_EXTENSIBLE は SubFormat で判断する。RF64、RIFX(ビッグエンディアン)、ADPCM などの圧縮形式は `UnsupportedFormat`
+- 位置はフレーム(チャンネルあたりのサンプル)単位で、先頭を 0 とする。範囲外の指定は MP3 と同じく丸める
+- トリムは `data` の中身を切り出すだけなので無劣化。`fmt ` チャンクは入力のものをそのまま書き、ほかのチャンク(`LIST`、`fact` など)は引き継がない
+- `data` の長さが入力を超える(長さを 0xFFFFFFFF にしたストリーミング出力や、途中で切れたファイル)ときは、入力の終わりまでとみなし、フレームの区切りで切り詰める
+- 出力が 4GiB 以上になるときは `TooLarge`(RF64 では書かない)
 
 ## 3. Zig 0.17.1 で確認したこと
 

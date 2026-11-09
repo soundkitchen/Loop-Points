@@ -12,9 +12,13 @@ pub const pcm = @import("pcm.zig");
 /// MP3 の解析と無劣化トリム
 pub const mp3 = @import("mp3.zig");
 
+/// WAV の解析とサンプル精度のトリム
+pub const wav = @import("wav.zig");
+
 test {
     _ = pcm;
     _ = mp3;
+    _ = wav;
 }
 
 test version {
