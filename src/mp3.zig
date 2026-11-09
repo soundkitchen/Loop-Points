@@ -114,6 +114,10 @@ pub const WavOptions = struct {
 pub fn toWav(input: []const u8, options: DecodeOptions, wav_options: WavOptions, w: *Io.Writer) !DecodeResult {
     const s = try stream.Stream.parse(input);
     const range = try clampDecodeRange(&s, options);
+    return toWavParsed(input, &s, range, wav_options, w);
+}
+
+fn toWavParsed(input: []const u8, s: *const stream.Stream, range: Range, wav_options: WavOptions, w: *Io.Writer) !DecodeResult {
     var enc: wav.Encoder = try .init(w, .{
         .sample_rate = s.header.sampleRate(),
         .channels = s.header.channels(),
@@ -121,9 +125,34 @@ pub fn toWav(input: []const u8, options: DecodeOptions, wav_options: WavOptions,
         .dither = wav_options.dither,
         .frames = range.end - range.start,
     });
-    const r = try decodeParsed(input, &s, range, &enc);
+    const r = try decodeParsed(input, s, range, &enc);
     _ = try enc.finish();
     return r;
+}
+
+pub const WavDecoded = struct {
+    /// WAV ファイル全体。呼び出し側が `gpa` で解放する
+    data: []u8,
+    result: DecodeResult,
+};
+
+/// `toWav` の一括版。入力の解析は 1 回で、出力の大きさを前もって計算して一度に確保する
+/// (伸ばしながらのコピーを避ける。wasm のメモリのピークを抑えるため)
+pub fn toWavAlloc(gpa: std.mem.Allocator, input: []const u8, options: DecodeOptions, wav_options: WavOptions) !WavDecoded {
+    const s = try stream.Stream.parse(input);
+    const range = try clampDecodeRange(&s, options);
+    const data_len = std.math.mul(u64, range.end - range.start, @as(u64, s.header.channels()) * wav_options.format.bytes()) catch
+        return error.TooLarge;
+    // ヘッダ + PCM + 奇数バイトの詰め物
+    const capacity = std.math.cast(usize, data_len + wav.max_header_len + 1) orelse return error.TooLarge;
+    var out = try Io.Writer.Allocating.initCapacity(gpa, capacity);
+    defer out.deinit();
+    const r = toWavParsed(input, &s, range, wav_options, &out.writer) catch |err| switch (err) {
+        // 確保した大きさに収まるので、書き込みには失敗しない
+        error.WriteFailed => unreachable,
+        else => |e| return e,
+    };
+    return .{ .data = try out.toOwnedSlice(), .result = r };
 }
 
 const Range = struct { start: u64, end: u64 };
@@ -183,7 +212,8 @@ fn decodeParsed(input: []const u8, s: *const stream.Stream, range: Range, sink: 
 fn startFrame(s: *const stream.Stream, k: u64) u64 {
     if (k < 2) return 0;
     // k - 2 から遡るので、それまでのフレームのメインデータの長さを直近の分だけ覚えておく
-    // (MPEG-1 のフレームのメインデータは 60 バイト以上なので、16 フレームあれば 512 バイトを超える)
+    // (MPEG-1 のフレームのメインデータは最小でも 58 バイト(32kbps / 48kHz / ステレオ / CRC 付き)なので、
+    // 16 フレームあれば 512 バイトを超える)
     var lens: [16]usize = @splat(0);
     var it = s.iterator();
     var index: u64 = 0;
@@ -274,6 +304,19 @@ test "decode: 区間の手前から復号しても、先頭から復号したと
             try std.testing.expectEqualSlices(f32, all.list.items[@intCast(start * nch)..], part.list.items);
         }
     }
+}
+
+test toWavAlloc {
+    for ([_]pcm.Format{ .u8, .i16, .i24, .f32, .f64 }) |f| {
+        var out: Io.Writer.Allocating = .init(std.testing.allocator);
+        defer out.deinit();
+        _ = try toWav(testdata.mono48k_notag, .{ .start = 3, .end = 1004 }, .{ .format = f }, &out.writer);
+        const a = try toWavAlloc(std.testing.allocator, testdata.mono48k_notag, .{ .start = 3, .end = 1004 }, .{ .format = f });
+        defer std.testing.allocator.free(a.data);
+        try std.testing.expectEqualSlices(u8, out.written(), a.data);
+        try std.testing.expectEqual(1004, a.result.end);
+    }
+    try std.testing.expectError(error.EmptyRange, toWavAlloc(std.testing.allocator, testdata.lyria_like, .{ .start = 9, .end = 9 }, .{}));
 }
 
 test toWav {
