@@ -46,7 +46,9 @@ pub const Wav = struct {
         var fmt_chunk: ?[]const u8 = null;
         var data: ?[]const u8 = null;
         var pos: usize = 12;
-        while (pos + 8 <= input.len) {
+        // pos は飽和加算で進めるので入力の長さを超えることがある。usize が 32bit の wasm でも
+        // pos + 8 があふれないよう、引き算で比べる
+        while (pos <= input.len and input.len - pos >= 8) {
             const id = input[pos..][0..4];
             const size = std.mem.readInt(u32, input[pos + 4 ..][0..4], .little);
             const body_start = pos + 8;

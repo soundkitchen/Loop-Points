@@ -27,7 +27,8 @@ pub const Options = struct {
 };
 
 pub const Error = Io.Writer.Error || error{
-    /// サンプルレートかチャンネル数が 0
+    /// サンプルレートかチャンネル数が 0、1 フレームのバイト数が 65535 を超える、
+    /// またはサンプルレート × 1 フレームのバイト数が 32bit に収まらない(WAV のヘッダに書けない)
     InvalidOptions,
     /// 出力が RIFF の 32bit のサイズに収まらない(4GiB 以上)
     TooLarge,
@@ -64,6 +65,10 @@ pub const Encoder = struct {
     /// ヘッダを書いてエンコーダを作る
     pub fn init(w: *Io.Writer, options: Options) Error!Encoder {
         if (options.sample_rate == 0 or options.channels == 0) return error.InvalidOptions;
+        // fmt の nBlockAlign(16bit)と nAvgBytesPerSec(32bit)に収まること
+        const block = @as(u32, options.channels) * options.format.bytes();
+        if (block > std.math.maxInt(u16)) return error.InvalidOptions;
+        _ = std.math.mul(u32, options.sample_rate, block) catch return error.InvalidOptions;
         var e: Encoder = .{
             .w = w,
             .channels = options.channels,
@@ -96,16 +101,7 @@ pub const Encoder = struct {
     /// インターリーブした f32 のサンプルを書く。長さはチャンネル数の倍数
     pub fn writeF32(e: *Encoder, samples: []const f32) Error!void {
         std.debug.assert(samples.len % e.channels == 0);
-        var buf: [4096]u8 = undefined;
-        const per = buf.len / e.format.bytes();
-        var i: usize = 0;
-        while (i < samples.len) {
-            const n = @min(per, samples.len - i);
-            const out = buf[0 .. n * e.format.bytes()];
-            pcm.fromF32(e.format, samples[i..][0..n], out, &e.quantizer);
-            try e.writeBytes(out);
-            i += n;
-        }
+        try e.writeSamples(samples);
     }
 
     /// チャンネルごとに分かれた f32 のサンプル(Web Audio の AudioBuffer と同じ並び)を書く。
@@ -114,16 +110,32 @@ pub const Encoder = struct {
         std.debug.assert(channels.len == e.channels);
         const frames = channels[0].len;
         for (channels) |c| std.debug.assert(c.len == frames);
+        // インターリーブしながら f32 のバッファに詰め、いっぱいになったら書く(チャンネル数によらず進む)
         var buf: [1024]f32 = undefined;
-        const per = buf.len / e.channels;
-        std.debug.assert(per > 0);
-        var i: usize = 0;
-        while (i < frames) {
-            const n = @min(per, frames - i);
-            for (0..n) |j| {
-                for (channels, 0..) |c, ch| buf[j * e.channels + ch] = c[i + j];
+        var n: usize = 0;
+        for (0..frames) |i| {
+            for (channels) |c| {
+                buf[n] = c[i];
+                n += 1;
+                if (n == buf.len) {
+                    try e.writeSamples(buf[0..n]);
+                    n = 0;
+                }
             }
-            try e.writeF32(buf[0 .. n * e.channels]);
+        }
+        try e.writeSamples(buf[0..n]);
+    }
+
+    /// インターリーブした f32 のサンプルを書く(フレームの途中で区切ってよい)
+    fn writeSamples(e: *Encoder, samples: []const f32) Error!void {
+        var buf: [4096]u8 = undefined;
+        const per = buf.len / e.format.bytes();
+        var i: usize = 0;
+        while (i < samples.len) {
+            const n = @min(per, samples.len - i);
+            const out = buf[0 .. n * e.format.bytes()];
+            pcm.fromF32(e.format, samples[i..][0..n], out, &e.quantizer);
+            try e.writeBytes(out);
             i += n;
         }
     }
@@ -171,7 +183,7 @@ fn buildFmt(buf: *[max_fmt_len]u8, sample_rate: u32, channels: u16, format: pcm.
     w.writeInt(u16, if (extensible) 0xFFFE else tag, .little) catch unreachable;
     w.writeInt(u16, channels, .little) catch unreachable;
     w.writeInt(u32, sample_rate, .little) catch unreachable;
-    w.writeInt(u32, sample_rate *% block, .little) catch unreachable;
+    w.writeInt(u32, sample_rate * block, .little) catch unreachable; // init で収まることを確かめてある
     w.writeInt(u16, block, .little) catch unreachable;
     w.writeInt(u16, format.bits(), .little) catch unreachable;
     if (extensible) {
@@ -243,6 +255,31 @@ test "Encoder: チャンネルごとの入力は、インターリーブした�
     try std.testing.expectEqual(0xFFFE, std.mem.readInt(u16, w.fmt_chunk[0..2], .little));
 }
 
+test "Encoder: バッファより多いチャンネル数でも書ける" {
+    const gpa = std.testing.allocator;
+    const nch = 2000;
+    const frames = 3;
+    const data = try gpa.alloc(f32, nch * frames);
+    defer gpa.free(data);
+    const chans = try gpa.alloc([]const f32, nch);
+    defer gpa.free(chans);
+    for (chans, 0..) |*c, i| {
+        c.* = data[i * frames ..][0..frames];
+        for (data[i * frames ..][0..frames], 0..) |*v, j| v.* = @as(f32, @floatFromInt(i * frames + j)) / 8192.0;
+    }
+    var out: Io.Writer.Allocating = .init(gpa);
+    defer out.deinit();
+    var e: Encoder = try .init(&out.writer, .{ .sample_rate = 8000, .channels = nch, .format = .f32, .frames = frames });
+    try e.writePlanarF32(chans);
+    _ = try e.finish();
+    const w = try parse.Wav.parse(out.written());
+    try std.testing.expectEqual(frames, w.frames());
+    // インターリーブされている: フレーム 1 のチャンネル 1999
+    var v: [1]f32 = undefined;
+    pcm.toF32(.f32, w.data[(1 * nch + 1999) * 4 ..][0..4], &v);
+    try std.testing.expectEqual(chans[1999][1], v[0]);
+}
+
 test "Encoder: 長さを渡さなければ、finish が返すヘッダを書き戻す" {
     const gpa = std.testing.allocator;
     var out: Io.Writer.Allocating = .init(gpa);
@@ -276,6 +313,11 @@ test "Encoder: 長さを渡したとき、奇数バイトの中身の後に詰�
 test "Encoder: エラー" {
     var discard: Io.Writer.Discarding = .init(&.{});
     try std.testing.expectError(error.InvalidOptions, Encoder.init(&discard.writer, .{ .sample_rate = 0, .channels = 2 }));
+    // 1 フレームが 65535 バイトを超える(f64 で 8192 チャンネル)
+    try std.testing.expectError(error.InvalidOptions, Encoder.init(&discard.writer, .{ .sample_rate = 44100, .channels = 8192, .format = .f64 }));
+    _ = try Encoder.init(&discard.writer, .{ .sample_rate = 44100, .channels = 8191, .format = .f64 });
+    // nAvgBytesPerSec が 32bit に収まらない
+    try std.testing.expectError(error.InvalidOptions, Encoder.init(&discard.writer, .{ .sample_rate = 0xFFFF_FFFF, .channels = 2 }));
     try std.testing.expectError(error.TooLarge, Encoder.init(&discard.writer, .{ .sample_rate = 44100, .channels = 2, .frames = 1 << 30 }));
     var e: Encoder = try .init(&discard.writer, .{ .sample_rate = 44100, .channels = 2, .frames = 10 });
     try e.writeF32(&[_]f32{ 0, 0 });

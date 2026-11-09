@@ -1,9 +1,9 @@
 // K!LN の JS ラッパー。kiln.wasm を読み込み、export 関数を JS から使いやすくする。
 
-/** K!LN のコアが返したエラー。`name` に加えて `code` にコアのエラー名(`NotMp3` など)が入る */
 /** WAV のサンプル形式の名前。並びは kiln.pcm.Format と同じ(wasm とは番号でやり取りする) */
 const FORMATS = ['u8', 'i16', 'i24', 'i32', 'f32', 'f64'];
 
+/** K!LN のコアが返したエラー。`name` に加えて `code` にコアのエラー名(`NotMp3` など)が入る */
 export class KilnError extends Error {
   constructor(code) {
     super(`kiln: ${code}`);

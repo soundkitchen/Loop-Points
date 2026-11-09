@@ -26,17 +26,19 @@ pub const Format = enum {
     }
 };
 
-/// 先頭のバイト列(マジックバイト)から形式を判定する。拡張子は見ない。
-/// 判定できるのは入口だけで、中身が正しいかは各形式の解析で確かめる
+/// 入力の形式を判定する。拡張子は見ない。WAV は先頭のバイト列(RIFF / RF64 / RIFX と WAVE)で判定し、
+/// それ以外は MP3 の解析に任せる(先頭にゴミがある MP3 も、MP3 の解析と同じく受け付ける)。
+/// MPEG オーディオだが扱えない形式(MPEG-2 など)も `.mp3` を返し、詳しいエラーは解析で出す
 pub fn detect(input: []const u8) ?Format {
     if (input.len >= 12 and std.mem.eql(u8, input[8..12], "WAVE")) {
         const riff = input[0..4];
         if (std.mem.eql(u8, riff, "RIFF") or std.mem.eql(u8, riff, "RF64") or std.mem.eql(u8, riff, "RIFX")) return .wav;
     }
-    // ID3v2 タグか、MPEG オーディオのフレーム同期(先頭 11 ビットがすべて 1)
-    if (std.mem.startsWith(u8, input, "ID3")) return .mp3;
-    if (input.len >= 2 and input[0] == 0xFF and input[1] & 0xE0 == 0xE0) return .mp3;
-    return null;
+    _ = mp3.probe(input) catch |err| switch (err) {
+        error.NotMp3 => return null,
+        error.UnsupportedFormat => return .mp3,
+    };
+    return .mp3;
 }
 
 test {
@@ -58,5 +60,12 @@ test detect {
     try std.testing.expectEqual(Format.wav, detect("RF64\xFF\xFF\xFF\xFFWAVE").?);
     try std.testing.expectEqual(null, detect("RIFF\x00\x00\x00\x00AVI "));
     try std.testing.expectEqual(null, detect("fLaC"));
+    // 先頭にゴミがある MP3 も MP3(MP3 の解析と同じ)
+    var junk: [16 + testdata.cbr128_lame.len]u8 = undefined;
+    @memset(junk[0..16], 0);
+    @memcpy(junk[16..], testdata.cbr128_lame);
+    try std.testing.expectEqual(Format.mp3, detect(&junk).?);
+    // 先頭が同期ワードでも、フレームが続かなければ MP3 ではない
+    try std.testing.expectEqual(null, detect("\xFF\xFB\x90\x64abc"));
     try std.testing.expectEqual(null, detect(""));
 }

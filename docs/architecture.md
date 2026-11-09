@@ -58,7 +58,7 @@ kiln trim <input> <output> [--start TIME] [--end TIME | --duration TIME] [--form
 ```
 
 - `<input>` / `<output>` は `-` で stdin / stdout
-- 入力の形式(MP3 / WAV)は、コアの `kiln.detect` が先頭のバイト列(マジックバイト)から判定する。拡張子は見ない
+- 入力の形式(MP3 / WAV)は、コアの `kiln.detect` が判定する。拡張子は見ない。WAV は先頭のバイト列(RIFF / RF64 / RIFX と WAVE)で判定し、それ以外は MP3 の解析に任せる(先頭にゴミがある MP3 も受け付ける)
 - `--format mp3|wav` で出力の形式を指定する。省くと入力と同じ形式。形式の変換はまだできないので、入力と違う形式を指定するとエラー(終了コード 1)
 - TIME は秒(`1.5`)、分:秒 / 時:分:秒(`1:02.5`)、サンプル数(`66150s`)。秒は浮動小数点を使わずに解析し、切り捨てでサンプル位置にする
 - `--duration` は、切り上げた後の実際の開始位置から数える(タグなしの入力で `--start` を省いても、出力の長さは指定どおり)
@@ -113,6 +113,7 @@ const bytes = try kiln.wav.encodePlanarAlloc(gpa, &.{ left, right }, .{ .sample_
 ```
 
 - 既定の形式は 16bit 整数、ディザは TPDF(§2.4)
+- 1 フレームのバイト数(チャンネル数 × サンプルのバイト数)が 65535 を超えるとき、またはサンプルレート × 1 フレームのバイト数が 32bit に収まらないときは `InvalidOptions`(`fmt ` の nBlockAlign / nAvgBytesPerSec に書けないため)
 - 2 チャンネル以下は WAVE_FORMAT_PCM / IEEE_FLOAT、3 チャンネル以上は WAVE_FORMAT_EXTENSIBLE で書く(チャンネルマスクは先頭から順に割り当てる)。浮動小数点でも `fact` チャンクは書かない
 - フレーム数を渡すと、正しい長さのヘッダを先に書き、`finish` で書いた長さと合うかを確かめる(違えば `LengthMismatch`)。渡さないと長さを 0xFFFFFFFF にしたヘッダを書き、`finish` が正しいヘッダを返す
 - 中身が奇数バイトのときの詰め物は、フレーム数を渡したときだけ書く。渡さないときは、書き戻せないパイプなどで詰め物がサンプルとして読まれないよう書かず、`finish` が返すヘッダの RIFF サイズにも含めない

@@ -16,7 +16,8 @@ const usage =
     \\          The input format is detected from its contents.
     \\
     \\Options:
-    \\  --format FORMAT   output format: mp3 or wav (default: same as the input)
+    \\  --format FORMAT   output format: mp3 or wav (default: same as the input).
+    \\                    Converting between formats is not supported yet, so it must match the input.
     \\
     \\TIME:
     \\  1.5         seconds
@@ -221,10 +222,13 @@ fn probe(format: kiln.Format, input: []const u8) !Info {
     };
 }
 
+/// 切り出す区間の指定(end が null なら末尾まで)
 const Range = struct { start: u64, end: ?u64 };
+/// 実際に切り出した区間
+const Trimmed = struct { start: u64, end: u64 };
 
 /// 区間を切り出して `w` に書き、実際に切り出した区間を返す
-fn trimTo(format: kiln.Format, input: []const u8, range: Range, w: *Io.Writer) !struct { start: u64, end: u64 } {
+fn trimTo(format: kiln.Format, input: []const u8, range: Range, w: *Io.Writer) !Trimmed {
     return switch (format) {
         .mp3 => blk: {
             const r = try kiln.mp3.trim(input, .{ .start = range.start, .end = range.end }, w);
@@ -239,11 +243,11 @@ fn trimTo(format: kiln.Format, input: []const u8, range: Range, w: *Io.Writer) !
 
 /// トリムした結果を書き出す。ファイルへは一時ファイルに書き、最後まで書けたときだけ
 /// 出力先に置き換える(失敗しても、既存の出力先のファイルは元のまま残る)
-fn writeOutput(io: Io, path: []const u8, format: kiln.Format, input: []const u8, range: Range, stdout: *Io.Writer) !struct { start: u64, end: u64 } {
+fn writeOutput(io: Io, path: []const u8, format: kiln.Format, input: []const u8, range: Range, stdout: *Io.Writer) !Trimmed {
     if (std.mem.eql(u8, path, "-")) {
         const r = try trimTo(format, input, range, stdout);
         try stdout.flush();
-        return .{ .start = r.start, .end = r.end };
+        return r;
     }
     var af = try Io.Dir.cwd().createFileAtomic(io, path, .{ .replace = true });
     defer af.deinit(io);
@@ -252,7 +256,7 @@ fn writeOutput(io: Io, path: []const u8, format: kiln.Format, input: []const u8,
     const r = try trimTo(format, input, range, &fw.interface);
     try fw.interface.flush();
     try af.replace(io);
-    return .{ .start = r.start, .end = r.end };
+    return r;
 }
 
 /// コアのエラーを利用者向けの説明にする
@@ -263,7 +267,7 @@ fn describe(format: kiln.Format, err: anyerror) []const u8 {
         error.InvalidWav => "broken WAV file (missing or invalid fmt / data chunk)",
         error.UnsupportedFormat => switch (format) {
             .mp3 => "unsupported MPEG audio (only MPEG-1 Layer III is supported)",
-            .wav => "unsupported WAV encoding (only PCM and IEEE float are supported, not RF64)",
+            .wav => "unsupported WAV (only little-endian RIFF with PCM or IEEE float is supported; RF64, RIFX and compressed encodings are not)",
         },
         error.EmptyRange => "empty range",
         error.TooLarge => "output is too large",
