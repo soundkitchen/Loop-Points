@@ -75,6 +75,8 @@ test {
     _ = trim_impl;
     _ = @import("mp3/id3.zig");
     _ = @import("mp3/xing.zig");
+    _ = @import("mp3/bits.zig");
+    _ = @import("mp3/huffman.zig");
 }
 
 const testdata = @import("testdata");
