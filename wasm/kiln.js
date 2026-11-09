@@ -217,7 +217,7 @@ export async function load(source = new URL('./kiln.wasm', import.meta.url)) {
       const { format, dither } = formatOptions(options);
       return rangeWith(e.kiln_mp3_probe, input, options, (ptr, len, s, t) => {
         check(e.kiln_mp3_to_wav(ptr, len, s, t ?? 0n, t !== null, format, dither));
-        return { data: takeOutput(), invalidFrames: Number(e.kiln_value(3)) };
+        return { data: takeOutput(), invalidFrames: Number(e.kiln_value(4)) };
       });
     },
   };

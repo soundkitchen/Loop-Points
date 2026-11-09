@@ -187,25 +187,18 @@ export fn kiln_mp3_decode(ptr: [*]const u8, len: usize, start: u64, end: u64, ha
 
 /// MP3 の区間 [start, end) をデコードして WAV にする。format は kiln.pcm.Format の番号、
 /// dither は 0: なし、1: TPDF。成功すると WAV を kiln_output_* に、kiln_value の 0: start、1: end、
-/// 2: サンプルレート、3: 復号できなかったフレームの数を置く
+/// 2: サンプルレート、3: チャンネル数、4: 復号できなかったフレームの数を置く(kiln_mp3_decode と同じ並び)
 export fn kiln_mp3_to_wav(ptr: [*]const u8, len: usize, start: u64, end: u64, has_end: bool, format: u32, dither: u32) bool {
     kiln_output_free();
     const fmt = std.enums.fromInt(kiln.pcm.Format, format) orelse return fail(error.InvalidOptions);
     if (dither > 1) return fail(error.InvalidOptions);
-    const input = ptr[0..len];
-    // 出力の大きさ(ヘッダ + PCM)は前もって分かるので、一度に確保する(伸ばしながらのコピーを避ける)
-    const info = kiln.mp3.probe(input) catch |err| return fail(err);
-    const e = @min(if (has_end) end else info.samples, info.samples);
-    const frames = e -| start;
-    const data_len = std.math.mul(u64, frames, @as(u64, info.channels) * fmt.bytes()) catch return fail(error.TooLarge);
-    const capacity = std.math.cast(usize, data_len + kiln.wav.max_header_len + 1) orelse return fail(error.TooLarge);
-    var out = std.Io.Writer.Allocating.initCapacity(gpa, capacity) catch |err| return fail(err);
-    defer out.deinit();
-    const r = kiln.mp3.toWav(input, .{ .start = start, .end = if (has_end) end else null }, .{
+    // 入力の解析は 1 回で、出力は前もって計算した大きさで一度に確保する
+    const t = kiln.mp3.toWavAlloc(gpa, ptr[0..len], .{ .start = start, .end = if (has_end) end else null }, .{
         .format = fmt,
         .dither = if (dither == 1) .tpdf else .none,
-    }, &out.writer) catch |err| return fail(err);
-    output = out.toOwnedSlice() catch |err| return fail(err);
-    values = .{ r.start, r.end, r.sample_rate, r.invalid_frames, 0 };
+    }) catch |err| return fail(err);
+    output = t.data;
+    const r = t.result;
+    values = .{ r.start, r.end, r.sample_rate, r.channels, r.invalid_frames };
     return true;
 }

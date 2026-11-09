@@ -65,11 +65,7 @@ pub const Encoder = struct {
 
     /// ヘッダを書いてエンコーダを作る
     pub fn init(w: *Io.Writer, options: Options) Error!Encoder {
-        if (options.sample_rate == 0 or options.channels == 0) return error.InvalidOptions;
-        // fmt の nBlockAlign(16bit)と nAvgBytesPerSec(32bit)に収まること
-        const block = @as(u32, options.channels) * options.format.bytes();
-        if (block > std.math.maxInt(u16)) return error.InvalidOptions;
-        _ = std.math.mul(u32, options.sample_rate, block) catch return error.InvalidOptions;
+        try validate(options);
         var e: Encoder = .{
             .w = w,
             .channels = options.channels,
@@ -88,6 +84,26 @@ pub const Encoder = struct {
             try header.writeSizes(w, e.fmtChunk(), 0xFFFF_FFFF, 0xFFFF_FFFF);
         }
         return e;
+    }
+
+    /// フレーム数 `options.frames` の WAV を書いたときの、ファイル全体のバイト数(ヘッダと、
+    /// 奇数バイトの詰め物を含む)。`init` と同じ指定の誤りと、4GiB を超える(`TooLarge`)ときはエラー
+    pub fn fileLen(options: Options) error{ InvalidOptions, TooLarge }!u64 {
+        try validate(options);
+        var buf: [max_fmt_len]u8 = undefined;
+        const fmt_chunk = buildFmt(&buf, options.sample_rate, options.channels, options.format);
+        const frame_len = @as(u64, options.channels) * options.format.bytes();
+        const data_len = std.math.mul(u64, options.frames orelse 0, frame_len) catch return error.TooLarge;
+        const riff = header.riffSize(fmt_chunk, data_len) orelse return error.TooLarge;
+        return @as(u64, riff) + 8;
+    }
+
+    /// `fmt ` の nBlockAlign(16bit)と nAvgBytesPerSec(32bit)に収まる指定か
+    fn validate(options: Options) error{InvalidOptions}!void {
+        if (options.sample_rate == 0 or options.channels == 0) return error.InvalidOptions;
+        const block = @as(u32, options.channels) * options.format.bytes();
+        if (block > std.math.maxInt(u16)) return error.InvalidOptions;
+        _ = std.math.mul(u32, options.sample_rate, block) catch return error.InvalidOptions;
     }
 
     fn fmtChunk(e: *const Encoder) []const u8 {
@@ -309,6 +325,27 @@ test "Encoder: 長さを渡したとき、奇数バイトの中身の後に詰�
     try std.testing.expectEqual(0, data[data.len - 1]);
     try std.testing.expectEqual(data.len - 8, std.mem.readInt(u32, data[4..8], .little));
     try std.testing.expectEqual(3, (try parse.Wav.parse(data)).frames());
+}
+
+test "Encoder.fileLen は書いた大きさと同じ" {
+    for ([_]Options{
+        .{ .sample_rate = 44100, .channels = 2, .frames = 1001 },
+        .{ .sample_rate = 8000, .channels = 1, .format = .u8, .frames = 3 }, // 詰め物あり
+        .{ .sample_rate = 48000, .channels = 3, .format = .i24, .frames = 5 }, // EXTENSIBLE
+        .{ .sample_rate = 22050, .channels = 1, .format = .f64, .frames = 0 },
+    }) |o| {
+        var out: Io.Writer.Allocating = .init(std.testing.allocator);
+        defer out.deinit();
+        var e: Encoder = try .init(&out.writer, o);
+        const zeros = try std.testing.allocator.alloc(u8, @intCast(o.frames.? * e.frameLen()));
+        defer std.testing.allocator.free(zeros);
+        @memset(zeros, 0);
+        try e.writeRaw(zeros);
+        _ = try e.finish();
+        try std.testing.expectEqual(out.written().len, try Encoder.fileLen(o));
+    }
+    try std.testing.expectError(error.TooLarge, Encoder.fileLen(.{ .sample_rate = 44100, .channels = 2, .format = .f64, .frames = 1 << 30 }));
+    try std.testing.expectError(error.InvalidOptions, Encoder.fileLen(.{ .sample_rate = 0, .channels = 2, .frames = 1 }));
 }
 
 test "Encoder: エラー" {

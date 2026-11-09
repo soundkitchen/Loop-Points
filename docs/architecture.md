@@ -56,8 +56,9 @@ const t = try kiln.mp3.trimAlloc(gpa, input, .{ .start = 66150 }); // t.data / t
 ```zig
 // デコード: 区間の PCM をインターリーブした f32 で sink.writeF32 に渡す(kiln.wav.Encoder をそのまま渡せる)
 const d = try kiln.mp3.decode(input, .{ .start = 0, .end = 44100 }, &sink); // d.start / d.end / d.sample_rate / d.channels / d.invalid_frames
-// WAV にする一括版(入力の解析は 1 回)
+// WAV にする(入力の解析は 1 回)。toWavAlloc は出力の大きさを計算して一度に確保する一括版
 const r = try kiln.mp3.toWav(input, .{ .start = 0 }, .{ .format = .i16, .dither = .tpdf }, writer);
+const t = try kiln.mp3.toWavAlloc(gpa, input, .{ .start = 0 }, .{});   // t.data / t.result
 var dec: kiln.mp3.Decoder = .{};                  // 1 フレームずつの低レベル API
 const nch = try dec.decodeFrame(frame_bytes, &pcm); // pcm: [2][1152]f32。扱えないフレームは InvalidFrame
 ```
@@ -91,7 +92,7 @@ kiln trim <input> <output> [--start TIME] [--end TIME | --duration TIME]
 - `wav.probe(bytes)` / `wav.trim(bytes, options)` は MP3 と同じ形(`probe` の `format` は `'u8'` / `'i16'` / `'i24'` / `'i32'` / `'f32'` / `'f64'`)。`wav.encode(source, { sampleRate, format = 'i16', dither = 'tpdf' })` は、`decodeAudioData` が返す `AudioBuffer`(`sampleRate` は省ける)か、チャンネルごとの `Float32Array` の配列から WAV のバイト列を作る
 - `mp3.decode(bytes, options)` は、区間をデコードしてチャンネルごとの `Float32Array` を `channels` に返す(`AudioBuffer` の `getChannelData` と同じ並び)。`mp3.toWav(bytes, { ...区間, format = 'i16', dither = 'tpdf' })` は WAV のバイト列を返し、大きな PCM を JS に引き出さずに済む。位置の指定は `trim` と同じ
 - `mp3.decode` / `mp3.toWav` の戻り値の `invalidFrames` は、復号できなかった(無音にした)フレームの数
-- `kiln_mp3_decode` は、チャンネルごとに並べた f32 を出力のバイト列に置き、チャンネル数を `kiln_value(3)`、復号できなかったフレームの数を `kiln_value(4)` で返す。`kiln_mp3_to_wav` は、出力の大きさを前もって計算して一度に確保する
+- `kiln_mp3_decode` は、チャンネルごとに並べた f32 を出力のバイト列に置き、チャンネル数を `kiln_value(3)`、復号できなかったフレームの数を `kiln_value(4)` で返す。`kiln_mp3_to_wav` も同じ並び(0: start、1: end、2: サンプルレート、3: チャンネル数、4: 復号できなかったフレームの数)で返す。WAV は `kiln.mp3.toWavAlloc` で作り、入力の解析は 1 回、出力は前もって計算した大きさで一度に確保する
 - `wav.encode` のサンプルは、`kiln_alloc_f32` で確保した領域(4 バイト境界)にチャンネルごとに続けて書き、`kiln_wav_encode` に渡す。形式は `kiln.pcm.Format` の番号でやり取りする(JS 側の `FORMATS` と並びを合わせる)
 - `mp3.trim` / `mp3.decode` / `mp3.toWav` / `wav.trim` は、秒で指定されたときだけ、サンプルレートを知るために先に `kiln_mp3_probe` / `kiln_wav_probe` を呼ぶ。サンプル数だけの指定では入力の解析は 1 回で済む(戻り値の秒は `kiln_mp3_trim` / `kiln_wav_trim` が返すサンプルレートで計算する)
 - `startSample` / `endSample` に BigInt を渡すときは 0 以上 2^64 未満でなければ `RangeError` にする(u64 の引数で桁あふれしないように)
@@ -136,6 +137,7 @@ const bytes = try kiln.wav.encodePlanarAlloc(gpa, &.{ left, right }, .{ .sample_
 - 既定の形式は 16bit 整数、ディザは TPDF(§2.4)
 - 1 フレームのバイト数(チャンネル数 × サンプルのバイト数)が 65535 を超えるとき、またはサンプルレート × 1 フレームのバイト数が 32bit に収まらないときは `InvalidOptions`(`fmt ` の nBlockAlign / nAvgBytesPerSec に書けないため)
 - 2 チャンネル以下は WAVE_FORMAT_PCM / IEEE_FLOAT、3 チャンネル以上は WAVE_FORMAT_EXTENSIBLE で書く(チャンネルマスクは先頭から順に割り当てる)。浮動小数点でも `fact` チャンクは書かない
+- `Encoder.fileLen(options)` は、フレーム数を渡して書いたときのファイル全体のバイト数(ヘッダと詰め物を含む)を返す。4GiB を超えるなら `TooLarge`。前もって一度に確保するのに使う(`kiln.mp3.toWavAlloc`)
 - フレーム数を渡すと、正しい長さのヘッダを先に書き、`finish` で書いた長さと合うかを確かめる(違えば `LengthMismatch`)。渡さないと長さを 0xFFFFFFFF にしたヘッダを書き、`finish` が正しいヘッダを返す
 - 中身が奇数バイトのときの詰め物は、フレーム数を渡したときだけ書く。渡さないときは、書き戻せないパイプなどで詰め物がサンプルとして読まれないよう書かず、`finish` が返すヘッダの RIFF サイズにも含めない
 
