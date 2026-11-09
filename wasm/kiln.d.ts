@@ -5,9 +5,10 @@
 
 /**
  * kiln のコアが返すエラーの名前。wasm/main.zig の `KilnError` と同じ一覧にする(足したら両方を直す)。
- * - `NotMp3` / `NotWav`: その形式のファイルではない
- * - `UnsupportedFormat`: 扱えない種類(MPEG-2 の MP3、RF64 や圧縮形式の WAV など)
+ * - `NotMp3` / `NotWav` / `NotFlac`: その形式のファイルではない
+ * - `UnsupportedFormat`: 扱えない種類(MPEG-2 の MP3、RF64 や圧縮形式の WAV、Ogg FLAC など)
  * - `InvalidWav`: WAV が壊れている(`fmt ` / `data` チャンクがない、値が不正)
+ * - `InvalidFlac`: FLAC が壊れている(STREAMINFO がない・先頭にない、メタデータブロックの長さが不正など)
  * - `EmptyRange`: 範囲を丸めた結果、区間が空になった
  * - `TooLarge`: 出力が大きすぎる(WAV は 4GiB まで)
  * - `OutOfMemory`: メモリが足りない
@@ -17,8 +18,10 @@
 export type KilnErrorCode =
   | 'NotMp3'
   | 'NotWav'
+  | 'NotFlac'
   | 'UnsupportedFormat'
   | 'InvalidWav'
+  | 'InvalidFlac'
   | 'EmptyRange'
   | 'TooLarge'
   | 'OutOfMemory'
@@ -69,9 +72,9 @@ export interface RangeResult {
 
 /** WAV の書き出しの指定 */
 export interface WavFormatOptions {
-  /** 既定は `'i16'` */
+  /** 既定は `'i16'`(`flac.toWav` はビット深度を保つ形式) */
   format?: SampleFormat;
-  /** 既定は `'tpdf'`(整数形式のときだけ効く) */
+  /** 既定は `'tpdf'`(浮動小数点から整数にするときと、整数のビット数を減らすときに効く) */
   dither?: Dither;
 }
 
@@ -104,6 +107,18 @@ export interface WavInfo {
   duration: number;
 }
 
+export interface FlacInfo {
+  sampleRate: number;
+  channels: number;
+  /** ビット深度(4〜32) */
+  bitsPerSample: number;
+  /** 長さ(サンプル数。実際のフレームから数えたもの) */
+  samples: number;
+  frames: number;
+  /** 秒 */
+  duration: number;
+}
+
 export interface Mp3 {
   probe(input: BytesInput): Mp3Info;
   /** 再エンコードせずにサンプル単位で切り出す。結果は MP3 のバイト列 */
@@ -130,11 +145,29 @@ export interface Wav {
   encode(source: Float32Array[], options: WavFormatOptions & { sampleRate: number }): Uint8Array<ArrayBuffer>;
 }
 
+export interface Flac {
+  probe(input: BytesInput): FlacInfo;
+  /**
+   * デコードする。`channels` はチャンネルごとの PCM(整数のサンプルを 2^(bitsPerSample - 1) で割ったもの)。
+   * `invalidFrames` は復号できなかった(無音にした)フレームの数
+   */
+  decode(
+    input: BytesInput,
+    options?: RangeOptions,
+  ): RangeResult & { channels: Float32Array<ArrayBuffer>[]; sampleRate: number; invalidFrames: number };
+  /** デコードして WAV にする。`format` を省くとビット深度を保つ形式で、元の PCM のまま */
+  toWav(
+    input: BytesInput,
+    options?: RangeOptions & WavFormatOptions,
+  ): RangeResult & { data: Uint8Array<ArrayBuffer>; invalidFrames: number };
+}
+
 export interface Kiln {
   /** ライブラリのバージョン */
   readonly version: string;
   readonly mp3: Mp3;
   readonly wav: Wav;
+  readonly flac: Flac;
   /** 生の export 関数(低レベル API。WebAssembly.Exports) */
   readonly exports: Record<string, unknown>;
 }

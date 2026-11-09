@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: MIT
-"""テスト用の MP3 と WAV を作り直すスクリプト。
+"""テスト用の MP3、WAV、FLAC を作り直すスクリプト。
 
 MP3: 正弦波と疑似乱数ノイズを混ぜた 2 秒の音声を Python で合成し、lame でエンコードする。
 lame のバージョンが変わると出力のバイト列も変わるため、作り直したら testdata/README.md の
@@ -8,7 +8,10 @@ lame のバージョンも更新すること。
 
 WAV: 同じような合成音(0.25 秒)を、形式やチャンクの並びを変えて Python だけで書く。
 
-使い方: python3 testdata/generate.py [mp3|wav](省くと両方。mp3 は lame が PATH にあること)
+FLAC: WAV と同じ合成音を、flac(参照実装のコマンド)でエンコードする。flac のバージョンが
+変わると出力のバイト列も変わるため、作り直したら testdata/README.md の flac のバージョンも更新すること。
+
+使い方: python3 testdata/generate.py [mp3|wav|flac](省くとすべて。mp3 は lame、flac は flac が PATH にあること)
 """
 import math
 import os
@@ -109,17 +112,25 @@ def chunk(cid, body):
     return cid + struct.pack('<I', len(body)) + body + (b'\x00' if len(body) % 2 else b'')
 
 
-def wav_case(rate, channels, fmt, seconds=0.25, extensible=False, fact=False, list_before=False, extra_after=False):
+def wav_case(rate, channels, fmt, seconds=0.25, extensible=False, fact=False, list_before=False, extra_after=False,
+             valid_bits=None):
+    """valid_bits を指定すると(EXTENSIBLE のときだけ)、そのビット数に丸めた値を上位に詰めて書く。"""
     bits = {'u8': 8, 's16': 16, 's24': 24, 's32': 32, 'f32': 32, 'f64': 64}[fmt]
     is_float = fmt in ('f32', 'f64')
     block = channels * bits // 8
     frames = synth_float(rate, channels, seconds)
-    data = b''.join(encode_sample(v, fmt) for fr in frames for v in fr)
+    if valid_bits:
+        # valid_bits の整数にしてから、下位を 0 で埋めて器のビット数にする
+        shift = bits - valid_bits
+        data = b''.join(struct.pack('<i', round(v * (2 ** (valid_bits - 1) - 1)) << shift)[:bits // 8]
+                        for fr in frames for v in fr)
+    else:
+        data = b''.join(encode_sample(v, fmt) for fr in frames for v in fr)
     base = struct.pack('<HHIIHH', 0xFFFE if extensible else (3 if is_float else 1),
                        channels, rate, rate * block, block, bits)
     if extensible:
         guid_tail = b'\x00\x00\x00\x00\x10\x00\x80\x00\x00\xaa\x00\x38\x9b\x71'
-        fmt_body = base + struct.pack('<HHI', 22, bits, (1 << channels) - 1) + struct.pack('<H', 3 if is_float else 1) + guid_tail
+        fmt_body = base + struct.pack('<HHI', 22, valid_bits or bits, (1 << channels) - 1) + struct.pack('<H', 3 if is_float else 1) + guid_tail
     elif is_float:
         fmt_body = base + struct.pack('<H', 0)  # cbSize
     else:
@@ -152,6 +163,35 @@ WAV_CASES = [
 ]
 
 
+# (出力名, wav_case の引数, flac の引数)
+FLAC_CASES = [
+    # 16bit ステレオ。LPC(-8)、ブロック長 1152(10 フレーム)、Vorbis コメント付き
+    ('s16-stereo.flac', dict(rate=44100, channels=2, fmt='s16'), ['-8', '--blocksize=1152', '-T', 'TITLE=kiln testdata']),
+    # 8bit モノラル、固定予測だけ(-0)、ブロック長 576、最後のフレームは短い
+    ('u8-mono.flac', dict(rate=8000, channels=1, fmt='u8', seconds=0.250125), ['-0', '--blocksize=576']),
+    # 24bit ステレオ 48kHz(既定の -5)
+    ('s24-stereo.flac', dict(rate=48000, channels=2, fmt='s24'), ['-5']),
+    # 20bit モノラル 96kHz(24bit の器に 20bit の値を入れた WAV から作る)
+    ('s20-mono.flac', dict(rate=96000, channels=1, fmt='s24', seconds=0.05, extensible=True, valid_bits=20), ['-5']),
+    # 32bit 整数 3 チャンネル 48kHz
+    ('s32-3ch.flac', dict(rate=48000, channels=3, fmt='s32', seconds=0.05, extensible=True), ['-5']),
+]
+
+
+def main_flac():
+    with tempfile.TemporaryDirectory() as tmp:
+        for name, args, flac_args in FLAC_CASES:
+            src = os.path.join(tmp, 'in.wav')
+            enc = os.path.join(tmp, 'out.flac')
+            with open(src, 'wb') as f:
+                f.write(wav_case(**args))
+            subprocess.run(['flac', '--silent', '--force', '--no-seektable', *flac_args, '-o', enc, src], check=True)
+            data = open(enc, 'rb').read()
+            with open(os.path.join(HERE, name), 'wb') as f:
+                f.write(data)
+            print(name, len(data))
+
+
 def main_wav():
     for name, args in WAV_CASES:
         data = wav_case(**args)
@@ -181,3 +221,5 @@ if __name__ == '__main__':
         main_mp3()
     if which in ('all', 'wav'):
         main_wav()
+    if which in ('all', 'flac'):
+        main_flac()

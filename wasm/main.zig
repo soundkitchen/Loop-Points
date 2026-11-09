@@ -54,8 +54,10 @@ var values: [5]u64 = @splat(0);
 pub const KilnError = error{
     NotMp3,
     NotWav,
+    NotFlac,
     UnsupportedFormat,
     InvalidWav,
+    InvalidFlac,
     EmptyRange,
     TooLarge,
     OutOfMemory,
@@ -162,17 +164,31 @@ export fn kiln_wav_encode(ptr: [*]const f32, channels: u32, frames: usize, sampl
     return true;
 }
 
-/// デコードした PCM をチャンネルごとに並べて書く sink(kiln.mp3.decode に渡す)
+/// デコードした PCM をチャンネルごとの f32 に並べて書く sink。kiln.mp3.decode(f32)と
+/// kiln.flac.decode(整数。`scale` を掛けて f32 にする)に渡す
 const PlanarSink = struct {
     out: []f32,
     channels: usize,
     frames: usize,
+    /// 整数を f32 にするときの倍率(2^-(bits - 1))
+    scale: f64 = 1,
     pos: usize = 0,
 
     pub fn writeF32(s: *PlanarSink, samples: []const f32) !void {
+        s.put(f32, samples);
+    }
+
+    pub fn writeI32(s: *PlanarSink, samples: []const i32) !void {
+        s.put(i32, samples);
+    }
+
+    fn put(s: *PlanarSink, comptime T: type, samples: []const T) void {
         const n = samples.len / s.channels;
         for (0..n) |i| {
-            for (0..s.channels) |ch| s.out[ch * s.frames + s.pos + i] = samples[i * s.channels + ch];
+            for (0..s.channels) |ch| {
+                const v = samples[i * s.channels + ch];
+                s.out[ch * s.frames + s.pos + i] = if (T == f32) v else @floatCast(@as(f64, @floatFromInt(v)) * s.scale);
+            }
         }
         s.pos += n;
     }
@@ -210,6 +226,73 @@ export fn kiln_mp3_to_wav(ptr: [*]const u8, len: usize, start: u64, end: u64, ha
     if (dither > 1) return fail(error.InvalidOptions);
     // 入力の解析は 1 回で、出力は前もって計算した大きさで一度に確保する
     const t = kiln.mp3.toWavAlloc(gpa, ptr[0..len], .{ .start = start, .end = if (has_end) end else null }, .{
+        .format = fmt,
+        .dither = if (dither == 1) .tpdf else .none,
+    }) catch |err| return fail(err);
+    output = t.data;
+    const r = t.result;
+    values = .{ r.start, r.end, r.sample_rate, r.channels, r.invalid_frames };
+    return true;
+}
+
+/// FLAC を解析する。成功すると kiln_value に
+/// 0: サンプルレート、1: チャンネル数、2: ビット深度、3: サンプル数、4: フレーム数
+/// を置く
+export fn kiln_flac_probe(ptr: [*]const u8, len: usize) bool {
+    const info = kiln.flac.probe(ptr[0..len]) catch |err| return fail(err);
+    values = .{ info.sample_rate, info.channels, info.bits_per_sample, info.samples, info.frames };
+    return true;
+}
+
+/// FLAC のメタデータ(STREAMINFO)だけを読む。フレームは見ないので kiln_flac_probe より軽い
+/// (JS が秒をサンプル位置に直すのに使う)。成功すると kiln_value に
+/// 0: サンプルレート、1: チャンネル数、2: ビット深度を置く
+export fn kiln_flac_format(ptr: [*]const u8, len: usize) bool {
+    const f = kiln.flac.streamFormat(ptr[0..len]) catch |err| return fail(err);
+    values = .{ f.sample_rate, f.channels, f.bits_per_sample, 0, 0 };
+    return true;
+}
+
+/// FLAC の区間 [start, end) をデコードする(位置はサンプル数。has_end が false なら末尾まで)。
+/// 成功すると、チャンネルごとに並べた f32(整数のサンプル / 2^(bits - 1))を kiln_output_* に、
+/// kiln_value の 0: start、1: end、2: サンプルレート、3: チャンネル数、4: 復号できなかったフレームの数を置く
+/// (kiln_mp3_decode と同じ並び)。入力の解析(フレームの区切りを探す走査)は 1 回
+export fn kiln_flac_decode(ptr: [*]const u8, len: usize, start: u64, end: u64, has_end: bool) bool {
+    kiln_output_free();
+    var ix = kiln.flac.Index.init(gpa, ptr[0..len]) catch |err| return fail(err);
+    defer ix.deinit(gpa);
+    const info = ix.info();
+    const e = @min(if (has_end) end else info.samples, info.samples);
+    if (start >= e) return fail(error.EmptyRange);
+    const frames: usize = std.math.cast(usize, e - start) orelse return fail(error.TooLarge);
+    const count = std.math.mul(usize, frames, info.channels) catch return fail(error.TooLarge);
+    const samples = gpa.alloc(f32, count) catch |err| return fail(err);
+    var sink: PlanarSink = .{
+        .out = samples,
+        .channels = info.channels,
+        .frames = frames,
+        .scale = std.math.ldexp(@as(f64, 1), 1 - @as(i32, info.bits_per_sample)),
+    };
+    const r = ix.decode(gpa, .{ .start = start, .end = e }, &sink) catch |err| {
+        gpa.free(samples);
+        return fail(err);
+    };
+    output = std.mem.sliceAsBytes(samples);
+    values = .{ r.start, r.end, r.sample_rate, r.channels, r.invalid_frames };
+    return true;
+}
+
+/// FLAC の区間 [start, end) をデコードして WAV にする。format は kiln.pcm.Format の番号で、
+/// has_format が false ならビット深度を保つ形式。dither は 0: なし、1: TPDF。
+/// 成功すると WAV を kiln_output_* に、kiln_value に kiln_flac_decode と同じ値を置く
+export fn kiln_flac_to_wav(ptr: [*]const u8, len: usize, start: u64, end: u64, has_end: bool, format: u32, has_format: bool, dither: u32) bool {
+    kiln_output_free();
+    const fmt: ?kiln.pcm.Format = if (has_format)
+        std.enums.fromInt(kiln.pcm.Format, format) orelse return fail(error.InvalidOptions)
+    else
+        null;
+    if (dither > 1) return fail(error.InvalidOptions);
+    const t = kiln.flac.toWavAlloc(gpa, ptr[0..len], .{ .start = start, .end = if (has_end) end else null }, .{
         .format = fmt,
         .dither = if (dither == 1) .tpdf else .none,
     }) catch |err| return fail(err);

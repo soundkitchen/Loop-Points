@@ -23,3 +23,14 @@ pub const f32_stereo_wav = @embedFile("f32-stereo.wav");
 pub const f64_mono_wav = @embedFile("f64-mono.wav");
 /// WAVE_FORMAT_EXTENSIBLE、32bit 整数 3 チャンネル 48kHz
 pub const s32_3ch_ext_wav = @embedFile("s32-3ch-ext.wav");
+
+/// 16bit ステレオ 44.1kHz。LPC、ブロック長 1152(10 フレーム)、Vorbis コメント付き
+pub const s16_stereo_flac = @embedFile("s16-stereo.flac");
+/// 8bit モノラル 8kHz。固定予測だけ、ブロック長 576(最後のフレームは短い)
+pub const u8_mono_flac = @embedFile("u8-mono.flac");
+/// 24bit ステレオ 48kHz
+pub const s24_stereo_flac = @embedFile("s24-stereo.flac");
+/// 20bit モノラル 96kHz
+pub const s20_mono_flac = @embedFile("s20-mono.flac");
+/// 32bit 整数 3 チャンネル 48kHz
+pub const s32_3ch_flac = @embedFile("s32-3ch.flac");

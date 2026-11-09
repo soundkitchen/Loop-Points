@@ -16,6 +16,7 @@
 | `src/pcm.zig` | PCM のサンプル形式と、f32 との変換(`kiln.pcm`) | — |
 | `src/mp3.zig`, `src/mp3/` | MP3 の解析と無劣化トリム(`kiln.mp3`)。`frame`(フレームヘッダ)/ `id3` / `xing`(Xing・LAME タグ)/ `stream`(入力の解析)/ `trim` に分ける。デコーダは `bits`(ビット読み取り)/ `huffman` / `layer3`(周波数領域の処理)/ `synth`(IMDCT と合成フィルタ)/ `decoder`(設計は [`mp3-decoder.md`](mp3-decoder.md)) | — |
 | `src/wav.zig`, `src/wav/` | WAV の解析とサンプル精度のトリム、エンコーダ(`kiln.wav`)。`parse`(チャンクの解析)/ `header`(ヘッダの書き出し)/ `encoder` に分ける | — |
+| `src/flac.zig`, `src/flac/` | FLAC の解析と復号(`kiln.flac`)。`bits`(ビット読み取り)/ `frame`(フレームヘッダ)/ `metadata`(`fLaC` とメタデータブロック)/ `stream`(フレームの区切り)/ `decoder`(サブフレームの復号)に分ける(設計は [`flac.md`](flac.md)) | — |
 | `cli/main.zig` | CLI | `zig-out/bin/kiln` |
 | `wasm/main.zig` | wasm の export 関数 | `zig-out/wasm/kiln.wasm` |
 | `wasm/kiln.js` | JS ラッパー(ES module。`load()` で wasm を読み込む) | `zig-out/wasm/kiln.js` |
@@ -24,7 +25,7 @@
 | `LICENSE` | MIT の全文。wasm の配布物にも置く | `zig-out/wasm/LICENSE` |
 | `THIRD_PARTY_NOTICES.md` | 外部から取り込んだコードや数表の出所とライセンス(方針は [`draft.md`](draft.md) §2.5) | — |
 | `cli/time.zig` | CLI の時刻指定(`1.5` / `1:02.5` / `66150s`)の解析 | — |
-| `testdata/` | テスト用の音声(MP3 と WAV)と、それを `@embedFile` するモジュール(`testdata.zig`)。作り方は `testdata/README.md` | — |
+| `testdata/` | テスト用の音声(MP3、WAV、FLAC)と、それを `@embedFile` するモジュール(`testdata.zig`)。作り方は `testdata/README.md` | — |
 
 - `zig build` は CLI と wasm の両方をビルドする。wasm は `-Dtarget` に関係なく常に `wasm32-freestanding` 向けで、最適化モードが debug のときは small でビルドする
 - `zig build test` はコアと CLI のテストを実行し、wasm のビルドが通ることも確かめる(wasm はネイティブで実行できないため)
@@ -77,14 +78,14 @@ kiln trim <input> <output> [--start TIME] [--end TIME | --duration TIME]
 ```
 
 - `<input>` / `<output>` は `-` で stdin / stdout
-- 入力の形式(MP3 / WAV)は、コアの `kiln.detect` が判定する。拡張子は見ない。WAV は先頭のバイト列(RIFF / RF64 / RIFX と WAVE)で判定し、それ以外は MP3 の解析に任せる(先頭にゴミがある MP3 も受け付ける)
-- `--format mp3|wav` で出力の形式を指定する。省くと入力と同じ形式。変換できるのは MP3 → WAV だけ(MP3 をデコードして書く)で、ほかの組み合わせはエラー(終了コード 1)
-- MP3 → WAV のときだけ `--sample-format u8|i16|i24|i32|f32|f64`(既定は `i16`)と `--dither tpdf|none`(既定は `tpdf`)を使う。変換しないときに指定すると引数の誤り(終了コード 2)
-- MP3 → WAV では、タグなしの入力でも先頭を 529 に切り上げない(`kiln.mp3.decode` と同じ)。復号できなかったフレームがあれば、その数を stderr に警告する(終了コードは 0)
+- 入力の形式(MP3 / WAV / FLAC)は、コアの `kiln.detect` が判定する。拡張子は見ない。WAV は先頭のバイト列(RIFF / RF64 / RIFX と WAVE)、FLAC は先頭(ID3v2 タグがあればその後)の `fLaC` か Ogg FLAC の印で判定し、それ以外は MP3 の解析に任せる(先頭にゴミがある MP3 も受け付ける)
+- `--format mp3|wav|flac` で出力の形式を指定する。省くと入力と同じ形式。変換できるのは MP3 / FLAC → WAV だけ(デコードして書く)で、ほかの組み合わせはエラー(終了コード 1)。FLAC のエンコーダはまだないので、FLAC の入力は `--format wav` が要る
+- MP3 / FLAC → WAV のときだけ `--sample-format u8|i16|i24|i32|f32|f64` と `--dither tpdf|none`(既定は `tpdf`)を使う。形式の既定は、MP3 は `i16`、FLAC はビット深度を保つ形式([`flac.md`](flac.md) §4)。変換しないときに指定すると引数の誤り(終了コード 2)
+- MP3 → WAV では、タグなしの入力でも先頭を 529 に切り上げない(`kiln.mp3.decode` と同じ)。MP3 / FLAC → WAV で復号できなかったフレームがあれば、その数を stderr に警告する(終了コードは 0)
 - TIME は秒(`1.5`)、分:秒 / 時:分:秒(`1:02.5`)、サンプル数(`66150s`)。秒は浮動小数点を使わずに解析し、切り捨てでサンプル位置にする
 - `--duration` は、切り上げた後の実際の開始位置から数える(タグなしの入力で `--start` を省いても、出力の長さは指定どおり)
 - 出力ファイルは一時ファイルに書き、最後まで書けたときだけ置き換える(`Dir.createFileAtomic`)。失敗したときは、既存の出力ファイルは元のまま残る。置き換えはリネームなので、出力先がシンボリックリンクならリンク自体が置き換わる
-- 終了コード: 0 = 成功、1 = 処理の失敗(入力が MP3 / WAV でない、区間が空など)、2 = 引数の誤り
+- 終了コード: 0 = 成功、1 = 処理の失敗(入力が MP3 / WAV / FLAC でない、区間が空など)、2 = 引数の誤り
 
 ### 2.3 wasm と JS
 
@@ -98,9 +99,12 @@ kiln trim <input> <output> [--start TIME] [--end TIME | --duration TIME]
 - `wav.probe(bytes)` / `wav.trim(bytes, options)` は MP3 と同じ形(`probe` の `format` は `'u8'` / `'i16'` / `'i24'` / `'i32'` / `'f32'` / `'f64'`)。`wav.encode(source, { sampleRate, format = 'i16', dither = 'tpdf' })` は、`decodeAudioData` が返す `AudioBuffer`(`sampleRate` は省ける)か、チャンネルごとの `Float32Array` の配列から WAV のバイト列を作る
 - `mp3.decode(bytes, options)` は、区間をデコードしてチャンネルごとの `Float32Array` を `channels` に返す(`AudioBuffer` の `getChannelData` と同じ並び)。`mp3.toWav(bytes, { ...区間, format = 'i16', dither = 'tpdf' })` は WAV のバイト列を返し、大きな PCM を JS に引き出さずに済む。位置の指定は `trim` と同じ
 - `mp3.decode` / `mp3.toWav` の戻り値の `invalidFrames` は、復号できなかった(無音にした)フレームの数
+- `flac.probe(bytes)` は `{ sampleRate, channels, bitsPerSample, samples, frames, duration }` を返す。`flac.decode` / `flac.toWav` は `mp3.decode` / `mp3.toWav` と同じ形で、`flac.decode` の値は整数のサンプルを 2^(bitsPerSample - 1) で割ったもの。`flac.toWav` の `format` を省くとビット深度を保つ形式(元の PCM のまま)。`kiln_flac_to_wav` は `has_format` が false のときに形式をコアに任せる
+- `kiln_flac_decode` / `kiln_flac_to_wav` の `kiln_value` の並びは MP3 と同じ。`kiln_flac_probe` は 0: サンプルレート、1: チャンネル数、2: ビット深度、3: サンプル数、4: フレーム数。`kiln_flac_format` はメタデータ(STREAMINFO)だけを読み、0: サンプルレート、1: チャンネル数、2: ビット深度を置く(フレームを走査しないので軽い)
+- デコードした PCM をチャンネルごとの f32 に並べる sink(`PlanarSink`)は MP3 と FLAC で共通。FLAC の整数は 2^-(bits - 1) を掛けて f32 にする
 - `kiln_mp3_decode` は、チャンネルごとに並べた f32 を出力のバイト列に置き、チャンネル数を `kiln_value(3)`、復号できなかったフレームの数を `kiln_value(4)` で返す。`kiln_mp3_to_wav` も同じ並び(0: start、1: end、2: サンプルレート、3: チャンネル数、4: 復号できなかったフレームの数)で返す。WAV は `kiln.mp3.toWavAlloc` で作り、入力の解析は 1 回、出力は前もって計算した大きさで一度に確保する
 - `wav.encode` のサンプルは、`kiln_alloc_f32` で確保した領域(4 バイト境界)にチャンネルごとに続けて書き、`kiln_wav_encode` に渡す。形式は `kiln.pcm.Format` の番号でやり取りする(JS 側の `FORMATS` と並びを合わせる)
-- `mp3.trim` / `mp3.decode` / `mp3.toWav` / `wav.trim` は、秒で指定されたときだけ、サンプルレートを知るために先に `kiln_mp3_probe` / `kiln_wav_probe` を呼ぶ。サンプル数だけの指定では入力の解析は 1 回で済む(戻り値の秒は `kiln_mp3_trim` / `kiln_wav_trim` が返すサンプルレートで計算する)
+- `mp3.trim` / `mp3.decode` / `mp3.toWav` / `wav.trim` / `flac.decode` / `flac.toWav` は、秒で指定されたときだけ、サンプルレートを知るために先に `kiln_mp3_probe` / `kiln_wav_probe` / `kiln_flac_format` を呼ぶ(FLAC はメタデータだけを読む)。サンプル数だけの指定では、`trim` と `toWav` と `flac.decode` は入力の解析が 1 回で済む(戻り値の秒は各 export が返すサンプルレートで計算する)。`kiln_mp3_decode` は、出力の大きさを決めるために中で probe してから復号するので、サンプル数だけの指定でも解析は 2 回(`kiln_flac_decode` はフレームの一覧 `kiln.flac.Index` を使い回すので 1 回)
 - `startSample` / `endSample` に BigInt を渡すときは 0 以上 2^64 未満でなければ `RangeError` にする(u64 の引数で桁あふれしないように)
 - サンプル位置は u64 なので、export 関数の引数・戻り値は JS では BigInt になる
 
@@ -111,10 +115,12 @@ kiln trim <input> <output> [--start TIME] [--end TIME | --duration TIME]
 kiln.pcm.toF32(.i24, bytes, samples);            // バイト列 → f32
 var q: kiln.pcm.Quantizer = .init(.tpdf);        // .none なら四捨五入とクリップだけ
 kiln.pcm.fromF32(.i16, samples, bytes, &q);      // f32 → バイト列
+kiln.pcm.fromInt(.i24, 20, ints, bytes, &q);     // 20bit の整数(i32)→ バイト列(FLAC の復号結果)
 ```
 
 - PCM は読み込んだ元の形式のまま持ち、必要なときだけ f32 と変換する(WAV → WAV などを無劣化にするため)
 - 整数と浮動小数点の対応は `値 / 2^(bits - 1)`。16 / 24bit と 8bit は、整数 → f32 → 整数で元に戻る
+- `fromInt` は、器のビット数が元のビット数以上なら下位に 0 を足す(左シフトする)だけなので可逆。少ないときは f64 に直してから `fromF32` と同じく丸める
 - 整数への変換では、既定で TPDF ディザ(振幅 ±1 LSB)をかける。丸めは 0 から遠い方への四捨五入(`@round`。JS の `Math.round` とは負の .5 で結果が違う)。乱数の種は固定なので、同じ入力からは毎回同じ結果になる。範囲外の値はクリップし、NaN は 0 にする。浮動小数点への変換ではクリップしない
 
 ### 2.5 WAV
@@ -147,6 +153,28 @@ const bytes = try kiln.wav.encodePlanarAlloc(gpa, &.{ left, right }, .{ .sample_
 - フレーム数を渡すと、正しい長さのヘッダを先に書き、`finish` で書いた長さと合うかを確かめる(違えば `LengthMismatch`)。渡さないと長さを 0xFFFFFFFF にしたヘッダを書き、`finish` が正しいヘッダを返す
 - 中身が奇数バイトのときの詰め物は、フレーム数を渡したときだけ書く。渡さないときは、書き戻せないパイプなどで詰め物がサンプルとして読まれないよう書かず、`finish` が返すヘッダの RIFF サイズにも含めない
 
+### 2.6 FLAC
+
+```zig
+const info = try kiln.flac.probe(input);         // sample_rate, channels, bits_per_sample, samples, frames, md5
+// デコード: 区間の PCM をインターリーブした整数(bits_per_sample ビット)で sink.writeI32 に渡す
+const d = try kiln.flac.decode(gpa, input, .{ .start = 0, .end = 44100 }, &sink); // d.invalid_frames など
+// WAV にする。format を省く(null)とビット深度を保つ形式
+const r = try kiln.flac.toWav(gpa, input, .{ .start = 0 }, .{ .format = null, .dither = .tpdf }, writer);
+const t = try kiln.flac.toWavAlloc(gpa, input, .{}, .{});   // t.data / t.result
+const f = try kiln.flac.streamFormat(input);     // メタデータだけを読む(sample_rate, channels, bits_per_sample)
+// フレームの一覧。区切りを探す走査を 1 回で済ませ、長さを知ってから復号するときに使う
+var ix = try kiln.flac.Index.init(gpa, input);
+defer ix.deinit(gpa);
+const total = ix.info().samples;
+_ = try ix.decode(gpa, .{ .end = total }, &sink); // ix.toWav も同じ
+```
+
+- `gpa` はフレームの一覧と、復号の作業領域(チャンネル数 × ブロック長の i64)に使う。設計と検証は [`flac.md`](flac.md)
+- 壊れたフレームや失われたフレーム(番号の飛びから分かるもの)は無音にし、その数を `invalid_frames` で返す。`probe` の長さにも含める
+- 位置はフレーム単位で、最初のフレームの先頭を 0 とする。範囲外の指定は MP3 と同じく丸める
+- 書き出し(エンコーダ)と FLAC → FLAC の切り出しは別の PR で作る
+
 ## 3. Zig 0.17.1 で確認したこと
 
 試作(16bit WAV を `*Io.Writer` に書くコア)を、テスト・CLI・`wasm32-freestanding` の 3 通りで動かして確認した。
@@ -158,7 +186,7 @@ const bytes = try kiln.wav.encodePlanarAlloc(gpa, &.{ left, right }, .{ .sample_
 - ファズテストは `std.testing.fuzz` が使える。
 - 最適化モードの型は `std.lang.Optimize` で、値は `.debug` / `.safe` / `.fast` / `.small`。以前の `std.builtin.OptimizeMode` と `.Debug` などは非推奨(0.18.0 の後に削除予定)。
 - 配列の繰り返し演算子 `**` は使えない(`"ab" ** 2` は構文エラー)。0 で埋めた配列は `@splat(0)` で作る。
-- CRC-16/ARC(LAME タグの CRC)は `std.hash.crc.@"CRC-16/ARC"` にある。
+- CRC-16/ARC(LAME タグの CRC)は `std.hash.crc.@"CRC-16/ARC"` にある。FLAC のフレームヘッダの CRC-8(多項式 0x07、初期値 0)は `@"CRC-8/SMBUS"`、フレームの CRC-16(多項式 0x8005、初期値 0、反転なし)は `@"CRC-16/UMTS"`。
 - wasm32 の export 関数が返すポインタ・長さ(usize)は、JS には符号付きの i32 として見える。2GiB 以上のアドレスや、長さ 0 の確保で `wasm_allocator` が返すダミーのアドレス(0xFFFFFFFF)が負になるため、JS 側で `>>> 0` して扱う。
 - enum と整数の変換: `@typeInfo(E).@"enum"` のフィールドは `field_names` / `field_values`(`fields` はない)。範囲を確かめて整数から enum にするには `std.enums.fromInt(E, n)`(範囲外なら null)。`@enumFromInt` を書くと、`zig fmt` が `@fromBackingInt(@intCast(...))` に書き換える
 - stdout / stderr は `Io.File.Writer.initStreaming` で書く。`.init` は位置指定書き込みなので、ファイルにリダイレクトすると先頭から書いてしまい、`>>` で追記しても既存の内容を上書きする(macOS で確認)。
