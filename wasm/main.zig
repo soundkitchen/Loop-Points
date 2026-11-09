@@ -145,3 +145,68 @@ export fn kiln_wav_encode(ptr: [*]const f32, channels: u32, frames: usize, sampl
     }) catch |err| return fail(err);
     return true;
 }
+
+/// デコードした PCM をチャンネルごとに並べて書く sink(kiln.mp3.decode に渡す)
+const PlanarSink = struct {
+    out: []f32,
+    channels: usize,
+    frames: usize,
+    pos: usize = 0,
+
+    pub fn writeF32(s: *PlanarSink, samples: []const f32) !void {
+        const n = samples.len / s.channels;
+        for (0..n) |i| {
+            for (0..s.channels) |ch| s.out[ch * s.frames + s.pos + i] = samples[i * s.channels + ch];
+        }
+        s.pos += n;
+    }
+};
+
+/// MP3 の区間 [start, end) をデコードする(位置はサンプル数。has_end が false なら末尾まで)。
+/// 成功すると、チャンネルごとに並べた f32(チャンネル 0 の全サンプル、チャンネル 1 の全サンプル…)を
+/// kiln_output_* に、kiln_value の 0: start、1: end、2: サンプルレート、3: チャンネル数を置く
+export fn kiln_mp3_decode(ptr: [*]const u8, len: usize, start: u64, end: u64, has_end: bool) bool {
+    kiln_output_free();
+    const input = ptr[0..len];
+    const info = kiln.mp3.probe(input) catch |err| return fail(err);
+    const e = @min(if (has_end) end else info.samples, info.samples);
+    if (start >= e) return fail(error.EmptyRange);
+    const frames: usize = std.math.cast(usize, e - start) orelse return fail(error.TooLarge);
+    const count = std.math.mul(usize, frames, info.channels) catch return fail(error.TooLarge);
+    const samples = gpa.alloc(f32, count) catch |err| return fail(err);
+    var sink: PlanarSink = .{ .out = samples, .channels = info.channels, .frames = frames };
+    const r = kiln.mp3.decode(input, .{ .start = start, .end = e }, &sink) catch |err| {
+        gpa.free(samples);
+        return fail(err);
+    };
+    output = std.mem.sliceAsBytes(samples);
+    values = .{ r.start, r.end, r.sample_rate, r.channels, 0 };
+    return true;
+}
+
+/// MP3 の区間 [start, end) をデコードして WAV にする。format は kiln.pcm.Format の番号、
+/// dither は 0: なし、1: TPDF。成功すると WAV を kiln_output_* に、kiln_value の 0: start、1: end、
+/// 2: サンプルレートを置く
+export fn kiln_mp3_to_wav(ptr: [*]const u8, len: usize, start: u64, end: u64, has_end: bool, format: u32, dither: u32) bool {
+    kiln_output_free();
+    const fmt = std.enums.fromInt(kiln.pcm.Format, format) orelse return fail(error.InvalidOptions);
+    if (dither > 1) return fail(error.InvalidOptions);
+    const input = ptr[0..len];
+    const info = kiln.mp3.probe(input) catch |err| return fail(err);
+    const e = @min(if (has_end) end else info.samples, info.samples);
+    if (start >= e) return fail(error.EmptyRange);
+    var out: std.Io.Writer.Allocating = .init(gpa);
+    defer out.deinit();
+    var enc = kiln.wav.Encoder.init(&out.writer, .{
+        .sample_rate = info.sample_rate,
+        .channels = info.channels,
+        .format = fmt,
+        .dither = if (dither == 1) .tpdf else .none,
+        .frames = e - start,
+    }) catch |err| return fail(err);
+    const r = kiln.mp3.decode(input, .{ .start = start, .end = e }, &enc) catch |err| return fail(err);
+    _ = enc.finish() catch |err| return fail(err);
+    output = out.toOwnedSlice() catch |err| return fail(err);
+    values = .{ r.start, r.end, r.sample_rate, 0, 0 };
+    return true;
+}
