@@ -81,11 +81,16 @@ const kiln = await load(Uint8Array.from(atob(b64), (c) => c.charCodeAt(0)));
 
 ```js
 // kiln-worker.js(new Worker(new URL('./kiln-worker.js', import.meta.url), { type: 'module' }) で起動)
-import { load } from './kiln.js';
+import { load, KilnError } from './kiln.js';
 const kiln = load(/* wasm の URL かバイト列 */);
 self.onmessage = async ({ data: { bytes, start, end } }) => {
-  const { data } = (await kiln).mp3.trim(bytes, { start, end });
-  self.postMessage(data, [data.buffer]); // バイト列は転送してコピーを避ける
+  try {
+    const { data } = (await kiln).mp3.trim(bytes, { start, end });
+    self.postMessage({ data }, [data.buffer]); // バイト列は転送してコピーを避ける
+  } catch (e) {
+    // 失敗も返す(返さないと、返事を待つメインスレッドが止まったままになる)
+    self.postMessage({ error: e instanceof KilnError ? e.code : String(e) });
+  }
 };
 ```
 

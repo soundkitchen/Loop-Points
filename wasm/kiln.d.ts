@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: MIT
 // K!LN の JS ラッパー(kiln.js)の型定義。TypeScript 5.7 以降(型引数付きの TypedArray を使う)。
+// ES の標準の型だけを使い、DOM / WebWorker の型(BufferSource、URL、WebAssembly など)には頼らない。
+// 変えたら wasm/types/ の型検査を通す(docs/architecture.md §2.3)。
 
 /**
- * kiln のコアが返すエラーの名前。wasm/main.zig の `KilnError` と同じ一覧。
+ * kiln のコアが返すエラーの名前。wasm/main.zig の `KilnError` と同じ一覧にする(足したら両方を直す)。
  * - `NotMp3` / `NotWav`: その形式のファイルではない
  * - `UnsupportedFormat`: 扱えない種類(MPEG-2 の MP3、RF64 や圧縮形式の WAV など)
  * - `InvalidWav`: WAV が壊れている(`fmt ` / `data` チャンクがない、値が不正)
@@ -10,6 +12,7 @@
  * - `TooLarge`: 出力が大きすぎる(WAV は 4GiB まで)
  * - `OutOfMemory`: メモリが足りない
  * - `InvalidOptions`: 書き出しの指定が不正(サンプルレートやチャンネル数など)
+ * - `InternalError`: kiln の不具合(起きるはずのない食い違い)
  */
 export type KilnErrorCode =
   | 'NotMp3'
@@ -19,7 +22,8 @@ export type KilnErrorCode =
   | 'EmptyRange'
   | 'TooLarge'
   | 'OutOfMemory'
-  | 'InvalidOptions';
+  | 'InvalidOptions'
+  | 'InternalError';
 
 /** kiln のコアが返したエラー。`code` にエラーの名前が入る */
 export class KilnError extends Error {
@@ -120,8 +124,10 @@ export interface Wav {
   probe(input: BytesInput): WavInfo;
   /** 元の形式のままサンプル単位で切り出す。結果は WAV のバイト列 */
   trim(input: BytesInput, options?: RangeOptions): RangeResult & { data: Uint8Array<ArrayBuffer> };
-  /** PCM を WAV にする。`sampleRate` は AudioBuffer なら省ける */
-  encode(source: AudioBufferLike | Float32Array[], options?: WavFormatOptions & { sampleRate?: number }): Uint8Array<ArrayBuffer>;
+  /** AudioBuffer(や同じ形のもの)を WAV にする。`sampleRate` を省くと AudioBuffer のもの */
+  encode(source: AudioBufferLike, options?: WavFormatOptions & { sampleRate?: number }): Uint8Array<ArrayBuffer>;
+  /** チャンネルごとの PCM を WAV にする。どのチャンネルも同じ長さで、`sampleRate` は必須 */
+  encode(source: Float32Array[], options: WavFormatOptions & { sampleRate: number }): Uint8Array<ArrayBuffer>;
 }
 
 export interface Kiln {
@@ -129,12 +135,18 @@ export interface Kiln {
   readonly version: string;
   readonly mp3: Mp3;
   readonly wav: Wav;
-  /** 生の export 関数(低レベル API) */
-  readonly exports: WebAssembly.Exports;
+  /** 生の export 関数(低レベル API。WebAssembly.Exports) */
+  readonly exports: Record<string, unknown>;
 }
+
+/** wasm の URL。文字列か、URL のように `href` を持つもの(fetch する) */
+export type WasmUrl = string | { readonly href: string };
+
+/** wasm のバイト列(WebAssembly.instantiate に渡せるもの) */
+export type WasmBytes = ArrayBuffer | ArrayBufferView<ArrayBuffer>;
 
 /**
  * kiln.wasm を読み込んで初期化する。
  * @param source wasm の URL(fetch する)、またはバイト列。省くと kiln.js と同じ場所の kiln.wasm
  */
-export function load(source?: URL | string | BufferSource): Promise<Kiln>;
+export function load(source?: WasmUrl | WasmBytes): Promise<Kiln>;

@@ -128,8 +128,8 @@ fn toWavParsed(input: []const u8, s: *const stream.Stream, range: Range, wav_opt
     const r = try decodeParsed(input, s, range, &enc);
     _ = enc.finish() catch |err| switch (err) {
         // decodeParsed は区間のフレーム数ちょうどを書くので、食い違うのは kiln の不具合。
-        // 未定義動作にならないよう(ReleaseSmall でも)確実に止める
-        error.LengthMismatch => @panic("kiln: decoded length does not match the WAV header"),
+        // 止めずに InternalError として返す
+        error.LengthMismatch => return error.InternalError,
         else => |e| return e,
     };
     return r;

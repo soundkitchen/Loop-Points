@@ -48,7 +48,8 @@ var last_error: []const u8 = "";
 var output: []u8 = &.{};
 var values: [5]u64 = @splat(0);
 
-/// JS に返しうるエラー。kiln.d.ts の KilnErrorCode と同じ一覧にする。
+/// JS に返しうるエラー。wasm/kiln.d.ts の KilnErrorCode と同じ一覧にする(足したら kiln.d.ts も直し、
+/// wasm/types/ の型検査を通す。docs/architecture.md §2.3)。
 /// fail はこの集合しか受け付けないので、export が新しいエラーを返しうるようになるとコンパイルが通らなくなる
 pub const KilnError = error{
     NotMp3,
@@ -59,6 +60,8 @@ pub const KilnError = error{
     TooLarge,
     OutOfMemory,
     InvalidOptions,
+    /// kiln の不具合(起きるはずのない食い違い)
+    InternalError,
 };
 
 fn fail(err: KilnError) bool {

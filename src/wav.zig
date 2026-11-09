@@ -27,7 +27,7 @@ pub fn encodePlanarAlloc(
     gpa: std.mem.Allocator,
     channels: []const []const f32,
     options: EncodeOptions,
-) (error{ OutOfMemory, InvalidOptions, TooLarge })![]u8 {
+) (error{ OutOfMemory, InvalidOptions, TooLarge, InternalError })![]u8 {
     if (channels.len == 0 or channels.len > std.math.maxInt(u16)) return error.InvalidOptions;
     var out: Io.Writer.Allocating = .init(gpa);
     defer out.deinit();
@@ -47,13 +47,13 @@ fn encodeInit(w: *Io.Writer, channels: []const []const f32, options: EncodeOptio
     });
 }
 
-fn mapWriteFailed(err: EncodeError) error{ OutOfMemory, InvalidOptions, TooLarge } {
+fn mapWriteFailed(err: EncodeError) error{ OutOfMemory, InvalidOptions, TooLarge, InternalError } {
     return switch (err) {
         error.WriteFailed => error.OutOfMemory,
         error.InvalidOptions => error.InvalidOptions,
         error.TooLarge => error.TooLarge,
-        // フレーム数は入力の長さから決めるので、食い違わない
-        error.LengthMismatch => unreachable,
+        // フレーム数は入力の長さから決めるので、食い違うのは kiln の不具合。止めずにエラーとして返す
+        error.LengthMismatch => error.InternalError,
     };
 }
 
