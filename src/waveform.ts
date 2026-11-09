@@ -1,6 +1,8 @@
 // 波形の表示と、マーカーのドラッグ・拡大縮小・スクロール
 export type Marker = 'start' | 'end' | 'cropStart' | 'cropEnd';
 export type Mode = 'loop' | 'crop';
+// モードごとに動かす 2 本の線 (前、後)。WaveState のフィールド名と同じ
+export const MODE_MARKERS = { loop: ['start', 'end'], crop: ['cropStart', 'cropEnd'] } as const satisfies Record<Mode, readonly [Marker, Marker]>;
 
 // 描くたびに main から受け取る値 (位置はすべてサンプル)
 export interface WaveState {
@@ -92,7 +94,10 @@ function drawWave(g: CanvasRenderingContext2D, d: Float32Array, x0: number, spp:
 }
 
 // 今のモードで動かしている区間
-const activeRange = (st: WaveState) => (st.mode === 'crop' ? { a: st.cropStart, z: st.cropEnd } : { a: st.start, z: st.end });
+const activeRange = (st: WaveState) => {
+  const [a, z] = MODE_MARKERS[st.mode];
+  return { a: st[a], z: st[z] };
+};
 
 function fitCanvas(c: HTMLCanvasElement) {
   const dpr = devicePixelRatio;
@@ -188,8 +193,8 @@ export class WaveformView {
     const { a, z } = activeRange(st);
     const da = Math.abs(this.sampleToX(a) - x), dz = Math.abs(this.sampleToX(z) - x);
     if (Math.min(da, dz) > HIT) return null;
-    if (st.mode === 'crop') return da <= dz ? 'cropStart' : 'cropEnd';
-    return da <= dz ? 'start' : 'end';
+    const [ma, mz] = MODE_MARKERS[st.mode];
+    return da <= dz ? ma : mz;
   }
 
   private onWheel(e: WheelEvent) {

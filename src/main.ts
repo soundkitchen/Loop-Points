@@ -1,10 +1,11 @@
 import { OUT_FORMATS, croppedName, extFormat, formatsFor, type OutFormat } from './cropFormat';
+import type { CropSource } from './cropRender';
 import { canWrite, isAbort, pickAudioToSave, pickJsonToOpen, pickJsonToSave, writeContent } from './jsonFile';
 import { parseLoops, serializeLoops, type LoopMap, type LoopPoints } from './loops';
 import { LoopPlayer } from './player';
 import { mixdown, nearestZeroCross, nextZeroCross } from './samples';
 import { setupTheme } from './theme';
-import { WaveformView, formatTime, type Marker, type Mode } from './waveform';
+import { MODE_MARKERS, WaveformView, formatTime, type Marker, type Mode } from './waveform';
 
 // 音源ごとのループポイントを決めるビューア。音源はブラウザ内で読み、決めた値は JSON に書き出す
 // クロップモードでは音源の前後を切り落として、音源のファイルに書き出す
@@ -37,6 +38,10 @@ let start = 0, end = 0, cursor = 0;
 let crop: Crop = { start: 0, end: 0 };
 let playhead: number | null = null;
 let mode: Mode = 'loop';
+// クロップモードで開いている音源を kiln で調べた結果。調べ終わるまでは null で、書き出せない
+let cropSource: CropSource | null = null;
+let cropError: string | null = null;
+let inspecting: File | undefined;   // 調べている (調べ終えた) 音源
 
 let loops: LoopMap = {};
 let saved: LoopMap = {};   // 読み込んだ、または最後に書き出した JSON の値
@@ -51,8 +56,11 @@ const round6 = (v: number) => Math.round(v * 1e6) / 1e6;
 // 消した項目も変更に含める。クロップで同じ名前の音源を置き換えると、項目を消すことがある
 const isDirty = () => Object.keys(saved).some((k) => !(k in loops)) || Object.entries(loops).some(([k, p]) =>
   p.loopStart !== saved[k]?.loopStart || p.loopEnd !== saved[k]?.loopEnd || p.duration !== saved[k]?.duration);
+const outFormat = $<HTMLSelectElement>('out-format');
+// 実際に切り始める位置 (サンプル)。長さの情報のない mp3 は、無劣化では先頭の 529 サンプルより前から切れない
+const cropFrom = (format: OutFormat) => (format === 'mp3' && cropSource ? Math.max(crop.start, cropSource.mp3Start * sr()) : crop.start);
 // ループを決めた音源で、クロップの範囲がループ区間にかかっているか。決めていない音源は全体が区間なので対象にしない
-const cropCutsLoop = () => loops[name] !== undefined && (crop.start > start || crop.end < end);
+const cropCutsLoop = (format = outFormat.value as OutFormat) => loops[name] !== undefined && (cropFrom(format) > start || crop.end < end);
 
 const view = new WaveformView($<HTMLCanvasElement>('wave'), $<HTMLCanvasElement>('overview'), () => ({ mode, start, end, cropStart: crop.start, cropEnd: crop.end, cursor, playhead }));
 setupTheme(() => view.refreshColors());
@@ -98,8 +106,7 @@ view.onMarkerDrag = (m, s, spp) => {
 };
 view.onCursor = (s) => { cursor = s; };
 
-// 今のモードで動かす 2 本の線。数値入力と微調整のボタンはこの 2 本に対応する
-const MODE_MARKERS = { loop: ['start', 'end'], crop: ['cropStart', 'cropEnd'] } as const satisfies Record<Mode, readonly [Marker, Marker]>;
+// 数値入力と微調整のボタンは、今のモードで動かす 2 本の線 (MODE_MARKERS) に対応する
 const MARKER_LABELS: Record<Marker, { label: string; color: string }> = {
   start: { label: '開始', color: 'var(--start)' },
   end: { label: '終了', color: 'var(--end)' },
@@ -183,7 +190,28 @@ function setMode(next: Mode) {
   playFirst.title = inCrop ? '前端から後端まで 1 回再生する' : 'イントロを 1 回流してからループ区間を繰り返す';
   playSeam.textContent = inCrop ? '▶ 後端の手前から' : '▶ つなぎ目の手前から';
   playSeam.title = inCrop ? '後端の少し前から再生して、終わり方をすぐ聴く' : 'ループの終わりの少し前から再生して、つなぎ目をすぐ聴く';
+  inspectCropSource();
   updatePanel();
+}
+
+// クロップモードで開いている音源を、保存先を選ぶ前に kiln で調べ、書き出せる形式と切り始められる位置を決める。
+// ループモードに戻ったら、読んだバイト列を手放す
+function inspectCropSource() {
+  const file = mode === 'crop' && buffer ? files.get(name) : undefined;
+  if (file === inspecting) return;
+  inspecting = file;
+  cropSource = null;
+  cropError = null;
+  updateOutFormats();
+  if (!file) return;
+  import('./cropRender').then((m) => m.inspect(file)).then(
+    (s) => { if (inspecting === file) cropSource = s; },
+    (e) => { if (inspecting === file) cropError = `${file.name} を書き出す準備ができませんでした (${e})`; },
+  ).finally(() => {
+    if (inspecting !== file) return;
+    updateOutFormats();
+    updatePanel();
+  });
 }
 
 for (const b of document.querySelectorAll<HTMLButtonElement>('[data-mode]')) {
@@ -196,7 +224,12 @@ function updateWarning() {
   const mismatch = buffer !== null && want !== undefined && Math.abs(want - buffer.duration) > DURATION_TOLERANCE;
   const messages = [];
   if (mismatch) messages.push(`${name}: JSON の duration (${formatTime(want)}) と音源の長さ (${formatTime(buffer!.duration)}) が違います。別の音源か、デコードの差でループ位置がずれている可能性があります`);
-  if (mode === 'crop' && cropCutsLoop()) messages.push('クロップの範囲がループ区間にかかっているので、書き出せません。線を区間の外へ動かすか、ループモードで区間を動かしてください');
+  if (mode === 'crop' && cropError) messages.push(cropError);
+  else if (mode === 'crop' && cropCutsLoop()) {
+    messages.push(cropCutsLoop('wav')
+      ? 'クロップの範囲がループ区間にかかっているので、書き出せません。線を区間の外へ動かすか、ループモードで区間を動かしてください'
+      : `長さの情報のない mp3 は、無劣化では ${formatTime(cropSource!.mp3Start)} より前から切り出せません。ループの開始が削れるので、書き出せません。WAV を選ぶと書き出せます`);
+  }
   $('warning').textContent = messages.join('\n');
 }
 
@@ -216,7 +249,7 @@ function updateStatus() {
   download.disabled = !hasLoops || writing;
   download.classList.toggle('primary', jsonTarget === null);
   $<HTMLButtonElement>('copy').disabled = !hasLoops;
-  $<HTMLButtonElement>('export-crop').disabled = !buffer || writing || cropCutsLoop();
+  $<HTMLButtonElement>('export-crop').disabled = !buffer || writing || !cropSource || cropCutsLoop();
 }
 
 // handle を渡すと、そのファイルを上書き保存の対象にする。渡さなければ対象をなくす
@@ -367,6 +400,7 @@ async function open(file: string): Promise<'opened' | 'failed' | 'superseded'> {
   crop = d.crop;
   cursor = 0;
   updateOutFormats();
+  inspectCropSource();
   // 最初に開けたときに編集画面に切り替えて、描画を始める。波形の幅を測れるよう、setData より前に表示する
   if (!document.body.classList.contains('loaded')) {
     document.body.classList.add('loaded');
@@ -466,14 +500,14 @@ addEventListener('drop', (e) => {
 
 // ---- クロップの書き出し ----
 
-const outFormat = $<HTMLSelectElement>('out-format');
-
-// 開いている音源で選べる形式を入れる。1 つしかなければ選べないようにする
+// 開いている音源で選べる形式を入れる。kiln で調べ終わるまでは拡張子から決め、選べないようにする
 function updateOutFormats() {
-  const formats = formatsFor(name);
+  const formats = cropSource?.formats ?? formatsFor(name);
   outFormat.replaceChildren(...formats.map((f) => new Option(OUT_FORMATS[f].label, f)));
-  outFormat.disabled = formats.length < 2;
+  outFormat.disabled = formats.length < 2 || !cropSource;
 }
+// 形式によって、実際に切り始める位置が変わる
+outFormat.addEventListener('change', () => updatePanel());
 
 // 書き出した音源を開く。ループを決めていた音源なら、前を切った分を引いた秒数で項目を作る。元の音源と項目は残す
 async function openCropped(out: File, sourceLoop: LoopPoints | undefined, loopStart: number, loopEnd: number) {
@@ -496,18 +530,20 @@ async function openCropped(out: File, sourceLoop: LoopPoints | undefined, loopSt
 }
 
 $('export-crop').addEventListener('click', () => void whileWriting('音源を書き出せませんでした', async () => {
-  if (!buffer) return;
+  // 元のファイルは読み直さず、クロップモードで読んでおいたバイト列から書き出す (CropSource を参照)
+  const source = cropSource;
+  if (!buffer || !source) return;
   const format = outFormat.value as OutFormat;
   // 保存先の選択はクリックの直後でないと拒否されるので、書き出しの処理より先に開く
   const handle = await pickAudioToSave(croppedName(name, format), OUT_FORMATS[format]);
-  // ダイアログを開いている間に変わらないよう、ここで控える
-  const fileName = name, source = files.get(name)!, audio = buffer, from = crop.start, to = crop.end;
+  // 書き出しの処理の間に変わらないよう、ここで控える
+  const audio = buffer, from = crop.start, to = crop.end;
   const sourceLoop = loops[name], rate = audio.sampleRate, loopStart = start / rate, loopEnd = end / rate;
   // 拡張子と中身が食い違うと、開き直したときやゲームエンジンで形式を読み違えるので、この音源から書ける形式なら、
-  // 選んだ名前の拡張子の形式で書く。書き出しを止めると、保存先を選んだ時点で Chromium が作った空のファイル
-  // (既存のファイルなら空にしたもの) が残る
+  // 選んだ名前の拡張子の形式で書く。ただし、その形式でループの開始が削れるならセレクトの形式で書く。
+  // 書き出しを止めると、保存先を選んだ時点で Chromium が作った空のファイル (既存のファイルなら空にしたもの) が残る
   const named = extFormat(handle.name);
-  const written = named && formatsFor(fileName).includes(named) ? named : format;
+  const written = named && source.formats.includes(named) && !cropCutsLoop(named) ? named : format;
   const { renderCrop } = await import('./cropRender');
   const out = await renderCrop(source, audio, from, to, written);
   await writeContent(handle, out.blob);
@@ -547,17 +583,17 @@ applyVolume();
 // ボタン・チェックボックス・スライダーにフォーカスが残ると、Space でそれが押されるので外す
 const isToggle = (t: EventTarget | null) =>
   t instanceof HTMLButtonElement || (t instanceof HTMLInputElement && (t.type === 'checkbox' || t.type === 'range'));
-// テーマのボタンは再生と関係がないので、キーボードで操作したときはボタンとして扱う
-const isThemeButton = (t: EventTarget | null) => t instanceof Element && t.closest('#theme') !== null;
+// 配色とモードのボタンは再生と関係がないので、キーボードで操作したときはボタンとして扱う
+const isSwitchButton = (t: EventTarget | null) => t instanceof Element && t.closest('#theme, #mode') !== null;
 document.addEventListener('click', (e) => {
   const fromKeyboard = e.detail === 0;
-  if (isToggle(e.target) && !(fromKeyboard && isThemeButton(e.target))) (e.target as HTMLElement).blur();
+  if (isToggle(e.target) && !(fromKeyboard && isSwitchButton(e.target))) (e.target as HTMLElement).blur();
 });
 addEventListener('keydown', (e) => {
   // 数値の欄とセレクトでは Space を文字入力などに使うので横取りしない。
   // 音源を開くまでは鳴らすものがなく、案内のボタンを Space で押せるよう横取りしない
   const typing = (e.target instanceof HTMLInputElement && !isToggle(e.target)) || e.target instanceof HTMLSelectElement;
-  if (e.code !== 'Space' || typing || isThemeButton(e.target) || !name) return;
+  if (e.code !== 'Space' || typing || isSwitchButton(e.target) || !name) return;
   e.preventDefault();
   if (e.repeat) return;   // 長押しのキーリピートで再生と停止を繰り返さない
   if (player.playing) player.stop();

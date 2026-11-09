@@ -8,6 +8,7 @@ export class LoopPlayer {
   private loopStart = 0;
   private loopEnd = 0;
   private once = false;   // playOnce で鳴らしている間。ループしない
+  private onceEnd = 0;    // playOnce で止める位置 (秒)
 
   constructor(readonly ctx: AudioContext) {
     this.gain = ctx.createGain();
@@ -50,6 +51,7 @@ export class LoopPlayer {
     this.src = src;
     this.buffer = buffer;
     this.once = true;
+    this.onceEnd = to;
     this.pos = from;
     this.last = this.ctx.currentTime;
   }
@@ -83,7 +85,9 @@ export class LoopPlayer {
     const now = this.ctx.currentTime;
     this.pos += now - this.last;
     this.last = now;
-    if (!this.once && this.pos >= this.loopEnd) {
+    // 1 回だけのときは、止まるまでの数フレームで終わりを越えて表示しないよう、終わりで止める
+    if (this.once) return Math.min(this.pos, this.onceEnd);
+    if (this.pos >= this.loopEnd) {
       this.pos = this.loopStart + ((this.pos - this.loopStart) % (this.loopEnd - this.loopStart));
     }
     return this.pos;

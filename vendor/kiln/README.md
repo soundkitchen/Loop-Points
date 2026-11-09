@@ -16,7 +16,7 @@
 
 ## 使い方
 
-- 読み込むのは `src/cropRender.ts` だけです。書き出すときに動的に import するので、ページを開いただけでは読み込みません
+- 読み込むのは `src/cropRender.ts` だけです。クロップモードに切り替えたときに動的に import するので、ループモードだけを使う間は読み込みません
 - `kiln.wasm` は、Vite の `?url&inline` で JS のチャンクに埋め込み、バイト列で `load()` に渡します。CSP の `connect-src 'none'` では、fetch で wasm を読めない(data: URL も止まる)ためです。wasm を動かすために、CSP の `script-src` に `'wasm-unsafe-eval'` を許可しています
 - `kiln.js` の既定の読み込み先(`new URL('./kiln.wasm', import.meta.url)`)を Vite が見つけるので、`dist/assets/` にも `kiln-*.wasm` が出ます。使いませんが害はないので、そのままにしています
 
