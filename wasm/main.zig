@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 //! K!LN の wasm 向けエントリ。JS から呼ぶ export 関数だけを置き、処理はコアに任せる。
 //! JS 側は kiln_alloc で確保した linear memory に入力を書き、ポインタと長さを渡す。
 const std = @import("std");

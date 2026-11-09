@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 const std = @import("std");
 const zon = @import("build.zig.zon");
 
@@ -53,9 +54,12 @@ pub fn build(b: *std.Build) void {
     const wasm_dir: std.Build.InstallDir = .{ .custom = "wasm" };
     const install_wasm = b.addInstallArtifact(wasm, .{ .dest_dir = .{ .override = wasm_dir } });
     const install_js = b.addInstallFileWithDir(b.path("wasm/kiln.js"), wasm_dir, "kiln.js");
+    // そのまま配布されても著作権表示が残るよう、LICENSE も一緒に置く
+    const install_license = b.addInstallFileWithDir(b.path("LICENSE"), wasm_dir, "LICENSE");
     const wasm_step = b.step("wasm", "wasm と JS ラッパーをビルドする");
     wasm_step.dependOn(&install_wasm.step);
     wasm_step.dependOn(&install_js.step);
+    wasm_step.dependOn(&install_license.step);
     // 既定の zig build でも wasm をビルドし、壊れたら気づけるようにする
     b.getInstallStep().dependOn(wasm_step);
 

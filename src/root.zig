@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 //! K!LN のコア。I/O を持たず、アロケータとバイト列/サンプル列、
 //! `std.Io.Reader` / `std.Io.Writer` だけを扱う(docs/architecture.md)。
 const std = @import("std");

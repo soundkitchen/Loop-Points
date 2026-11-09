@@ -52,6 +52,15 @@
 - **CLI の出力形式**: `--format wav|mp3` で指定する。省くと入力と同じ形式。MP3 エンコーダはないので、MP3 以外 → MP3 はエラー
 - **MP3 → WAV の既定の形式**: 16bit 整数(オプションで変えられる)
 
+### 2.5 2026-11-09 に決めたこと(ライセンス)
+
+- **ライセンス**: MIT。著作権者は Takanobu Izukawa。全文はリポジトリ直下の `LICENSE`(パッケージの `.paths` にも含める)。`zig build` は wasm の配布物(`zig-out/wasm/`)にも `LICENSE` を置く
+- **ソースの表示**: すべてのソース(`src/`、`cli/`、`wasm/`、`build.zig`、`testdata/` のスクリプト)の先頭に `SPDX-License-Identifier: MIT` を書く
+- **取り込んでよいもの**: 外部のコードや数表は、次のライセンスのものに限る。どれも義務は元の著作権表示を残すこと(CC0 / Unlicense / パブリックドメインは義務もない)だけで、MIT と両立する
+  - MIT、BSD-2-Clause、BSD-3-Clause、ISC、Zlib、CC0-1.0、Unlicense、パブリックドメイン
+  - Apache-2.0(全文と NOTICE の内容を残す義務、特許条項がある)、宣伝条項付きの BSD-4-Clause、GPL / LGPL などのコピーレフトは取り込まない
+- **取り込んだときの記録**: 出所・ライセンス・元の著作権表示を、リポジトリ直下の `THIRD_PARTY_NOTICES.md`(パッケージにも含める)に書く。取り込んだファイルの先頭にも、出所と元のライセンスの SPDX 識別子を書く(例: `// SPDX-License-Identifier: MIT AND CC0-1.0`)
+
 ## 3. まだ決めていないこと(論点と、ここまでの見立て)
 
 ### 3.1 スコープ: 何をいつサポートするか

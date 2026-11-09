@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 //! MP3 の無劣化・サンプル精度トリム(docs/lyria-mp3.md §4)。
 //! フレームは再エンコードせずにそのまま連結し、先頭に付ける ID3v2(`iTunSMPB`)と
 //! Info + LAME タグで、デコーダに余分な部分を落とさせる。

@@ -41,7 +41,7 @@ kiln trim in.wav out.wav --start 0.5 --end 3        # WAV も同じ。形式は�
 
 ### ブラウザ(wasm)
 
-`zig build` で `zig-out/wasm/` にできる `kiln.wasm` と `kiln.js` を同じ場所に置いて使います。
+`zig build` で `zig-out/wasm/` にできる `kiln.wasm` と `kiln.js` を同じ場所に置いて使います。配布するときは、同じディレクトリにある `LICENSE` も一緒に置いてください(MIT の著作権表示)。
 
 ```js
 import { load } from './kiln.js';
@@ -73,3 +73,9 @@ const wavFile = kiln.wav.encode(audioBuffer, { format: 'i16' }); // 既定は 16
 - [`docs/draft.md`](docs/draft.md): 構想と決定事項
 - [`docs/architecture.md`](docs/architecture.md): アーキテクチャ方針
 - [`docs/lyria-mp3.md`](docs/lyria-mp3.md): Lyria 出力 MP3 の調査と無劣化トリム方式
+
+## ライセンス
+
+MIT ライセンスです。全文は [`LICENSE`](LICENSE) を参照してください。
+
+外部から取り込んだコードや数表は [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) に記録しています。取り込んでよいライセンスなどの方針は [`docs/draft.md`](docs/draft.md) §2.5 にあります。

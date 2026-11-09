@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 //! 入力 MP3 の解析。ID3v2 タグを読み飛ばし、Xing / LAME ヘッダを読み、音声フレームの範囲と
 //! タイムライン(再生したときのサンプル位置)を求める。
 const std = @import("std");

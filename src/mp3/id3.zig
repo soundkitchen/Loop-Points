@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 //! ID3v2 タグの読み飛ばしと、`iTunSMPB` を入れた ID3v2.3 タグの書き出し。
 const std = @import("std");
 const Io = std.Io;

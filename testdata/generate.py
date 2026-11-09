@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
 """テスト用の MP3 と WAV を作り直すスクリプト。
 
 MP3: 正弦波と疑似乱数ノイズを混ぜた 2 秒の音声を Python で合成し、lame でエンコードする。

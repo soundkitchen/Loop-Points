@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 //! MP3(MPEG-1 Layer III)の解析と、無劣化・サンプル精度のトリム。
 //!
 //! 位置はすべて「タイムライン」上のサンプル位置で表す。タイムラインは ffmpeg がデコードした

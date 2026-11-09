@@ -17,5 +17,7 @@
         "wasm",
         "testdata",
         "README.md",
+        "LICENSE",
+        "THIRD_PARTY_NOTICES.md",
     },
 }
