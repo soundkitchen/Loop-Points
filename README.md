@@ -43,7 +43,7 @@ kiln trim in.mp3 out.flac --format flac --compression 8 --bits 24
 
 - 再エンコードせずに切り出します。ffmpeg でデコードすると、元ファイルの該当区間とサンプル単位で一致します。Chrome / Firefox / Safari の `decodeAudioData`、mpg123、macOS の CoreAudio でも、位置と長さは同じで、違いはデコーダごとの丸めの差だけです。`<audio>` 要素では、Chrome / Firefox はサンプル単位で正確、Safari は長さと末尾が正確で、再生開始直後(数十 ms)は確かめられていません(方式と検証結果は [`docs/lyria-mp3.md`](docs/lyria-mp3.md))
 - Safari などは、LAME タグのない元ファイル(Lyria の出力など)を ffmpeg より 529 サンプル(約 12ms)前にずらして再生します。そうしたプレーヤーで元ファイルを聴きながら位置を選ぶと、その分ずれます
-- 位置は ffmpeg でデコードしたときの先頭を 0 とします。MP3 → MP3 の無劣化トリムでは、LAME タグのない MP3(Lyria の出力など)の先頭 529 サンプルより前からは切り出せません(指定すると 529 に切り上げます)。MP3 → WAV(`--format wav`、JS の `mp3.decode` / `mp3.toWav`)はデコードするので切り上げず、0 から書き出せます
+- 位置は ffmpeg でデコードしたときの先頭を 0 とします。MP3 → MP3 の無劣化トリムでは、LAME タグのない MP3(Lyria の出力など)の先頭 529 サンプルより前からは切り出せません(指定すると 529 に切り上げます)。MP3 → WAV / FLAC(`--format wav` / `--format flac`、JS の `mp3.decode` / `mp3.toWav` / `mp3.toFlac`)はデコードするので切り上げず、0 から書き出せます
 - 入力の ID3v2 タグ(Lyria の C2PA マニフェストを含む)は引き継ぎません
 
 ### ブラウザ(wasm)

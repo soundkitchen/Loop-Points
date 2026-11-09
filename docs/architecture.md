@@ -66,6 +66,7 @@ var dec: kiln.mp3.Decoder = .{};                  // 1 フレームずつの低�
 const nch = try dec.decodeFrame(frame_bytes, &pcm); // pcm: [2][1152]f32。扱えないフレームは InvalidFrame
 ```
 
+- MP3 → FLAC は `kiln.mp3.toFlacAlloc`(§2.6)。位置と区間の扱いは `toWav` と同じ
 - `decode` / `toWav` の位置はトリムと同じタイムライン。ただしタグなしの入力でも先頭を 529 に切り上げない(デコードでは先頭のデコーダ遅延も出力できるため)
 - 復号は区間の少し手前のフレームから始める(結果は先頭から復号したときと同じ。[`mp3-decoder.md`](mp3-decoder.md) §2)
 - `invalid_frames` は、区間にかかったフレームのうち、サイド情報が壊れていて復号できなかったものの数
@@ -102,7 +103,7 @@ kiln trim <input> <output> [--start TIME] [--end TIME | --duration TIME]
 - 入力は `ArrayBuffer` / `SharedArrayBuffer` / TypedArray / `DataView`(型定義の `BytesInput`)。TypedArray と `DataView` は、要素の値ではなく下のバイト列として読む
 - `wav.probe(bytes)` / `wav.trim(bytes, options)` は MP3 と同じ形(`probe` の `format` は `'u8'` / `'i16'` / `'i24'` / `'i32'` / `'f32'` / `'f64'`)。`wav.encode(source, { sampleRate, format = 'i16', dither = 'tpdf' })` は、`decodeAudioData` が返す `AudioBuffer`(`sampleRate` は省ける)か、チャンネルごとの `Float32Array` の配列から WAV のバイト列を作る
 - `mp3.decode(bytes, options)` は、区間をデコードしてチャンネルごとの `Float32Array` を `channels` に返す(`AudioBuffer` の `getChannelData` と同じ並び)。`mp3.toWav(bytes, { ...区間, format = 'i16', dither = 'tpdf' })` は WAV のバイト列を返し、大きな PCM を JS に引き出さずに済む。位置の指定は `trim` と同じ
-- `mp3.decode` / `mp3.toWav` の戻り値の `invalidFrames` は、復号できなかった(無音にした)フレームの数
+- `mp3.decode` / `mp3.toWav` / `mp3.toFlac` の戻り値の `invalidFrames` は、復号できなかった(無音にした)フレームの数
 - FLAC の書き出しは `flac.encode(source, { sampleRate, bitsPerSample = 16, compression = 5, dither = 'tpdf' })`(`wav.encode` と同じく AudioBuffer か `Float32Array[]`)、`wav.toFlac(bytes, { ...区間, bitsPerSample, compression, dither })`(`bitsPerSample` の既定は整数の WAV なら元のビット深度)、`mp3.toFlac(bytes, { ...区間, bitsPerSample = 16, compression, dither })`。`bitsPerSample`(4〜32 の整数)と `compression`(0〜8 の整数)が外れれば JS 側で `RangeError`
 - `kiln_flac_encode` / `kiln_wav_to_flac` / `kiln_mp3_to_flac` の `kiln_value` は、それぞれ `kiln_wav_encode`(なし)/ `kiln_wav_trim` / `kiln_mp3_decode` と同じ並び。`kiln_wav_to_flac` は `has_bits` が false のときにビット深度をコアに任せる。AudioBuffer を写す処理(`withPlanar`)は `wav.encode` と `flac.encode` で共通
 - `flac.probe(bytes)` は `{ sampleRate, channels, bitsPerSample, samples, frames, duration }` を返す。`flac.decode` / `flac.toWav` は `mp3.decode` / `mp3.toWav` と同じ形で、`flac.decode` の値は整数のサンプルを 2^(bitsPerSample - 1) で割ったもの。`flac.toWav` の `format` を省くとビット深度を保つ形式(元の PCM のまま)。`kiln_flac_to_wav` は `has_format` が false のときに形式をコアに任せる
