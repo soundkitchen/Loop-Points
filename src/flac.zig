@@ -12,6 +12,7 @@ const decoder = @import("flac/decoder.zig");
 const metadata = @import("flac/metadata.zig");
 const encoder = @import("flac/encoder.zig");
 const mp3 = @import("mp3.zig");
+const trim_impl = @import("flac/trim.zig");
 
 pub const ParseError = stream.Error;
 
@@ -273,6 +274,64 @@ pub fn toWavAlloc(gpa: std.mem.Allocator, input: []const u8, options: DecodeOpti
     return .{ .data = try out.toOwnedSlice(), .result = r };
 }
 
+// --- 切り出し(FLAC → FLAC) ---
+
+pub const TrimResult = struct {
+    /// 実際に切り出した区間(範囲外の指定を丸めた後)
+    start: u64,
+    end: u64,
+    sample_rate: u32,
+    /// 区間にかかった壊れたフレーム(無音として作り直した)の数
+    invalid_frames: u64,
+    /// 出力の先頭に書き戻す STREAMINFO(長さ・MD5 など)
+    patch: StreamInfoPatch,
+};
+
+/// 区間 `[options.start, options.end)` を FLAC のまま切り出して `w` に書く(範囲外の指定は丸める)。
+/// 区間に丸ごと入るフレームはそのままコピーし、先頭と末尾にかかるフレームだけを作り直す(可逆。
+/// 復号すると元の区間と同じ PCM)。出力は可変ブロック長のストリームになる。Vorbis コメント・画像・
+/// APPLICATION は残し、シークテーブル・CUE シート・PADDING は捨てる。STREAMINFO(長さ・MD5 など)は
+/// 最後に決まるので、戻り値の `patch` を呼び出し側が出力の先頭に書き戻す。`w.flush()` は呼び出し側が行う
+pub fn trim(gpa: std.mem.Allocator, input: []const u8, options: DecodeOptions, w: *Io.Writer) !TrimResult {
+    var ix: Index = try .init(gpa, input);
+    defer ix.deinit(gpa);
+    const range = try ix.clamp(options);
+    const r = try trim_impl.trim(gpa, input, &ix.s, range.start, range.end, w);
+    return .{
+        .start = range.start,
+        .end = range.end,
+        .sample_rate = ix.s.stream.info().sample_rate,
+        .invalid_frames = r.invalid_frames,
+        .patch = r.patch,
+    };
+}
+
+pub const Trimmed = struct {
+    /// FLAC ファイル全体(STREAMINFO は書き戻し済み)。呼び出し側が `gpa` で解放する
+    data: []u8,
+    start: u64,
+    end: u64,
+    sample_rate: u32,
+    invalid_frames: u64,
+};
+
+/// `trim` の一括版
+pub fn trimAlloc(gpa: std.mem.Allocator, input: []const u8, options: DecodeOptions) !Trimmed {
+    var out: Io.Writer.Allocating = .init(gpa);
+    defer out.deinit();
+    const r = trim(gpa, input, options, &out.writer) catch |err| switch (err) {
+        error.WriteFailed => return error.OutOfMemory,
+        else => |e| return e,
+    };
+    return .{
+        .data = try takePatched(&out, r.patch),
+        .start = r.start,
+        .end = r.end,
+        .sample_rate = r.sample_rate,
+        .invalid_frames = r.invalid_frames,
+    };
+}
+
 // --- 書き出し ---
 
 /// ストリーミングのエンコーダ(`init → writeI32 / writeF32 → finish`)。`finish` が返す STREAMINFO を、
@@ -373,6 +432,7 @@ pub fn encodePlanarAlloc(gpa: std.mem.Allocator, channels: []const []const f32, 
 test {
     _ = stream;
     _ = encoder;
+    _ = trim_impl;
     _ = @import("flac/lpc.zig");
     _ = decoder;
     _ = @import("flac/bits.zig");
@@ -856,4 +916,117 @@ test "encode: 32bit の満幅の矩形波(固定予測の残差が 32 ビット�
             try std.testing.expectEqualSlices(i32, samples, got.list.items);
         }
     }
+}
+
+/// テスト用: FLAC を復号した PCM(インターリーブ)
+fn decodeAll(data: []const u8) !CollectSink {
+    var c: CollectSink = .{};
+    errdefer c.deinit();
+    _ = try decode(std.testing.allocator, data, .{}, &c);
+    return c;
+}
+
+test "trim: 切り出した FLAC を復号すると、元の区間と同じ PCM。MD5 と STREAMINFO も正しい" {
+    const gpa = std.testing.allocator;
+    const inputs = [_][]const u8{ testdata.s16_stereo_flac, testdata.u8_mono_flac, testdata.s24_stereo_flac, testdata.s20_mono_flac, testdata.s32_3ch_flac };
+    for (inputs) |in| {
+        var all = try decodeAll(in);
+        defer all.deinit();
+        const info = try probe(in);
+        const nch: usize = info.channels;
+        const total = info.samples;
+        // 先頭・末尾がフレームの境目、途中、短い区間、1 フレームの中、全体
+        const ranges = [_][2]u64{ .{ 0, total }, .{ 1, total - 1 }, .{ 1152, 2304 }, .{ 1151, 2305 }, .{ 5, 12 }, .{ 100, 101 }, .{ 7, total }, .{ 0, 20 }, .{ total - 3, total } };
+        for (ranges) |se| {
+            const end = @min(se[1], total);
+            if (se[0] >= end) continue;
+            const t = try trimAlloc(gpa, in, .{ .start = se[0], .end = end });
+            defer gpa.free(t.data);
+            try std.testing.expectEqual(se[0], t.start);
+            try std.testing.expectEqual(end, t.end);
+            try std.testing.expectEqual(0, t.invalid_frames);
+            var got = try decodeAll(t.data);
+            defer got.deinit();
+            try std.testing.expectEqualSlices(i32, all.list.items[@intCast(se[0] * nch)..@intCast(end * nch)], got.list.items);
+            const ti = try probe(t.data);
+            try std.testing.expectEqual(end - se[0], ti.samples);
+            try std.testing.expectEqual(info.bits_per_sample, ti.bits_per_sample);
+            // STREAMINFO の総サンプル数と MD5
+            const m = (try metadata.Metadata.parse(t.data)).info;
+            try std.testing.expectEqual(end - se[0], m.total_samples);
+            var md5: std.crypto.hash.Md5 = .init(.{});
+            encoder.md5Update(&md5, info.bits_per_sample, got.list.items);
+            var digest: [16]u8 = undefined;
+            md5.final(&digest);
+            try std.testing.expectEqualSlices(u8, &digest, &m.md5);
+            // STREAMINFO の最小・最大のブロック長は 16 以上(最後を除くフレームも 16 以上)
+            try std.testing.expect(m.min_block_size >= 16 and m.max_block_size >= m.min_block_size);
+        }
+    }
+}
+
+test "trim: 丸ごと入るフレームはコピーする。タグは残し、PADDING は捨てる" {
+    const gpa = std.testing.allocator;
+    const in = testdata.s16_stereo_flac;
+    // フレーム 2〜7 ちょうど: すべてコピーなので、フレームの中身(ヘッダと CRC を除く)が元と同じ
+    const t = try trimAlloc(gpa, in, .{ .start = 2 * 1152, .end = 8 * 1152 });
+    defer gpa.free(t.data);
+    const src = try stream.Stream.parse(in);
+    const dst = try stream.Stream.parse(t.data);
+    var a = src.iterator(in);
+    var b = dst.iterator(t.data);
+    var k: usize = 0;
+    while (a.next()) |fa| : (k += 1) {
+        if (k < 2) continue;
+        if (k >= 8) break;
+        const fb = b.next().?;
+        const ha = fa.header.?;
+        const hb = fb.header.?;
+        try std.testing.expect(hb.variable);
+        try std.testing.expectEqual((k - 2) * 1152, hb.number);
+        try std.testing.expectEqualSlices(u8, fa.bytes(in)[ha.len .. fa.end - fa.start - 2], fb.bytes(t.data)[hb.len .. fb.end - fb.start - 2]);
+    }
+    try std.testing.expectEqual(null, b.next());
+    // メタデータ: STREAMINFO と Vorbis コメントだけ(PADDING はない)
+    const meta = try metadata.Metadata.parse(t.data);
+    const it = metadataKinds(t.data, meta);
+    try std.testing.expectEqual(metadata.BlockType.stream_info, it[0]);
+    try std.testing.expectEqual(metadata.BlockType.vorbis_comment, it[1]);
+    try std.testing.expectEqual(2, it[2]);
+    try std.testing.expect(std.mem.indexOf(u8, t.data, "TITLE=kiln testdata") != null);
+}
+
+/// テスト用: メタデータブロックの種類(最初の 2 つ)と数
+fn metadataKinds(data: []const u8, meta: metadata.Metadata) struct { metadata.BlockType, metadata.BlockType, usize } {
+    var pos = meta.start + 4;
+    var kinds: [2]metadata.BlockType = .{ .padding, .padding };
+    var n: usize = 0;
+    while (pos < meta.frames_start) : (n += 1) {
+        const len = std.mem.readInt(u24, data[pos + 1 ..][0..3], .big);
+        if (n < 2) kinds[n] = @fromBackingInt(@intCast(data[pos] & 0x7F));
+        pos += 4 + @as(usize, len);
+    }
+    return .{ kinds[0], kinds[1], n };
+}
+
+test "trim: 壊れたフレームは無音として作り直す" {
+    const gpa = std.testing.allocator;
+    const in = testdata.s16_stereo_flac;
+    const fr = try frameRange(in, 3);
+    const bad = try gpa.dupe(u8, in);
+    defer gpa.free(bad);
+    bad[(fr[0] + fr[1]) / 2] ^= 0x10;
+    var want = try decodeAll(bad);
+    defer want.deinit();
+    const t = try trimAlloc(gpa, bad, .{ .start = 1000, .end = 6000 });
+    defer gpa.free(t.data);
+    try std.testing.expectEqual(1, t.invalid_frames);
+    var got = try decodeAll(t.data);
+    defer got.deinit();
+    try std.testing.expectEqualSlices(i32, want.list.items[1000 * 2 .. 6000 * 2], got.list.items);
+    // 出力は壊れていない
+    var check: CollectSink = .{};
+    defer check.deinit();
+    try std.testing.expectEqual(0, (try decode(gpa, t.data, .{}, &check)).invalid_frames);
+    try std.testing.expectError(error.EmptyRange, trimAlloc(gpa, in, .{ .start = 20000 }));
 }

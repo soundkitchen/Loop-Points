@@ -422,6 +422,21 @@ export async function load(source = new URL('./kiln.wasm', import.meta.url)) {
     },
 
     /**
+     * FLAC を FLAC のまま切り出す(可逆。区間の先頭と末尾にかかるフレームだけを作り直す)。範囲外の指定は丸める。
+     * 位置の指定は mp3.trim と同じ。タグと画像は残し、シークテーブル・CUE シート・PADDING は捨てる
+     * @param {ArrayBufferLike | ArrayBufferView} input FLAC ファイル全体
+     * @param {{ start?: number, end?: number, startSample?: number | bigint, endSample?: number | bigint }} options
+     * @returns {{ data: Uint8Array, startSample: number, endSample: number, start: number, end: number, invalidFrames: number }}
+     *   invalidFrames は、区間にかかった壊れたフレーム(無音として作り直した)の数
+     */
+    trim(input, options = {}) {
+      return rangeWith(e.kiln_flac_format, input, options, (ptr, len, s, t) => {
+        check(e.kiln_flac_trim(ptr, len, s, t ?? 0n, t !== null));
+        return { data: takeOutput(), invalidFrames: Number(e.kiln_value(4)) };
+      });
+    },
+
+    /**
      * PCM を FLAC にする。decodeAudioData が返す AudioBuffer か、チャンネルごとの Float32Array の配列(1〜8 チャンネル)を渡す。
      * @param {AudioBuffer | Float32Array[]} source どのチャンネルも同じ長さ
      * @param {{ sampleRate?: number, bitsPerSample?: number, compression?: number, dither?: 'tpdf' | 'none' }} options
@@ -444,7 +459,7 @@ export async function load(source = new URL('./kiln.wasm', import.meta.url)) {
     mp3,
     /** WAV の解析、切り出し、書き出し(WAV と FLAC) */
     wav,
-    /** FLAC の解析、デコード、書き出し */
+    /** FLAC の解析、切り出し、デコード、書き出し */
     flac,
     /** 生の export 関数(低レベル API) */
     exports: e,

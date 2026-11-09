@@ -71,6 +71,7 @@
 - **JS の API**: 入力ごとに分ける(`flac.encode(AudioBuffer か Float32Array[])`、`wav.toFlac`、`mp3.toFlac`、`flac.trim`)
 - **MD5**: 書き出す FLAC の STREAMINFO に PCM の MD5 を入れる(FLAC → FLAC の切り出しでも、区間をすべて復号して計算する)
 - **メタデータ**: FLAC → FLAC では Vorbis コメント・画像・APPLICATION を残し、STREAMINFO(長さと MD5)は作り直す。シークテーブルと CUE シートは位置がずれるので捨てる
+- **切り出しの細部**(設計は [`flac.md`](flac.md) §7): 出力は可変ブロック長(先頭が途中から始まるため)。作り直すフレームは段階 8 で符号化する。壊れたフレームは無音として作り直す。PADDING は書かない。`--bits` / `--compression` は FLAC → FLAC では使わない
 - **検証**: 参照実装の `flac` / `metaflac`(Homebrew)と ffmpeg、FLAC の公式テストファイル(CC0、リポジトリには入れない)と突き合わせる。テスト用の FLAC は `flac` で作ってリポジトリに入れる
 - **デコーダの細部**(設計は [`flac.md`](flac.md)): 仕様は RFC 9639 から自分で書く。Ogg FLAC は扱わない。FLAC → WAV の既定の形式はビット深度を保つもの(可逆)。CRC が合わないなど壊れたフレームは、libFLAC と同じく無音にして数を返す
 
