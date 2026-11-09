@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 //! テスト用の音声をテストから参照するためのモジュール(build.zig がテストにだけ import させる)。
 //! 各ファイルの作り方は README.md と generate.py を参照。
 

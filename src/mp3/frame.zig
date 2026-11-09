@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 //! MPEG-1 Layer III のフレームヘッダとサイド情報の解析。
 //! 扱うのは MPEG-1 Layer III だけ(1 フレーム 1152 サンプル)。
 const std = @import("std");

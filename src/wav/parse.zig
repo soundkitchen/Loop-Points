@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 //! WAV(RIFF / WAVE)の解析。`fmt ` と `data` のチャンクを探し、サンプル形式と PCM の範囲を求める。
 const std = @import("std");
 const pcm = @import("../pcm.zig");

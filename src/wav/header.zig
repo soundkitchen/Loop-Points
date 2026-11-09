@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 //! WAV のヘッダ(RIFF ヘッダ、`fmt ` チャンク、`data` チャンクのヘッダ)の書き出し。
 const std = @import("std");
 const Io = std.Io;

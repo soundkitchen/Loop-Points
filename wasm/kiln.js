@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 // K!LN の JS ラッパー。kiln.wasm を読み込み、export 関数を JS から使いやすくする。
 
 /** WAV のサンプル形式の名前。並びは kiln.pcm.Format と同じ(wasm とは番号でやり取りする) */

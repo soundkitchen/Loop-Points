@@ -54,8 +54,12 @@
 
 ### 2.5 2026-11-09 に決めたこと(ライセンス)
 
-- **ライセンス**: MIT。著作権者は Takanobu Izukawa。全文はリポジトリ直下の `LICENSE`(パッケージの `.paths` にも含める)
-- **取り込むもの**: 外部のコードや数表は、MIT と両立するもの(パブリックドメイン、CC0、MIT / BSD など)に限る。LGPL / GPL のものは取り込まない
+- **ライセンス**: MIT。著作権者は Takanobu Izukawa。全文はリポジトリ直下の `LICENSE`(パッケージの `.paths` にも含める)。`zig build` は wasm の配布物(`zig-out/wasm/`)にも `LICENSE` を置く
+- **ソースの表示**: すべてのソース(`src/`、`cli/`、`wasm/`、`build.zig`、`testdata/` のスクリプト)の先頭に `SPDX-License-Identifier: MIT` を書く
+- **取り込んでよいもの**: 外部のコードや数表は、次のライセンスのものに限る。どれも義務は元の著作権表示を残すこと(CC0 / Unlicense / パブリックドメインは義務もない)だけで、MIT と両立する
+  - MIT、BSD-2-Clause、BSD-3-Clause、ISC、Zlib、CC0-1.0、Unlicense、パブリックドメイン
+  - Apache-2.0(全文と NOTICE の内容を残す義務、特許条項がある)、宣伝条項付きの BSD-4-Clause、GPL / LGPL などのコピーレフトは取り込まない
+- **取り込んだときの記録**: 出所・ライセンス・元の著作権表示を、リポジトリ直下の `THIRD_PARTY_NOTICES.md`(パッケージにも含める)に書く。取り込んだファイルの先頭にも、出所と元のライセンスの SPDX 識別子を書く(例: `// SPDX-License-Identifier: MIT AND CC0-1.0`)
 
 ## 3. まだ決めていないこと(論点と、ここまでの見立て)
 

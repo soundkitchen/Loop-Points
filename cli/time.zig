@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 //! CLI の時刻指定(`--start` / `--end` / `--duration`)の解析。
 //!
 //! - `1.5`: 秒

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 //! WAV(RIFF / WAVE、PCM と浮動小数点)の解析と、サンプル精度のトリム。
 //!
 //! 位置はフレーム(チャンネルあたりのサンプル)単位で、先頭を 0 とする。

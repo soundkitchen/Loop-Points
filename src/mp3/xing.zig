@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 //! 先頭フレームの Xing / Info / LAME / VBRI ヘッダの読み取りと、Info + LAME タグのフレームの生成。
 const std = @import("std");
 const Io = std.Io;

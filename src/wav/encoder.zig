@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 //! WAV のエンコーダ。`init → write を何度でも → finish` の形で、`*std.Io.Writer` にストリーミングで書く。
 //!
 //! 書くフレーム数を最初に渡せば、正しい長さのヘッダを先に書く。渡さなければ長さを 0xFFFFFFFF にした

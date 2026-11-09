@@ -41,7 +41,7 @@ kiln trim in.wav out.wav --start 0.5 --end 3        # WAV も同じ。形式は�
 
 ### ブラウザ(wasm)
 
-`zig build` で `zig-out/wasm/` にできる `kiln.wasm` と `kiln.js` を同じ場所に置いて使います。
+`zig build` で `zig-out/wasm/` にできる `kiln.wasm` と `kiln.js` を同じ場所に置いて使います。配布するときは、同じディレクトリにある `LICENSE` も一緒に置いてください(MIT の著作権表示)。
 
 ```js
 import { load } from './kiln.js';
@@ -78,4 +78,4 @@ const wavFile = kiln.wav.encode(audioBuffer, { format: 'i16' }); // 既定は 16
 
 MIT ライセンスです。全文は [`LICENSE`](LICENSE) を参照してください。
 
-外部のコードや数表を取り込むときは、MIT と両立するもの(パブリックドメイン、CC0、MIT / BSD など)に限ります。
+外部から取り込んだコードや数表は [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) に記録しています。取り込んでよいライセンスなどの方針は [`docs/draft.md`](docs/draft.md) §2.5 にあります。

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 //! PCM のサンプル形式と、形式どうしの変換。
 //!
 //! PCM は読み込んだ元の形式(8bit 符号なし、16 / 24 / 32bit 整数、32 / 64bit 浮動小数点)のまま

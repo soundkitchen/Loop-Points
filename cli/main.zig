@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 //! K!LN の CLI。ファイルの読み書きと引数処理だけを担い、処理はコアに任せる。
 const std = @import("std");
 const Io = std.Io;
