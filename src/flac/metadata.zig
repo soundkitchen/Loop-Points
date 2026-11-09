@@ -75,29 +75,55 @@ pub const Metadata = struct {
         }
         if (rest.len < 4 or !std.mem.eql(u8, rest[0..4], "fLaC")) return error.NotFlac;
 
-        var pos = start + 4;
+        var it: BlockIterator = .{ .input = input, .pos = start + 4, .end = input.len };
         var info: ?StreamInfo = null;
         while (true) {
-            if (input.len - pos < 4) return error.InvalidFlac;
-            const h = input[pos..][0..4];
-            const last = h[0] & 0x80 != 0;
-            const kind: BlockType = @fromBackingInt(@intCast(h[0] & 0x7F));
-            const len = std.mem.readInt(u24, h[1..4], .big);
-            pos += 4;
-            if (input.len - pos < len) return error.InvalidFlac;
-            if (@backingInt(kind) == 127) return error.InvalidFlac;
+            const b = it.next() orelse return error.InvalidFlac;
+            if (@backingInt(b.kind) == 127) return error.InvalidFlac;
             // STREAMINFO は最初のブロックで、1 つだけ
-            if ((info == null) != (kind == .stream_info)) return error.InvalidFlac;
-            if (kind == .stream_info) {
-                if (len != StreamInfo.len) return error.InvalidFlac;
-                info = .parse(input[pos..][0..StreamInfo.len]);
+            if ((info == null) != (b.kind == .stream_info)) return error.InvalidFlac;
+            if (b.kind == .stream_info) {
+                if (b.body.len != StreamInfo.len) return error.InvalidFlac;
+                info = .parse(b.body[0..StreamInfo.len]);
             }
-            pos += len;
-            if (last) break;
+            if (b.last) break;
         }
         const si = info.?;
         if (si.sample_rate == 0 or si.bits < 4) return error.InvalidFlac;
-        return .{ .start = start, .info = si, .frames_start = pos };
+        return .{ .start = start, .info = si, .frames_start = it.pos };
+    }
+
+    /// メタデータブロックを順にたどる(`parse` が確かめた後なので、どのブロックも入力に収まる)
+    pub fn blocks(m: Metadata, input: []const u8) BlockIterator {
+        return .{ .input = input, .pos = m.start + 4, .end = m.frames_start };
+    }
+};
+
+pub const Block = struct {
+    kind: BlockType,
+    /// 最後のメタデータブロックか
+    last: bool,
+    body: []const u8,
+};
+
+/// メタデータブロックを先頭から順にたどる。ヘッダや中身が `end` を超えるところで終わる(null)
+pub const BlockIterator = struct {
+    input: []const u8,
+    pos: usize,
+    end: usize,
+
+    pub fn next(it: *BlockIterator) ?Block {
+        if (it.pos >= it.end or it.end - it.pos < 4) return null;
+        const h = it.input[it.pos..][0..4];
+        const len = std.mem.readInt(u24, h[1..4], .big);
+        if (it.end - it.pos - 4 < len) return null;
+        const b: Block = .{
+            .kind = @fromBackingInt(@intCast(h[0] & 0x7F)),
+            .last = h[0] & 0x80 != 0,
+            .body = it.input[it.pos + 4 ..][0..len],
+        };
+        it.pos += 4 + @as(usize, len);
+        return b;
     }
 };
 

@@ -43,9 +43,21 @@ fn keep(b: Block) bool {
     return switch (b.kind) {
         .vorbis_comment => validVorbisComment(b.body),
         .picture => validPicture(b.body),
-        .application => b.body.len >= 4,
+        .application => b.body.len >= 4 and !isForeignMetadata(b.body[0..4]),
         else => false,
     };
+}
+
+/// flac --keep-foreign-metadata が元の WAV / AIFF / Wave64 のチャンクを入れる APPLICATION の ID。
+/// 中に元の data チャンクの長さが入っているので、切り出すと食い違う(戻すときに失敗する)。捨てる
+fn isForeignMetadata(id: *const [4]u8) bool {
+    return std.mem.eql(u8, id, "riff") or std.mem.eql(u8, id, "aiff") or std.mem.eql(u8, id, "w64 ");
+}
+
+/// そのままコピーできるフレームの長さ。192 サンプル未満(Safari が最初のフレームとして読めない。
+/// 規格から外れた最後でない短いフレームもここに入る)と、STREAMINFO に書けない 65536 サンプルは作り直す
+fn copyable(block_size: u64) bool {
+    return block_size >= min_emit and block_size <= 65535;
 }
 
 /// 長さ(`endian` の u32)と、その長さのバイト列を読み進める。ブロックを超えれば false
@@ -156,7 +168,7 @@ pub fn trim(gpa: std.mem.Allocator, input: []const u8, ix: *const stream.Index, 
 fn walk(t: *Trimmer, f: stream.Frame, start: u64, end: u64) !void {
     const lo = @max(start, f.sample) - f.sample;
     const hi = @min(end, f.sample + f.samples) - f.sample;
-    const whole = f.header != null and lo == 0 and hi == f.samples;
+    const whole = f.header != null and lo == 0 and hi == f.samples and copyable(f.samples);
     if (whole and (t.pending_len == 0 or t.pending_len >= min_emit)) {
         // 丸ごと入る正しいフレームはコピーする(たまっている分は先に書く)
         try t.flushAll();
@@ -173,7 +185,7 @@ fn writeHeader(input: []const u8, meta: metadata.Metadata, si: metadata.StreamIn
     try w.writeAll("fLaC");
     // 残すブロックを数える(最後のブロックの印を付けるため)
     var kept: usize = 0;
-    var it = blockIterator(input, meta);
+    var it = meta.blocks(input);
     while (it.next()) |b| {
         if (keep(b)) kept += 1;
     }
@@ -188,7 +200,7 @@ fn writeHeader(input: []const u8, meta: metadata.Metadata, si: metadata.StreamIn
         .bits_per_sample = si.bits,
         .total = 0,
     }));
-    it = blockIterator(input, meta);
+    it = meta.blocks(input);
     var written: usize = 0;
     while (it.next()) |b| {
         if (!keep(b)) continue;
@@ -202,27 +214,7 @@ fn writeHeader(input: []const u8, meta: metadata.Metadata, si: metadata.StreamIn
     }
 }
 
-const Block = struct { kind: metadata.BlockType, body: []const u8 };
-
-/// メタデータブロックを順にたどる(`Metadata.parse` が確かめた後なので、長さは入力に収まる)
-const BlockIterator = struct {
-    input: []const u8,
-    pos: usize,
-    end: usize,
-
-    fn next(it: *BlockIterator) ?Block {
-        if (it.pos >= it.end) return null;
-        const h = it.input[it.pos..][0..4];
-        const len = std.mem.readInt(u24, h[1..4], .big);
-        const b: Block = .{ .kind = @fromBackingInt(@intCast(h[0] & 0x7F)), .body = it.input[it.pos + 4 ..][0..len] };
-        it.pos += 4 + @as(usize, len);
-        return b;
-    }
-};
-
-fn blockIterator(input: []const u8, meta: metadata.Metadata) BlockIterator {
-    return .{ .input = input, .pos = meta.start + 4, .end = meta.frames_start };
-}
+const Block = metadata.Block;
 
 /// 書いたフレームの長さの並びの要約
 const Sizes = struct {
@@ -433,7 +425,12 @@ test "残すメタデータブロックの中身を確かめる" {
     const pic = "\x00\x00\x00\x03" ++ "\x00\x00\x00\x01a" ++ "\x00\x00\x00\x00" ++ @as([16]u8, @splat(0)) ++ "\x00\x00\x00\x02xy";
     try std.testing.expect(validPicture(pic));
     try std.testing.expect(!validPicture(pic[0 .. pic.len - 1]));
-    try std.testing.expect(keep(.{ .kind = .application, .body = "abcd" }));
-    try std.testing.expect(!keep(.{ .kind = .application, .body = "abc" }));
-    try std.testing.expect(!keep(.{ .kind = .padding, .body = "" }));
+    try std.testing.expect(keep(.{ .kind = .application, .last = false, .body = "abcd" }));
+    try std.testing.expect(!keep(.{ .kind = .application, .last = false, .body = "abc" }));
+    // flac --keep-foreign-metadata のチャンク(元の data チャンクの長さが入っている)は捨てる
+    try std.testing.expect(!keep(.{ .kind = .application, .last = false, .body = "riffRIFF...." }));
+    try std.testing.expect(!keep(.{ .kind = .application, .last = false, .body = "w64 ...." }));
+    try std.testing.expect(!keep(.{ .kind = .padding, .last = true, .body = "" }));
+    try std.testing.expect(copyable(192) and copyable(65535));
+    try std.testing.expect(!copyable(191) and !copyable(65536));
 }

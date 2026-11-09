@@ -227,7 +227,10 @@ fn trim(init: std.process.Init, args: []const [:0]const u8, stdout: *Io.Writer, 
         try stderr.writeAll("error: --bits and --compression are only used when converting to FLAC (--format flac for a WAV or MP3 input)\n");
         return 2;
     }
-    const info = probe(in_format, input) catch |err| {
+    // FLAC はフレームの一覧を 1 回だけ作り、解析と書き出しで使い回す(区切りを探す走査を繰り返さない)
+    var flac_index: ?kiln.flac.Index = null;
+    defer if (flac_index) |*ix| ix.deinit(gpa);
+    const info = probe(gpa, in_format, input, &flac_index) catch |err| {
         try stderr.print("error: {s}: {s}\n", .{ a.input, describe(in_format, err) });
         return 1;
     };
@@ -267,6 +270,7 @@ fn trim(init: std.process.Init, args: []const [:0]const u8, stdout: *Io.Writer, 
             .mp3 => unreachable,
         },
         .gpa = gpa,
+        .flac_index = if (flac_index) |*ix| ix else null,
     };
     const r = writeOutput(io, a.output, job, stdout) catch |err| switch (err) {
         error.EmptyRange => {
@@ -315,7 +319,8 @@ const Info = struct {
     min_start: u64,
 };
 
-fn probe(format: kiln.Format, input: []const u8) !Info {
+/// 入力を解析する。FLAC はフレームの一覧を `flac_index` に作る(呼び出し側が解放する)
+fn probe(gpa: std.mem.Allocator, format: kiln.Format, input: []const u8, flac_index: *?kiln.flac.Index) !Info {
     return switch (format) {
         .mp3 => blk: {
             const i = try kiln.mp3.probe(input);
@@ -326,7 +331,8 @@ fn probe(format: kiln.Format, input: []const u8) !Info {
             break :blk .{ .sample_rate = i.sample_rate, .samples = i.samples, .min_start = 0 };
         },
         .flac => blk: {
-            const i = try kiln.flac.probe(input);
+            flac_index.* = try kiln.flac.Index.init(gpa, input);
+            const i = flac_index.*.?.info();
             break :blk .{ .sample_rate = i.sample_rate, .samples = i.samples, .min_start = 0 };
         },
     };
@@ -351,6 +357,8 @@ const Job = struct {
     convert: ?Convert,
     /// FLAC の読み書きの作業領域に使う
     gpa: std.mem.Allocator,
+    /// FLAC の入力のフレームの一覧(FLAC のときだけ)
+    flac_index: ?*const kiln.flac.Index = null,
 };
 
 const Convert = union(enum) {
@@ -384,7 +392,7 @@ fn run(job: Job, w: *Io.Writer, seekable: bool) !Written {
                 break :blk .{ .start = r.start, .end = r.end, .invalid_frames = r.invalid_frames };
             },
             .flac => blk: {
-                const r = try kiln.flac.toWav(job.gpa, job.input, .{ .start = start, .end = end }, .{ .format = o.format, .dither = o.dither }, w);
+                const r = try job.flac_index.?.toWav(job.gpa, .{ .start = start, .end = end }, .{ .format = o.format, .dither = o.dither }, w);
                 break :blk .{ .start = r.start, .end = r.end, .invalid_frames = r.invalid_frames };
             },
             .wav => unreachable,
@@ -413,7 +421,7 @@ fn flacOut(job: Job, w: *Io.Writer, seekable: bool) !Written {
             break :blk .{ .trimmed = .{ .start = t.start, .end = t.end, .invalid_frames = t.invalid_frames }, .patch = r.patch };
         },
         .flac => blk: {
-            const r = try kiln.flac.trim(job.gpa, job.input, .{ .start = start, .end = end }, out);
+            const r = try job.flac_index.?.trim(job.gpa, .{ .start = start, .end = end }, out);
             break :blk .{ .trimmed = .{ .start = r.start, .end = r.end, .invalid_frames = r.invalid_frames }, .patch = r.patch };
         },
     };

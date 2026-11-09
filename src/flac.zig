@@ -179,6 +179,19 @@ pub const Index = struct {
         };
     }
 
+    /// `kiln.flac.trim` と同じ
+    pub fn trim(ix: *const Index, gpa: std.mem.Allocator, options: DecodeOptions, w: *Io.Writer) !TrimResult {
+        const range = try ix.clamp(options);
+        const r = try trim_impl.trim(gpa, ix.input, &ix.s, range.start, range.end, w);
+        return .{
+            .start = range.start,
+            .end = range.end,
+            .sample_rate = ix.s.stream.info().sample_rate,
+            .invalid_frames = r.invalid_frames,
+            .patch = r.patch,
+        };
+    }
+
     /// `kiln.flac.toWav` と同じ
     pub fn toWav(ix: *const Index, gpa: std.mem.Allocator, options: DecodeOptions, wav_options: WavOptions, w: *Io.Writer) !DecodeResult {
         return ix.toWavRange(gpa, try ix.clamp(options), wav_options, w);
@@ -296,15 +309,7 @@ pub const TrimResult = struct {
 pub fn trim(gpa: std.mem.Allocator, input: []const u8, options: DecodeOptions, w: *Io.Writer) !TrimResult {
     var ix: Index = try .init(gpa, input);
     defer ix.deinit(gpa);
-    const range = try ix.clamp(options);
-    const r = try trim_impl.trim(gpa, input, &ix.s, range.start, range.end, w);
-    return .{
-        .start = range.start,
-        .end = range.end,
-        .sample_rate = ix.s.stream.info().sample_rate,
-        .invalid_frames = r.invalid_frames,
-        .patch = r.patch,
-    };
+    return ix.trim(gpa, options, w);
 }
 
 pub const Trimmed = struct {
@@ -1000,13 +1005,11 @@ test "trim: 丸ごと入るフレームはコピーする。タグは残し、PA
 
 /// テスト用: メタデータブロックの種類(最初の 2 つ)と数
 fn metadataKinds(data: []const u8, meta: metadata.Metadata) struct { metadata.BlockType, metadata.BlockType, usize } {
-    var pos = meta.start + 4;
     var kinds: [2]metadata.BlockType = .{ .padding, .padding };
     var n: usize = 0;
-    while (pos < meta.frames_start) : (n += 1) {
-        const len = std.mem.readInt(u24, data[pos + 1 ..][0..3], .big);
-        if (n < 2) kinds[n] = @fromBackingInt(@intCast(data[pos] & 0x7F));
-        pos += 4 + @as(usize, len);
+    var it = meta.blocks(data);
+    while (it.next()) |b| : (n += 1) {
+        if (n < 2) kinds[n] = b.kind;
     }
     return .{ kinds[0], kinds[1], n };
 }
@@ -1075,4 +1078,62 @@ test "trim: 壊れたフレームは無音として作り直す" {
     defer check.deinit();
     try std.testing.expectEqual(0, (try decode(gpa, t.data, .{}, &check)).invalid_frames);
     try std.testing.expectError(error.EmptyRange, trimAlloc(gpa, in, .{ .start = 20000 }));
+}
+
+/// テスト用: s16-stereo.flac の PCM を、ブロック長 `sizes` の可変ブロック長の FLAC にする
+fn variableFlac(sizes: []const u32) ![]u8 {
+    const gpa = std.testing.allocator;
+    var pcm_all = try decodeAll(testdata.s16_stereo_flac);
+    defer pcm_all.deinit();
+    var fe: encoder.FrameEncoder = try .init(gpa, .{ .sample_rate = 44100, .channels = 2, .bits_per_sample = 16, .compression = 5 }, 4096);
+    defer fe.deinit();
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(gpa);
+    try out.appendSlice(gpa, "fLaC\x80\x00\x00\x22");
+    var total: u64 = 0;
+    for (sizes) |n| total += n;
+    try out.appendSlice(gpa, &encoder.streamInfoBytes(.{
+        .min_block = 16,
+        .max_block = 4096,
+        .min_frame = 0,
+        .max_frame = 0,
+        .sample_rate = 44100,
+        .channels = 2,
+        .bits_per_sample = 16,
+        .total = total,
+    }));
+    var l: [4096]i64 = undefined;
+    var r: [4096]i64 = undefined;
+    var pos: u64 = 0;
+    for (sizes) |n| {
+        for (0..n) |i| {
+            l[i] = pcm_all.list.items[@intCast((pos + i) * 2)];
+            r[i] = pcm_all.list.items[@intCast((pos + i) * 2 + 1)];
+        }
+        try out.appendSlice(gpa, fe.encode(&.{ l[0..n], r[0..n] }, pos, true));
+        pos += n;
+    }
+    return out.toOwnedSlice(gpa);
+}
+
+test "trim: 192 サンプル未満のフレームはコピーせずに作り直す(Safari 向け)" {
+    const gpa = std.testing.allocator;
+    const in = try variableFlac(&.{ 100, 50, 1000, 3000, 20, 2000, 4096 });
+    defer gpa.free(in);
+    var all = try decodeAll(in);
+    defer all.deinit();
+    var sizes: [64]u32 = undefined;
+    // 50 サンプルのフレームの先頭(境目ちょうど)から、20 サンプルのフレームをまたいで
+    for ([_][2]u64{ .{ 100, 6170 }, .{ 100, 10266 }, .{ 4150, 10266 }, .{ 0, 150 } }) |se| {
+        const t = try trimAlloc(gpa, in, .{ .start = se[0], .end = se[1] });
+        defer gpa.free(t.data);
+        var got = try decodeAll(t.data);
+        defer got.deinit();
+        try std.testing.expectEqualSlices(i32, all.list.items[@intCast(se[0] * 2)..@intCast(se[1] * 2)], got.list.items);
+        const lay = try frameLayout(t.data, &sizes);
+        // 最後を除くフレームは 192 サンプル以上
+        for (sizes[0 .. lay.n - 1]) |n| try std.testing.expect(n >= 192);
+        const m = (try metadata.Metadata.parse(t.data)).info;
+        if (lay.variable) try std.testing.expect(m.min_block_size != m.max_block_size);
+    }
 }

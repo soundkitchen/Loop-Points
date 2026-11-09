@@ -85,7 +85,8 @@ kiln trim <input> <output> [--start TIME] [--end TIME | --duration TIME]
 - WAV に変換するときだけ `--sample-format u8|i16|i24|i32|f32|f64` を使う。形式の既定は、MP3 は `i16`、FLAC はビット深度を保つ形式([`flac.md`](flac.md) §4)
 - WAV / MP3 を FLAC に変換するときだけ `--bits 4〜32`(既定は、整数の WAV なら元のビット深度、それ以外は 16)と `--compression 0〜8`(既定は 5。flac コマンドの -0〜-8 と同じ。[`flac.md`](flac.md) §6)を使う
 - `--dither tpdf|none`(既定は `tpdf`)は変換するときだけ使う。オプションを使わない組み合わせで指定すると引数の誤り(終了コード 2)
-- FLAC は STREAMINFO を最後に書き戻す。ファイルへはフレームを流して書き(`kiln.wav.toFlac` / `kiln.mp3.toFlac` / `kiln.flac.trim`)、閉じる前に先頭の STREAMINFO を位置を指定して書き戻す(`File.writePositionalAll`。出力全体をメモリにためない)。stdout へは書き戻せないので、メモリ上で書き戻してから書く
+- FLAC の入力は、フレームの一覧(`kiln.flac.Index`)を 1 回だけ作り、長さを求めるのと、切り出し・WAV への変換(`Index.trim` / `Index.toWav`)で使い回す(区切りを探す走査を繰り返さない)
+- FLAC は STREAMINFO を最後に書き戻す。ファイルへはフレームを流して書き(`kiln.wav.toFlac` / `kiln.mp3.toFlac` / `kiln.flac.Index.trim`)、閉じる前に先頭の STREAMINFO を位置を指定して書き戻す(`File.writePositionalAll`。出力全体をメモリにためない)。stdout へは書き戻せないので、メモリ上で書き戻してから書く
 - MP3 → WAV / FLAC では、タグなしの入力でも先頭を 529 に切り上げない(`kiln.mp3.decode` と同じ)。MP3 / FLAC → WAV と MP3 → FLAC で復号できなかったフレームがあれば、その数を stderr に警告する(終了コードは 0)
 - TIME は秒(`1.5`)、分:秒 / 時:分:秒(`1:02.5`)、サンプル数(`66150s`)。秒は浮動小数点を使わずに解析し、切り捨てでサンプル位置にする
 - `--duration` は、切り上げた後の実際の開始位置から数える(タグなしの入力で `--start` を省いても、出力の長さは指定どおり)
@@ -203,6 +204,7 @@ const m = try kiln.mp3.toFlacAlloc(gpa, mp3_input, .{ .start = 0 }, .{});  // m.
 // 切り出し(FLAC → FLAC)。r.patch(STREAMINFO)を出力の先頭に書き戻す
 const r = try kiln.flac.trim(gpa, input, .{ .start = 44100, .end = 88200 }, writer); // r.start / r.end / r.invalid_frames / r.patch
 const c = try kiln.flac.trimAlloc(gpa, input, .{ .start = 44100 });  // 一括版(書き戻し済み): c.data など
+_ = try ix.trim(gpa, .{ .start = 44100 }, writer);  // フレームの一覧を作ってあれば、それを使い回す
 ```
 
 - 切り出しは、区間に丸ごと入るフレームをコピーし、先頭と末尾にかかるフレームだけを作り直す。出力は、最後を除くフレームの長さがそろえば固定ブロック長、そうでなければ可変ブロック長(Safari が読める形にする。詳細は [`flac.md`](flac.md) §7)。1 フレームの符号化はエンコーダと共通の `FrameEncoder`(`src/flac/encoder.zig`)

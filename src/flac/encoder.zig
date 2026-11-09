@@ -499,7 +499,7 @@ pub const FrameEncoder = struct {
             var autoc: [lpc.max_order + 1]f64 = undefined;
             var coefs: [lpc.max_order][lpc.max_order]f64 = undefined;
             var errors: [lpc.max_order]f64 = undefined;
-            const base_precision = qlpPrecision(e.bits_per_sample, e.preset.block_size);
+            const base_precision = qlpPrecision(e.bits_per_sample, @intCast(n));
             for (0..lpc.windowCount(e.preset.subdivide)) |wi| {
                 lpc.autocorrelation(sig, e.windows[wi * n ..][0..n], e.wbuf, autoc[0 .. max_order + 1]);
                 if (autoc[0] <= 0) continue;
