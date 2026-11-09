@@ -74,7 +74,8 @@ const nch = try dec.decodeFrame(frame_bytes, &pcm); // pcm: [2][1152]f32。扱�
 
 ```sh
 kiln trim <input> <output> [--start TIME] [--end TIME | --duration TIME]
-          [--format FORMAT] [--sample-format SAMPLE] [--dither DITHER]
+          [--format FORMAT] [--sample-format SAMPLE] [--bits N]
+          [--compression N] [--dither DITHER]
 ```
 
 - `<input>` / `<output>` は `-` で stdin / stdout
