@@ -137,6 +137,7 @@ const bytes = try kiln.wav.encodePlanarAlloc(gpa, &.{ left, right }, .{ .sample_
 - 既定の形式は 16bit 整数、ディザは TPDF(§2.4)
 - 1 フレームのバイト数(チャンネル数 × サンプルのバイト数)が 65535 を超えるとき、またはサンプルレート × 1 フレームのバイト数が 32bit に収まらないときは `InvalidOptions`(`fmt ` の nBlockAlign / nAvgBytesPerSec に書けないため)
 - 2 チャンネル以下は WAVE_FORMAT_PCM / IEEE_FLOAT、3 チャンネル以上は WAVE_FORMAT_EXTENSIBLE で書く(チャンネルマスクは先頭から順に割り当てる)。浮動小数点でも `fact` チャンクは書かない
+- `Encoder.fileLen(options)` は、フレーム数を渡して書いたときのファイル全体のバイト数(ヘッダと詰め物を含む)を返す。4GiB を超えるなら `TooLarge`。前もって一度に確保するのに使う(`kiln.mp3.toWavAlloc`)
 - フレーム数を渡すと、正しい長さのヘッダを先に書き、`finish` で書いた長さと合うかを確かめる(違えば `LengthMismatch`)。渡さないと長さを 0xFFFFFFFF にしたヘッダを書き、`finish` が正しいヘッダを返す
 - 中身が奇数バイトのときの詰め物は、フレーム数を渡したときだけ書く。渡さないときは、書き戻せないパイプなどで詰め物がサンプルとして読まれないよう書かず、`finish` が返すヘッダの RIFF サイズにも含めない
 

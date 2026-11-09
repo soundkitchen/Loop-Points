@@ -141,17 +141,21 @@ pub const WavDecoded = struct {
 pub fn toWavAlloc(gpa: std.mem.Allocator, input: []const u8, options: DecodeOptions, wav_options: WavOptions) !WavDecoded {
     const s = try stream.Stream.parse(input);
     const range = try clampDecodeRange(&s, options);
-    const data_len = std.math.mul(u64, range.end - range.start, @as(u64, s.header.channels()) * wav_options.format.bytes()) catch
-        return error.TooLarge;
-    // ヘッダ + PCM + 奇数バイトの詰め物
-    const capacity = std.math.cast(usize, data_len + wav.max_header_len + 1) orelse return error.TooLarge;
-    var out = try Io.Writer.Allocating.initCapacity(gpa, capacity);
+    // WAV の大きさ(4GiB を超えるなら TooLarge)を、確保する前に求める
+    const len = try wav.Encoder.fileLen(.{
+        .sample_rate = s.header.sampleRate(),
+        .channels = s.header.channels(),
+        .format = wav_options.format,
+        .frames = range.end - range.start,
+    });
+    var out = try Io.Writer.Allocating.initCapacity(gpa, std.math.cast(usize, len) orelse return error.TooLarge);
     defer out.deinit();
     const r = toWavParsed(input, &s, range, wav_options, &out.writer) catch |err| switch (err) {
-        // 確保した大きさに収まるので、書き込みには失敗しない
-        error.WriteFailed => unreachable,
+        // 大きさは足りているはずだが、伸ばす確保に失敗したときはほかの Alloc 版と同じく OutOfMemory
+        error.WriteFailed => return error.OutOfMemory,
         else => |e| return e,
     };
+    std.debug.assert(out.written().len == len);
     return .{ .data = try out.toOwnedSlice(), .result = r };
 }
 
@@ -307,14 +311,23 @@ test "decode: 区間の手前から復号しても、先頭から復号したと
 }
 
 test toWavAlloc {
-    for ([_]pcm.Format{ .u8, .i16, .i24, .f32, .f64 }) |f| {
-        var out: Io.Writer.Allocating = .init(std.testing.allocator);
-        defer out.deinit();
-        _ = try toWav(testdata.mono48k_notag, .{ .start = 3, .end = 1004 }, .{ .format = f }, &out.writer);
-        const a = try toWavAlloc(std.testing.allocator, testdata.mono48k_notag, .{ .start = 3, .end = 1004 }, .{ .format = f });
-        defer std.testing.allocator.free(a.data);
-        try std.testing.expectEqualSlices(u8, out.written(), a.data);
-        try std.testing.expectEqual(1004, a.result.end);
+    for ([_][]const u8{ testdata.mono48k_notag, testdata.lyria_like }) |in| {
+        for ([_]pcm.Format{ .u8, .i16, .i24, .f32, .f64 }) |f| {
+            var out: Io.Writer.Allocating = .init(std.testing.allocator);
+            defer out.deinit();
+            const r = try toWav(in, .{ .start = 3, .end = 1004 }, .{ .format = f }, &out.writer);
+            const a = try toWavAlloc(std.testing.allocator, in, .{ .start = 3, .end = 1004 }, .{ .format = f });
+            defer std.testing.allocator.free(a.data);
+            try std.testing.expectEqualSlices(u8, out.written(), a.data);
+            try std.testing.expectEqual(r, a.result);
+            try std.testing.expectEqual(DecodeResult{
+                .start = 3,
+                .end = 1004,
+                .sample_rate = r.sample_rate,
+                .channels = (try probe(in)).channels,
+                .invalid_frames = 0,
+            }, a.result);
+        }
     }
     try std.testing.expectError(error.EmptyRange, toWavAlloc(std.testing.allocator, testdata.lyria_like, .{ .start = 9, .end = 9 }, .{}));
 }
