@@ -15,7 +15,7 @@
 | `src/root.zig` | コアのルート。モジュール名 `kiln` | — |
 | `src/pcm.zig` | PCM のサンプル形式と、f32 との変換(`kiln.pcm`) | — |
 | `src/mp3.zig`, `src/mp3/` | MP3 の解析と無劣化トリム(`kiln.mp3`)。`frame`(フレームヘッダ)/ `id3` / `xing`(Xing・LAME タグ)/ `stream`(入力の解析)/ `trim` に分ける | — |
-| `src/wav.zig`, `src/wav/` | WAV の解析とサンプル精度のトリム(`kiln.wav`)。`parse`(チャンクの解析)/ `header`(ヘッダの書き出し)に分ける | — |
+| `src/wav.zig`, `src/wav/` | WAV の解析とサンプル精度のトリム、エンコーダ(`kiln.wav`)。`parse`(チャンクの解析)/ `header`(ヘッダの書き出し)/ `encoder` に分ける | — |
 | `cli/main.zig` | CLI | `zig-out/bin/kiln` |
 | `wasm/main.zig` | wasm の export 関数 | `zig-out/wasm/kiln.wasm` |
 | `wasm/kiln.js` | JS ラッパー(ES module。`load()` で wasm を読み込む) | `zig-out/wasm/kiln.js` |
@@ -98,6 +98,20 @@ const t = try kiln.wav.trimAlloc(gpa, input, .{ .start = 44100 });
 - トリムは `data` の中身を切り出すだけなので無劣化。`fmt ` チャンクは入力のものをそのまま書き、ほかのチャンク(`LIST`、`fact` など)は引き継がない
 - `data` の長さが入力を超える(長さを 0xFFFFFFFF にしたストリーミング出力や、途中で切れたファイル)ときは、入力の終わりまでとみなし、フレームの区切りで切り詰める
 - 出力が 4GiB 以上になるときは `TooLarge`(RF64 では書かない)
+
+```zig
+// ストリーミングのエンコーダ(§2 の方針)
+var e: kiln.wav.Encoder = try .init(writer, .{ .sample_rate = 44100, .channels = 2, .format = .i16, .frames = n });
+try e.writeF32(interleaved);                     // writePlanarF32(&.{ left, right }) / writeRaw(bytes) も
+const header = try e.finish();                   // .frames を渡さなかったときだけ、書き戻すヘッダが返る
+// 一括版: チャンネルごとの f32(Web Audio の AudioBuffer と同じ並び)から
+const bytes = try kiln.wav.encodePlanarAlloc(gpa, &.{ left, right }, .{ .sample_rate = 44100 });
+```
+
+- 既定の形式は 16bit 整数、ディザは TPDF(§2.4)
+- 2 チャンネル以下は WAVE_FORMAT_PCM / IEEE_FLOAT、3 チャンネル以上は WAVE_FORMAT_EXTENSIBLE で書く(チャンネルマスクは先頭から順に割り当てる)。浮動小数点でも `fact` チャンクは書かない
+- フレーム数を渡すと、正しい長さのヘッダを先に書き、`finish` で書いた長さと合うかを確かめる(違えば `LengthMismatch`)。渡さないと長さを 0xFFFFFFFF にしたヘッダを書き、`finish` が正しいヘッダを返す
+- 中身が奇数バイトのときの詰め物は、フレーム数を渡したときだけ書く。渡さないときは、書き戻せないパイプなどで詰め物がサンプルとして読まれないよう書かず、`finish` が返すヘッダの RIFF サイズにも含めない
 
 ## 3. Zig 0.17.1 で確認したこと
 

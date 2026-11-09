@@ -7,8 +7,52 @@ const Io = std.Io;
 const pcm = @import("pcm.zig");
 const parse = @import("wav/parse.zig");
 const header = @import("wav/header.zig");
+const encoder = @import("wav/encoder.zig");
 
 pub const ParseError = parse.Error;
+
+/// ストリーミングのエンコーダ(`init → writeF32 / writePlanarF32 / writeRaw → finish`)
+pub const Encoder = encoder.Encoder;
+pub const EncoderOptions = encoder.Options;
+pub const EncodeOptions = encoder.EncodeOptions;
+pub const EncodeError = encoder.Error;
+pub const Header = encoder.Header;
+
+/// チャンネルごとに分かれた f32 のサンプル(Web Audio の AudioBuffer と同じ並び)を WAV にする一括版。
+/// どのチャンネルも同じ長さ。返したバイト列は呼び出し側が `gpa` で解放する
+pub fn encodePlanarAlloc(
+    gpa: std.mem.Allocator,
+    channels: []const []const f32,
+    options: EncodeOptions,
+) (error{ OutOfMemory, InvalidOptions, TooLarge })![]u8 {
+    if (channels.len == 0 or channels.len > std.math.maxInt(u16)) return error.InvalidOptions;
+    var out: Io.Writer.Allocating = .init(gpa);
+    defer out.deinit();
+    var e = encodeInit(&out.writer, channels, options) catch |err| return mapWriteFailed(err);
+    e.writePlanarF32(channels) catch |err| return mapWriteFailed(err);
+    _ = e.finish() catch |err| return mapWriteFailed(err);
+    return out.toOwnedSlice();
+}
+
+fn encodeInit(w: *Io.Writer, channels: []const []const f32, options: EncodeOptions) EncodeError!Encoder {
+    return .init(w, .{
+        .sample_rate = options.sample_rate,
+        .channels = @intCast(channels.len),
+        .format = options.format,
+        .dither = options.dither,
+        .frames = channels[0].len,
+    });
+}
+
+fn mapWriteFailed(err: EncodeError) error{ OutOfMemory, InvalidOptions, TooLarge } {
+    return switch (err) {
+        error.WriteFailed => error.OutOfMemory,
+        error.InvalidOptions => error.InvalidOptions,
+        error.TooLarge => error.TooLarge,
+        // フレーム数は入力の長さから決めるので、食い違わない
+        error.LengthMismatch => unreachable,
+    };
+}
 
 pub const Info = struct {
     sample_rate: u32,
@@ -88,6 +132,17 @@ pub fn trimAlloc(
 test {
     _ = parse;
     _ = header;
+    _ = encoder;
+}
+
+test encodePlanarAlloc {
+    const l = [_]f32{ 0, 0.5, -0.5, 1 };
+    const r = [_]f32{ 0.25, -0.25, 0, -1 };
+    const data = try encodePlanarAlloc(std.testing.allocator, &.{ &l, &r }, .{ .sample_rate = 44100, .dither = .none });
+    defer std.testing.allocator.free(data);
+    const i = try probe(data);
+    try std.testing.expectEqual(Info{ .sample_rate = 44100, .channels = 2, .format = .i16, .samples = 4 }, i);
+    try std.testing.expectError(error.InvalidOptions, encodePlanarAlloc(std.testing.allocator, &.{}, .{ .sample_rate = 44100 }));
 }
 
 const testdata = @import("testdata");
