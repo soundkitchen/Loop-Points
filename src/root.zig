@@ -6,10 +6,14 @@ const build_options = @import("build_options");
 /// ライブラリのバージョン(build.zig.zon の `.version`)
 pub const version: []const u8 = build_options.version;
 
+/// PCM のサンプル形式と変換
+pub const pcm = @import("pcm.zig");
+
 /// MP3 の解析と無劣化トリム
 pub const mp3 = @import("mp3.zig");
 
 test {
+    _ = pcm;
     _ = mp3;
 }
 

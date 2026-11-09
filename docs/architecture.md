@@ -13,6 +13,7 @@
 | パス | 内容 | ビルド成果物 |
 |---|---|---|
 | `src/root.zig` | コアのルート。モジュール名 `kiln` | — |
+| `src/pcm.zig` | PCM のサンプル形式と、f32 との変換(`kiln.pcm`) | — |
 | `src/mp3.zig`, `src/mp3/` | MP3 の解析と無劣化トリム(`kiln.mp3`)。`frame`(フレームヘッダ)/ `id3` / `xing`(Xing・LAME タグ)/ `stream`(入力の解析)/ `trim` に分ける | — |
 | `cli/main.zig` | CLI | `zig-out/bin/kiln` |
 | `wasm/main.zig` | wasm の export 関数 | `zig-out/wasm/kiln.wasm` |
@@ -69,6 +70,19 @@ kiln trim <input> <output> [--start TIME] [--end TIME | --duration TIME]
 - `mp3.trim` は、秒で指定されたときだけ、サンプルレートを知るために先に `kiln_mp3_probe` を呼ぶ。サンプル数だけの指定では入力の解析は 1 回で済む(戻り値の秒は `kiln_mp3_trim` が返すサンプルレートで計算する)
 - `startSample` / `endSample` に BigInt を渡すときは 0 以上 2^64 未満でなければ `RangeError` にする(u64 の引数で桁あふれしないように)
 - サンプル位置は u64 なので、export 関数の引数・戻り値は JS では BigInt になる
+
+### 2.4 PCM
+
+```zig
+// 形式: .u8(8bit 符号なし)/ .i16 / .i24(3 バイト詰め)/ .i32 / .f32 / .f64。リトルエンディアン、インターリーブ
+kiln.pcm.toF32(.i24, bytes, samples);            // バイト列 → f32
+var q: kiln.pcm.Quantizer = .init(.tpdf);        // .none なら四捨五入とクリップだけ
+kiln.pcm.fromF32(.i16, samples, bytes, &q);      // f32 → バイト列
+```
+
+- PCM は読み込んだ元の形式のまま持ち、必要なときだけ f32 と変換する(WAV → WAV などを無劣化にするため)
+- 整数と浮動小数点の対応は `値 / 2^(bits - 1)`。16 / 24bit と 8bit は、整数 → f32 → 整数で元に戻る
+- 整数への変換では、既定で TPDF ディザ(振幅 ±1 LSB)をかける。乱数の種は固定なので、同じ入力からは毎回同じ結果になる。範囲外の値はクリップし、NaN は 0 にする。浮動小数点への変換ではクリップしない
 
 ## 3. Zig 0.17.1 で確認したこと
 
