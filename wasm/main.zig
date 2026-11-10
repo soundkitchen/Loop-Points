@@ -348,3 +348,14 @@ export fn kiln_mp3_to_flac(ptr: [*]const u8, len: usize, start: u64, end: u64, h
     values = .{ r.start, r.end, r.sample_rate, r.channels, r.invalid_frames };
     return true;
 }
+
+/// FLAC を区間 [start, end) で切り出す(位置はサンプル数。has_end が false なら末尾まで)。
+/// 成功すると出力を kiln_output_* に、kiln_value の 0: start、1: end、2: サンプルレート、
+/// 4: 壊れたフレーム(無音として作り直した)の数を置く(3 は 0)
+export fn kiln_flac_trim(ptr: [*]const u8, len: usize, start: u64, end: u64, has_end: bool) bool {
+    kiln_output_free();
+    const t = kiln.flac.trimAlloc(gpa, ptr[0..len], .{ .start = start, .end = if (has_end) end else null }) catch |err| return fail(err);
+    output = t.data;
+    values = .{ t.start, t.end, t.sample_rate, 0, t.invalid_frames };
+    return true;
+}

@@ -165,6 +165,11 @@ export interface Wav {
 export interface Flac {
   probe(input: BytesInput): FlacInfo;
   /**
+   * FLAC のまま切り出す(可逆。区間の先頭と末尾にかかるフレームだけを作り直す)。結果は FLAC のバイト列。
+   * `invalidFrames` は、区間にかかった壊れたフレーム(無音として作り直した)の数
+   */
+  trim(input: BytesInput, options?: RangeOptions): RangeResult & { data: Uint8Array<ArrayBuffer>; invalidFrames: number };
+  /**
    * デコードする。`channels` はチャンネルごとの PCM(整数のサンプルを 2^(bitsPerSample - 1) で割ったもの)。
    * `invalidFrames` は復号できなかった(無音にした)フレームの数
    */

@@ -117,7 +117,7 @@ pub const Encoder = struct {
     gpa: std.mem.Allocator,
     w: *Io.Writer,
     options: Options,
-    preset: Preset,
+    fe: FrameEncoder,
     /// たまっている PCM(チャンネルごとに block_size 個ずつ)
     block: []i64,
     fill: usize = 0,
@@ -127,67 +127,35 @@ pub const Encoder = struct {
     min_frame: u32 = std.math.maxInt(u32),
     max_frame: u32 = 0,
     q: pcm.Quantizer,
-    /// 0..3: ステレオでは左・右・side・mid、それ以外は 0 だけを使い回す
-    slots: [4]Slot,
-    windows: []f64,
-    /// `windows` を作ったときのブロック長(最後の短いブロックで作り直す)
-    windows_n: usize = 0,
-    wbuf: []f64,
-    out: []u8,
 
     pub fn init(gpa: std.mem.Allocator, w: *Io.Writer, options: Options) InitError!Encoder {
-        if (options.channels < 1 or options.channels > 8) return error.InvalidOptions;
-        if (options.bits_per_sample < 4 or options.bits_per_sample > 32) return error.InvalidOptions;
-        if (options.sample_rate == 0 or options.sample_rate >= 1 << 20) return error.InvalidOptions;
-        if (options.compression > max_compression) return error.InvalidOptions;
         if (options.total_samples) |t| if (t > max_total) return error.InvalidOptions;
         if (options.vendor.len > 1 << 20) return error.InvalidOptions;
-        const preset = presets[options.compression];
-        const bs = preset.block_size;
-
+        var fe: FrameEncoder = try .init(gpa, .{
+            .sample_rate = options.sample_rate,
+            .channels = options.channels,
+            .bits_per_sample = options.bits_per_sample,
+            .compression = options.compression,
+        }, null);
+        errdefer fe.deinit();
+        const block = try gpa.alloc(i64, fe.preset.block_size * options.channels);
+        errdefer gpa.free(block);
         var e: Encoder = .{
             .gpa = gpa,
             .w = w,
             .options = options,
-            .preset = preset,
-            .block = &.{},
+            .fe = fe,
+            .block = block,
             .md5 = .init(.{}),
             .q = .init(options.dither),
-            .slots = undefined,
-            .windows = &.{},
-            .wbuf = &.{},
-            .out = &.{},
         };
-        for (&e.slots) |*s| s.* = .{ .sig = &.{}, .res = .{ &.{}, &.{} } };
-        errdefer e.deinit();
-        e.block = try gpa.alloc(i64, bs * options.channels);
-        // 相関除去を試すときだけ、左・右・side・mid の 4 つを使う
-        const nslots: usize = if (options.channels == 2 and preset.stereo != .independent) 4 else 1;
-        for (e.slots[0..nslots]) |*s| {
-            s.sig = try gpa.alloc(i64, bs);
-            s.res = .{ try gpa.alloc(i64, bs), try gpa.alloc(i64, bs) };
-        }
-        if (preset.max_lpc_order > 0) {
-            e.windows = try gpa.alloc(f64, lpc.windowCount(preset.subdivide) * bs);
-            e.wbuf = try gpa.alloc(f64, bs);
-        }
-        e.out = try gpa.alloc(u8, maxFrameLen(bs, options.bits_per_sample, options.channels));
-
         try e.writeHeader();
         return e;
     }
 
     pub fn deinit(e: *Encoder) void {
-        const gpa = e.gpa;
-        gpa.free(e.block);
-        for (&e.slots) |*s| {
-            gpa.free(s.sig);
-            gpa.free(s.res[0]);
-            gpa.free(s.res[1]);
-        }
-        gpa.free(e.windows);
-        gpa.free(e.wbuf);
-        gpa.free(e.out);
+        e.gpa.free(e.block);
+        e.fe.deinit();
         e.* = undefined;
     }
 
@@ -209,20 +177,18 @@ pub const Encoder = struct {
 
     /// 今の状態の STREAMINFO(`finish` の前は、長さが分かっていればそれ、MD5 とフレームの大きさは不明)
     fn streamInfo(e: *Encoder) [34]u8 {
-        var b: [34]u8 = @splat(0);
-        const bs: u16 = @intCast(e.preset.block_size);
-        std.mem.writeInt(u16, b[0..2], bs, .big);
-        std.mem.writeInt(u16, b[2..4], bs, .big);
-        if (e.max_frame > 0) {
-            std.mem.writeInt(u24, b[4..7], @intCast(@min(e.min_frame, max_u24)), .big);
-            std.mem.writeInt(u24, b[7..10], @intCast(@min(e.max_frame, max_u24)), .big);
-        }
+        const bs: u16 = @intCast(e.fe.preset.block_size);
         const total = if (e.max_frame > 0) e.total else e.options.total_samples orelse 0;
-        const v: u64 = (@as(u64, e.options.sample_rate) << 44) |
-            (@as(u64, e.options.channels - 1) << 41) |
-            (@as(u64, e.options.bits_per_sample - 1) << 36) | total;
-        std.mem.writeInt(u64, b[10..18], v, .big);
-        return b;
+        return streamInfoBytes(.{
+            .min_block = bs,
+            .max_block = bs,
+            .min_frame = if (e.max_frame > 0) e.min_frame else 0,
+            .max_frame = e.max_frame,
+            .sample_rate = e.options.sample_rate,
+            .channels = e.options.channels,
+            .bits_per_sample = e.options.bits_per_sample,
+            .total = total,
+        });
     }
 
     /// インターリーブした整数(`bits_per_sample` ビットの符号付き)を書く。`samples.len` はチャンネル数の倍数
@@ -231,8 +197,8 @@ pub const Encoder = struct {
         std.debug.assert(samples.len % nch == 0);
         const frames = samples.len / nch;
         if (e.total + frames > max_total) return error.TooLarge;
-        e.updateMd5(samples);
-        const bs = e.preset.block_size;
+        md5Update(&e.md5, e.options.bits_per_sample, samples);
+        const bs = e.fe.preset.block_size;
         var i: usize = 0;
         while (i < frames) {
             const n = @min(bs - e.fill, frames - i);
@@ -260,23 +226,6 @@ pub const Encoder = struct {
         }
     }
 
-    /// MD5 は、サンプルを (ビット深度 + 7) / 8 バイトのリトルエンディアンにしたものから計算する(RFC 9639 §8.2)
-    fn updateMd5(e: *Encoder, samples: []const i32) void {
-        const width = (@as(usize, e.options.bits_per_sample) + 7) / 8;
-        var buf: [4096]u8 = undefined;
-        const per = buf.len / 4;
-        var i: usize = 0;
-        while (i < samples.len) {
-            const n = @min(per, samples.len - i);
-            for (samples[i..][0..n], 0..) |v, j| {
-                const u: u32 = @bitCast(v);
-                for (0..width) |k| buf[j * width + k] = @truncate(u >> @intCast(8 * k));
-            }
-            e.md5.update(buf[0 .. n * width]);
-            i += n;
-        }
-    }
-
     /// 残りを書き、STREAMINFO の書き戻しを返す
     pub fn finish(e: *Encoder) Error!StreamInfoPatch {
         if (e.fill > 0) try e.encodeBlock();
@@ -288,17 +237,147 @@ pub const Encoder = struct {
         return .{ .offset = stream_info_offset, .bytes = info };
     }
 
-    // --- フレームの符号化 ---
-
     fn encodeBlock(e: *Encoder) WriteError!void {
         const n = e.fill;
-        const bs = e.preset.block_size;
-        const nch = e.options.channels;
-        const b: u6 = @intCast(e.options.bits_per_sample);
+        const bs = e.fe.preset.block_size;
+        var chans: [8][]const i64 = undefined;
+        for (0..e.options.channels) |ch| chans[ch] = e.block[ch * bs ..][0..n];
+        const bytes = e.fe.encode(chans[0..e.options.channels], e.frame_number, false);
+        try e.w.writeAll(bytes);
+        const len: u32 = @intCast(bytes.len);
+        e.min_frame = @min(e.min_frame, len);
+        e.max_frame = @max(e.max_frame, len);
+        e.frame_number += 1;
+        e.fill = 0;
+    }
+};
+
+/// MD5 を、サンプルを (ビット深度 + 7) / 8 バイトのリトルエンディアンにしたもので更新する(RFC 9639 §8.2)
+pub fn md5Update(md5: *std.crypto.hash.Md5, bits_per_sample: u8, samples: []const i32) void {
+    const width = (@as(usize, bits_per_sample) + 7) / 8;
+    var buf: [4096]u8 = undefined;
+    const per = buf.len / 4;
+    var i: usize = 0;
+    while (i < samples.len) {
+        const n = @min(per, samples.len - i);
+        for (samples[i..][0..n], 0..) |v, j| {
+            const u: u32 = @bitCast(v);
+            for (0..width) |k| buf[j * width + k] = @truncate(u >> @intCast(8 * k));
+        }
+        md5.update(buf[0 .. n * width]);
+        i += n;
+    }
+}
+
+/// STREAMINFO の中身
+pub const StreamInfoFields = struct {
+    min_block: u16,
+    max_block: u16,
+    /// フレームの大きさ(0 なら不明)
+    min_frame: u32,
+    max_frame: u32,
+    sample_rate: u32,
+    channels: u8,
+    bits_per_sample: u8,
+    total: u64,
+};
+
+/// STREAMINFO の 34 バイト(MD5 は 0)
+pub fn streamInfoBytes(f: StreamInfoFields) [34]u8 {
+    var b: [34]u8 = @splat(0);
+    std.mem.writeInt(u16, b[0..2], f.min_block, .big);
+    std.mem.writeInt(u16, b[2..4], f.max_block, .big);
+    std.mem.writeInt(u24, b[4..7], @intCast(@min(f.min_frame, max_u24)), .big);
+    std.mem.writeInt(u24, b[7..10], @intCast(@min(f.max_frame, max_u24)), .big);
+    const v: u64 = (@as(u64, f.sample_rate) << 44) |
+        (@as(u64, f.channels - 1) << 41) |
+        (@as(u64, f.bits_per_sample - 1) << 36) | f.total;
+    std.mem.writeInt(u64, b[10..18], v, .big);
+    return b;
+}
+
+/// 1 フレームの符号化(ストリームのヘッダや MD5 は扱わない)。`Encoder` と FLAC の切り出しが使う
+pub const FrameEncoder = struct {
+    gpa: std.mem.Allocator,
+    preset: Preset,
+    channels: u8,
+    bits_per_sample: u8,
+    sample_rate: u32,
+    /// 0..3: ステレオでは左・右・side・mid、それ以外は 0 だけを使い回す
+    slots: [4]Slot,
+    windows: []f64,
+    /// `windows` を作ったときのブロック長(長さの違うブロックで作り直す)
+    windows_n: usize = 0,
+    wbuf: []f64,
+    out: []u8,
+
+    pub const Params = struct {
+        sample_rate: u32,
+        channels: u8,
+        bits_per_sample: u8,
+        compression: u8,
+    };
+
+    /// `max_block` は符号化するブロックの最大の長さ(null なら段階のブロック長)。65535 まで
+    pub fn init(gpa: std.mem.Allocator, params: Params, max_block: ?u32) error{ InvalidOptions, OutOfMemory }!FrameEncoder {
+        if (params.channels < 1 or params.channels > 8) return error.InvalidOptions;
+        if (params.bits_per_sample < 4 or params.bits_per_sample > 32) return error.InvalidOptions;
+        if (params.sample_rate == 0 or params.sample_rate >= 1 << 20) return error.InvalidOptions;
+        if (params.compression > max_compression) return error.InvalidOptions;
+        const preset = presets[params.compression];
+        const cap: usize = max_block orelse preset.block_size;
+        if (cap == 0 or cap > 65535) return error.InvalidOptions;
+        var e: FrameEncoder = .{
+            .gpa = gpa,
+            .preset = preset,
+            .channels = params.channels,
+            .bits_per_sample = params.bits_per_sample,
+            .sample_rate = params.sample_rate,
+            .slots = undefined,
+            .windows = &.{},
+            .wbuf = &.{},
+            .out = &.{},
+        };
+        for (&e.slots) |*s| s.* = .{ .sig = &.{}, .res = .{ &.{}, &.{} } };
+        errdefer e.deinit();
+        // 相関除去を試すときだけ、左・右・side・mid の 4 つを使う
+        const nslots: usize = if (params.channels == 2 and preset.stereo != .independent) 4 else 1;
+        for (e.slots[0..nslots]) |*s| {
+            s.sig = try gpa.alloc(i64, cap);
+            s.res = .{ try gpa.alloc(i64, cap), try gpa.alloc(i64, cap) };
+        }
+        if (preset.max_lpc_order > 0) {
+            e.windows = try gpa.alloc(f64, lpc.windowCount(preset.subdivide) * cap);
+            e.wbuf = try gpa.alloc(f64, cap);
+        }
+        e.out = try gpa.alloc(u8, maxFrameLen(@intCast(cap), params.bits_per_sample, params.channels));
+        return e;
+    }
+
+    pub fn deinit(e: *FrameEncoder) void {
+        const gpa = e.gpa;
+        for (&e.slots) |*s| {
+            gpa.free(s.sig);
+            gpa.free(s.res[0]);
+            gpa.free(s.res[1]);
+        }
+        gpa.free(e.windows);
+        gpa.free(e.wbuf);
+        gpa.free(e.out);
+        e.* = undefined;
+    }
+
+    /// チャンネルごとのサンプル `chans`(どれも同じ長さ n、1 <= n <= max_block)を 1 フレームに符号化し、
+    /// フレームのバイト列(次の呼び出しまで有効)を返す。`variable` なら可変ブロック長のヘッダで、
+    /// `number` はサンプル位置。そうでなければ固定ブロック長のヘッダで、`number` はフレーム番号
+    pub fn encode(e: *FrameEncoder, chans: []const []const i64, number: u64, variable: bool) []const u8 {
+        const n = chans[0].len;
+        const nch = e.channels;
+        const b: u6 = @intCast(e.bits_per_sample);
         var bw: bits.Writer = .{ .buf = e.out };
         if (nch == 2 and e.preset.stereo != .independent) {
-            const l = e.block[0..n];
-            const r = e.block[bs..][0..n];
+            const l = chans[0];
+            const r = chans[1];
             // side(左 - 右)と mid((左 + 右) >> 1)。side は 1 ビット多い
             const side = e.slots[2].res[0][0..n];
             const mid = e.slots[3].res[1][0..n];
@@ -324,46 +403,40 @@ pub const Encoder = struct {
                     break :blk a;
                 },
             };
-            e.writeFrameHeader(&bw, n, assignment);
-            for (assignmentSlots(assignment)) |slot| e.writeSubframe(&bw, slot);
+            e.writeFrameHeader(&bw, n, assignment, number, variable);
+            for (assignmentSlots(assignment)) |slot| e.writeSubframe(&bw, slot, n);
         } else {
-            e.writeFrameHeader(&bw, n, .independent);
-            for (0..nch) |ch| {
-                e.encodeSignal(0, e.block[ch * bs ..][0..n], b);
-                e.writeSubframe(&bw, 0);
+            e.writeFrameHeader(&bw, n, .independent, number, variable);
+            for (chans) |c| {
+                e.encodeSignal(0, c, b);
+                e.writeSubframe(&bw, 0, n);
             }
         }
         bw.alignByte();
         const crc = frame.Crc16.hash(bw.written());
         bw.put(crc, 16);
-        const bytes = bw.written();
-        try e.w.writeAll(bytes);
-        const len: u32 = @intCast(bytes.len);
-        e.min_frame = @min(e.min_frame, len);
-        e.max_frame = @max(e.max_frame, len);
-        e.frame_number += 1;
-        e.fill = 0;
+        return bw.written();
     }
 
-    fn writeFrameHeader(e: *Encoder, bw: *bits.Writer, n: usize, assignment: frame.Assignment) void {
+    fn writeFrameHeader(e: *FrameEncoder, bw: *bits.Writer, n: usize, assignment: frame.Assignment, number: u64, variable: bool) void {
         const start = bw.len;
-        bw.put(0xFFF8, 16);
+        bw.put(if (variable) 0xFFF9 else 0xFFF8, 16);
         const bs_code = blockSizeCode(n);
-        const sr_code = sampleRateCode(e.options.sample_rate);
+        const sr_code = sampleRateCode(e.sample_rate);
         bw.put(bs_code, 4);
         bw.put(sr_code, 4);
         const ch_code: u64 = switch (assignment) {
-            .independent => e.options.channels - 1,
+            .independent => e.channels - 1,
             .left_side => 8,
             .side_right => 9,
             .mid_side => 10,
         };
         bw.put(ch_code, 4);
-        bw.put(bitsCode(e.options.bits_per_sample), 3);
+        bw.put(bitsCode(e.bits_per_sample), 3);
         bw.put(0, 1);
-        putCodedNumber(bw, e.frame_number);
+        putCodedNumber(bw, number);
         if (bs_code == 6) bw.put(n - 1, 8) else if (bs_code == 7) bw.put(n - 1, 16);
-        const sr = e.options.sample_rate;
+        const sr = e.sample_rate;
         switch (sr_code) {
             12 => bw.put(sr / 1000, 8),
             13 => bw.put(sr, 16),
@@ -374,7 +447,7 @@ pub const Encoder = struct {
     }
 
     /// 信号 `x`(`bps` ビット)の最も小さい符号化の方法を `slots[slot].plan` に求める
-    fn encodeSignal(e: *Encoder, slot: usize, x: []const i64, bps: u6) void {
+    fn encodeSignal(e: *FrameEncoder, slot: usize, x: []const i64, bps: u6) void {
         const s = &e.slots[slot];
         const n = x.len;
         var p: Plan = .{};
@@ -426,7 +499,7 @@ pub const Encoder = struct {
             var autoc: [lpc.max_order + 1]f64 = undefined;
             var coefs: [lpc.max_order][lpc.max_order]f64 = undefined;
             var errors: [lpc.max_order]f64 = undefined;
-            const base_precision = qlpPrecision(e.options.bits_per_sample, e.preset.block_size);
+            const base_precision = qlpPrecision(e.bits_per_sample, @intCast(n));
             for (0..lpc.windowCount(e.preset.subdivide)) |wi| {
                 lpc.autocorrelation(sig, e.windows[wi * n ..][0..n], e.wbuf, autoc[0 .. max_order + 1]);
                 if (autoc[0] <= 0) continue;
@@ -458,7 +531,7 @@ pub const Encoder = struct {
     }
 
     /// 残差 `res`(長さ n - order)の Rice 符号の分割とパラメータを決め、残差の部分のビット数を返す
-    fn ricePlan(e: *Encoder, p: *Plan, res: []const i64, n: usize) ?u64 {
+    fn ricePlan(e: *FrameEncoder, p: *Plan, res: []const i64, n: usize) ?u64 {
         const order = p.order;
         // 分割数でブロック長が割り切れ、最初の分割に予測の次数より多いサンプルが入る最大の次数
         var maxp: u4 = @intCast(@min(@as(usize, e.preset.max_porder), @ctz(n)));
@@ -535,10 +608,9 @@ pub const Encoder = struct {
         return exact;
     }
 
-    fn writeSubframe(e: *Encoder, bw: *bits.Writer, slot: usize) void {
+    fn writeSubframe(e: *FrameEncoder, bw: *bits.Writer, slot: usize, n: usize) void {
         const s = &e.slots[slot];
         const p = &s.plan;
-        const n = e.fill;
         const sig = s.sig[0..n];
         bw.put(0, 1);
         const kind: u64 = switch (p.kind) {
@@ -775,8 +847,8 @@ fn bitsCode(b: u8) u64 {
     };
 }
 
-/// フレーム番号を可変長の符号(UTF-8 に似たもの)で書く
-fn putCodedNumber(bw: *bits.Writer, v: u64) void {
+/// フレーム番号(またはサンプル位置)を可変長の符号(UTF-8 に似たもの)で書く
+pub fn putCodedNumber(bw: *bits.Writer, v: u64) void {
     if (v < 0x80) return bw.put(v, 8);
     // バイト数ごとに書けるビット数(2 バイトなら 5 + 6 …)
     const caps = [_]u6{ 7, 11, 16, 21, 26, 31, 36 };

@@ -16,7 +16,7 @@
 | `src/pcm.zig` | PCM のサンプル形式と、f32 との変換(`kiln.pcm`) | — |
 | `src/mp3.zig`, `src/mp3/` | MP3 の解析と無劣化トリム(`kiln.mp3`)。`frame`(フレームヘッダ)/ `id3` / `xing`(Xing・LAME タグ)/ `stream`(入力の解析)/ `trim` に分ける。デコーダは `bits`(ビット読み取り)/ `huffman` / `layer3`(周波数領域の処理)/ `synth`(IMDCT と合成フィルタ)/ `decoder`(設計は [`mp3-decoder.md`](mp3-decoder.md)) | — |
 | `src/wav.zig`, `src/wav/` | WAV の解析とサンプル精度のトリム、エンコーダ(`kiln.wav`)。`parse`(チャンクの解析)/ `header`(ヘッダの書き出し)/ `encoder` に分ける | — |
-| `src/flac.zig`, `src/flac/` | FLAC の解析・復号・書き出し(`kiln.flac`)。`bits`(ビットの読み書き)/ `frame`(フレームヘッダ)/ `metadata`(`fLaC` とメタデータブロック)/ `stream`(フレームの区切り)/ `decoder`(サブフレームの復号)/ `encoder`(エンコーダ)/ `lpc`(線形予測の分析)に分ける(設計は [`flac.md`](flac.md)) | — |
+| `src/flac.zig`, `src/flac/` | FLAC の解析・復号・書き出し(`kiln.flac`)。`bits`(ビットの読み書き)/ `frame`(フレームヘッダ)/ `metadata`(`fLaC` とメタデータブロック)/ `stream`(フレームの区切り)/ `decoder`(サブフレームの復号)/ `encoder`(エンコーダ)/ `lpc`(線形予測の分析)/ `trim`(FLAC → FLAC の切り出し)に分ける(設計は [`flac.md`](flac.md)) | — |
 | `cli/main.zig` | CLI | `zig-out/bin/kiln` |
 | `wasm/main.zig` | wasm の export 関数 | `zig-out/wasm/kiln.wasm` |
 | `wasm/kiln.js` | JS ラッパー(ES module。`load()` で wasm を読み込む) | `zig-out/wasm/kiln.js` |
@@ -81,12 +81,13 @@ kiln trim <input> <output> [--start TIME] [--end TIME | --duration TIME]
 
 - `<input>` / `<output>` は `-` で stdin / stdout
 - 入力の形式(MP3 / WAV / FLAC)は、コアの `kiln.detect` が判定する。拡張子は見ない。WAV は先頭のバイト列(RIFF / RF64 / RIFX と WAVE)、FLAC は先頭(ID3v2 タグがあればその後)の `fLaC` か Ogg FLAC の印で判定し、それ以外は MP3 の解析に任せる(先頭にゴミがある MP3 も受け付ける)
-- `--format mp3|wav|flac` で出力の形式を指定する。省くと入力と同じ形式。変換できるのは MP3 / FLAC → WAV と WAV / MP3 → FLAC で、ほかの組み合わせ(MP3 への変換)はエラー(終了コード 1)。FLAC → FLAC の切り出しはまだないので、FLAC の入力は `--format wav` が要る
+- `--format mp3|wav|flac` で出力の形式を指定する。省くと入力と同じ形式。変換できるのは MP3 / FLAC → WAV と WAV / MP3 → FLAC で、ほかの組み合わせ(MP3 への変換)はエラー(終了コード 1)。FLAC → FLAC は切り出し(`kiln.flac.trim`。境目のフレームだけ作り直す。[`flac.md`](flac.md) §7)
 - WAV に変換するときだけ `--sample-format u8|i16|i24|i32|f32|f64` を使う。形式の既定は、MP3 は `i16`、FLAC はビット深度を保つ形式([`flac.md`](flac.md) §4)
-- FLAC に書くときだけ `--bits 4〜32`(既定は、整数の WAV なら元のビット深度、それ以外は 16)と `--compression 0〜8`(既定は 5。flac コマンドの -0〜-8 と同じ。[`flac.md`](flac.md) §6)を使う
+- WAV / MP3 を FLAC に変換するときだけ `--bits 4〜32`(既定は、整数の WAV なら元のビット深度、それ以外は 16)と `--compression 0〜8`(既定は 5。flac コマンドの -0〜-8 と同じ。[`flac.md`](flac.md) §6)を使う
 - `--dither tpdf|none`(既定は `tpdf`)は変換するときだけ使う。オプションを使わない組み合わせで指定すると引数の誤り(終了コード 2)
-- FLAC は STREAMINFO を最後に書き戻す。ファイルへはフレームを流して書き(`kiln.wav.toFlac` / `kiln.mp3.toFlac`)、閉じる前に先頭の STREAMINFO を位置を指定して書き戻す(`File.writePositionalAll`。出力全体をメモリにためない)。stdout へは書き戻せないので、メモリ上で書き戻してから書く
-- MP3 → WAV / FLAC では、タグなしの入力でも先頭を 529 に切り上げない(`kiln.mp3.decode` と同じ)。MP3 / FLAC → WAV と MP3 → FLAC で復号できなかったフレームがあれば、その数を stderr に警告する(終了コードは 0)
+- FLAC の入力は、フレームの一覧(`kiln.flac.Index`)を 1 回だけ作り、長さを求めるのと、切り出し・WAV への変換(`Index.trim` / `Index.toWav`)で使い回す(区切りを探す走査を繰り返さない)
+- FLAC は STREAMINFO を最後に書き戻す。ファイルへはフレームを流して書き(`kiln.wav.toFlac` / `kiln.mp3.toFlac` / `kiln.flac.Index.trim`)、閉じる前に先頭の STREAMINFO を位置を指定して書き戻す(`File.writePositionalAll`。出力全体をメモリにためない)。stdout へは書き戻せないので、メモリ上で書き戻してから書く
+- MP3 → WAV / FLAC では、タグなしの入力でも先頭を 529 に切り上げない(`kiln.mp3.decode` と同じ)。MP3 / FLAC → WAV、MP3 → FLAC、FLAC → FLAC で復号できなかったフレームがあれば、その数を stderr に警告する(終了コードは 0。FLAC → FLAC では無音として作り直したフレームの数)
 - TIME は秒(`1.5`)、分:秒 / 時:分:秒(`1:02.5`)、サンプル数(`66150s`)。秒は浮動小数点を使わずに解析し、切り捨てでサンプル位置にする
 - `--duration` は、切り上げた後の実際の開始位置から数える(タグなしの入力で `--start` を省いても、出力の長さは指定どおり)
 - 出力ファイルは一時ファイルに書き、最後まで書けたときだけ置き換える(`Dir.createFileAtomic`)。失敗したときは、既存の出力ファイルは元のまま残る。置き換えはリネームなので、出力先がシンボリックリンクならリンク自体が置き換わる
@@ -105,13 +106,14 @@ kiln trim <input> <output> [--start TIME] [--end TIME | --duration TIME]
 - `mp3.decode(bytes, options)` は、区間をデコードしてチャンネルごとの `Float32Array` を `channels` に返す(`AudioBuffer` の `getChannelData` と同じ並び)。`mp3.toWav(bytes, { ...区間, format = 'i16', dither = 'tpdf' })` は WAV のバイト列を返し、大きな PCM を JS に引き出さずに済む。位置の指定は `trim` と同じ
 - `mp3.decode` / `mp3.toWav` / `mp3.toFlac` の戻り値の `invalidFrames` は、復号できなかった(無音にした)フレームの数
 - FLAC の書き出しは `flac.encode(source, { sampleRate, bitsPerSample = 16, compression = 5, dither = 'tpdf' })`(`wav.encode` と同じく AudioBuffer か `Float32Array[]`)、`wav.toFlac(bytes, { ...区間, bitsPerSample, compression, dither })`(`bitsPerSample` の既定は整数の WAV なら元のビット深度)、`mp3.toFlac(bytes, { ...区間, bitsPerSample = 16, compression, dither })`。`bitsPerSample`(4〜32 の整数)と `compression`(0〜8 の整数)が外れれば JS 側で `RangeError`
+- `flac.trim(bytes, 区間)` は FLAC のまま切り出し、`{ data, ...区間, invalidFrames }` を返す。`kiln_flac_trim` の `kiln_value` は 0: start、1: end、2: サンプルレート、4: 壊れたフレームの数(3 は 0)
 - `kiln_flac_encode` / `kiln_wav_to_flac` / `kiln_mp3_to_flac` の `kiln_value` は、それぞれ `kiln_wav_encode`(なし)/ `kiln_wav_trim` / `kiln_mp3_decode` と同じ並び。`kiln_wav_to_flac` は `has_bits` が false のときにビット深度をコアに任せる。AudioBuffer を写す処理(`withPlanar`)は `wav.encode` と `flac.encode` で共通
 - `flac.probe(bytes)` は `{ sampleRate, channels, bitsPerSample, samples, frames, duration }` を返す。`flac.decode` / `flac.toWav` は `mp3.decode` / `mp3.toWav` と同じ形で、`flac.decode` の値は整数のサンプルを 2^(bitsPerSample - 1) で割ったもの。`flac.toWav` の `format` を省くとビット深度を保つ形式(元の PCM のまま)。`kiln_flac_to_wav` は `has_format` が false のときに形式をコアに任せる
 - `kiln_flac_decode` / `kiln_flac_to_wav` の `kiln_value` の並びは MP3 と同じ。`kiln_flac_probe` は 0: サンプルレート、1: チャンネル数、2: ビット深度、3: サンプル数、4: フレーム数。`kiln_flac_format` はメタデータ(STREAMINFO)だけを読み、0: サンプルレート、1: チャンネル数、2: ビット深度を置く(フレームを走査しないので軽い)
 - デコードした PCM をチャンネルごとの f32 に並べる sink(`PlanarSink`)は MP3 と FLAC で共通。FLAC の整数は 2^-(bits - 1) を掛けて f32 にする
 - `kiln_mp3_decode` は、チャンネルごとに並べた f32 を出力のバイト列に置き、チャンネル数を `kiln_value(3)`、復号できなかったフレームの数を `kiln_value(4)` で返す。`kiln_mp3_to_wav` も同じ並び(0: start、1: end、2: サンプルレート、3: チャンネル数、4: 復号できなかったフレームの数)で返す。WAV は `kiln.mp3.toWavAlloc` で作り、入力の解析は 1 回、出力は前もって計算した大きさで一度に確保する
 - `wav.encode` のサンプルは、`kiln_alloc_f32` で確保した領域(4 バイト境界)にチャンネルごとに続けて書き、`kiln_wav_encode` に渡す。形式は `kiln.pcm.Format` の番号でやり取りする(JS 側の `FORMATS` と並びを合わせる)
-- `mp3.trim` / `mp3.decode` / `mp3.toWav` / `mp3.toFlac` / `wav.trim` / `wav.toFlac` / `flac.decode` / `flac.toWav` は、秒で指定されたときだけ、サンプルレートを知るために先に `kiln_mp3_probe` / `kiln_wav_probe` / `kiln_flac_format` を呼ぶ(FLAC はメタデータだけを読む)。サンプル数だけの指定では、`trim` と `toWav` と `toFlac` と `flac.decode` は入力の解析が 1 回で済む(戻り値の秒は各 export が返すサンプルレートで計算する)。`kiln_mp3_decode` は、出力の大きさを決めるために中で probe してから復号するので、サンプル数だけの指定でも解析は 2 回(`kiln_flac_decode` はフレームの一覧 `kiln.flac.Index` を使い回すので 1 回)
+- `mp3.trim` / `mp3.decode` / `mp3.toWav` / `mp3.toFlac` / `wav.trim` / `wav.toFlac` / `flac.trim` / `flac.decode` / `flac.toWav` は、秒で指定されたときだけ、サンプルレートを知るために先に `kiln_mp3_probe` / `kiln_wav_probe` / `kiln_flac_format` を呼ぶ(FLAC はメタデータだけを読む)。サンプル数だけの指定では、`trim`(`flac.trim` を含む)と `toWav` と `toFlac` と `flac.decode` は入力の解析が 1 回で済む(戻り値の秒は各 export が返すサンプルレートで計算する)。`kiln_mp3_decode` は、出力の大きさを決めるために中で probe してから復号するので、サンプル数だけの指定でも解析は 2 回(`kiln_flac_decode` はフレームの一覧 `kiln.flac.Index` を使い回すので 1 回)
 - `startSample` / `endSample` に BigInt を渡すときは 0 以上 2^64 未満でなければ `RangeError` にする(u64 の引数で桁あふれしないように)
 - サンプル位置は u64 なので、export 関数の引数・戻り値は JS では BigInt になる
 
@@ -198,7 +200,14 @@ const m = try kiln.mp3.toFlacAlloc(gpa, mp3_input, .{ .start = 0 }, .{});  // m.
 - 書き出しの指定は `kiln.flac.WriteOptions`(`bits_per_sample`、`compression`、`dither`)で、WAV / MP3 / PCM のどれから書くときも同じ。エラーは `OutOfMemory` / `InvalidOptions`(チャンネル数・サンプルレート・ビット深度・段階が範囲外)/ `TooLarge` / `InternalError`
 - 壊れたフレームや失われたフレーム(番号の飛びから分かるもの)は無音にし、その数を `invalid_frames` で返す。`probe` の長さにも含める
 - 位置はフレーム単位で、最初のフレームの先頭を 0 とする。範囲外の指定は MP3 と同じく丸める
-- FLAC → FLAC の切り出しは別の PR で作る
+```zig
+// 切り出し(FLAC → FLAC)。r.patch(STREAMINFO)を出力の先頭に書き戻す
+const r = try kiln.flac.trim(gpa, input, .{ .start = 44100, .end = 88200 }, writer); // r.start / r.end / r.invalid_frames / r.patch
+const c = try kiln.flac.trimAlloc(gpa, input, .{ .start = 44100 });  // 一括版(書き戻し済み): c.data など
+_ = try ix.trim(gpa, .{ .start = 44100 }, writer);  // フレームの一覧を作ってあれば、それを使い回す
+```
+
+- 切り出しは、区間に丸ごと入るフレームをコピーし、先頭と末尾にかかるフレームだけを作り直す。出力は、最後を除くフレームの長さがそろえば固定ブロック長、そうでなければ可変ブロック長(Safari が読める形にする。詳細は [`flac.md`](flac.md) §7)。1 フレームの符号化はエンコーダと共通の `FrameEncoder`(`src/flac/encoder.zig`)
 
 ## 3. Zig 0.17.1 で確認したこと
 
