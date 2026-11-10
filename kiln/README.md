@@ -20,7 +20,7 @@ Loop Points のリポジトリ直下で実行します。
 
 ```sh
 npm run kiln:build   # zig-out/kiln.wasm をビルドする(npm run dev / build の前にも動く)
-npm run kiln:test    # Zig のテスト、kiln.ts の実行時のテスト、型の検査(Loop Points と同じ tsc)
+npm run kiln:test    # Zig のテスト、kiln.ts の実行時のテスト、型の検査(kiln/wasm/tsconfig.json)
 ```
 
 `kiln/` で Zig を直接使うこともできます。
@@ -60,7 +60,7 @@ const oggInfo = kiln.ogg.probe(oggBytes);                   // Opus のサンプ
 | パス | 内容 |
 |---|---|
 | `src/` | コア。I/O を持たず、アロケータとバイト列/サンプル列、`std.Io.Reader` / `std.Io.Writer` だけを扱う |
-| `wasm/` | wasm 向けの export 関数(`main.zig`)、JS 側の包み(`kiln.ts`。型つき)と、その実行時のテスト(`test/`) |
+| `wasm/` | wasm 向けの export 関数(`main.zig`)、JS 側の包み(`kiln.ts`。型つき)、型の検査の設定(`tsconfig.json`)、テスト(`test/`。実行時のテストと、誤った使い方が型エラーになることの検査) |
 | `testdata/` | テスト用の音声(lame で作った短い MP3、Python で書いた短い WAV、flac で作った短い FLAC、opusenc・oggenc・ffmpeg・afconvert で作った短い Ogg・m4a・aac)。作り方は [`testdata/README.md`](testdata/README.md) |
 | `docs/` | 設計と検証の記録。仕様として扱う |
 

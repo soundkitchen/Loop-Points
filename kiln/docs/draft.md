@@ -87,10 +87,10 @@ Loop Points のクロップの書き出しを受け持つ、Zig 製のライブ�
   - CLI(`kiln trim` / `kiln info`)
   - `load` の URL からの読み込み(fetch)。Loop Points は CSP で fetch を止め、wasm をバイト列で渡すため
   - `zig-out/wasm/` への kiln.js・kiln.d.ts・LICENSE のコピー
-  - kiln.d.ts の WebWorker 用と ES だけの環境用の型検査(DOM 用だけ残す)
+  - kiln.d.ts の WebWorker 用と ES だけの環境用の型検査
   - `build.zig.zon` の配布用のファイル一覧(Zig が必須とするので、ディレクトリ全体を指す形にした)
 - **残したもの**: 音を扱う API はすべて残す。FLAC への変換やデコードは、Loop Points の #16 の書き出しの方針で使う
-- **JS 側の包み**: 使うのが Loop Points(TypeScript)だけなので、`kiln.js` と型定義の `kiln.d.ts` を 1 つの `kiln.ts` にまとめた。型は Loop Points と同じ tsc で確かめ、手作業で合わせていた型定義と、その型検査(`wasm/types/`)をなくした
+- **JS 側の包み**: 使うのが Loop Points(TypeScript)だけなので、`kiln.js` と型定義の `kiln.d.ts` を 1 つの `kiln.ts` にまとめた。型は Loop Points と同じ tsc で確かめ、手作業で合わせていた型定義と、その型検査(`wasm/types/`)をなくした。誤った使い方が型エラーになることの検査だけは、型をうっかり緩めないよう `wasm/test/types.ts` に残した。Node のテストが kiln.ts を型を消して読むので、`kiln/wasm/tsconfig.json` で型を消すだけで動く書き方(`erasableSyntaxOnly`)を確かめる。mp3 / wav / flac の各経路の実行時のテスト(`wasm/test/convert.test.mjs`)を足した
 
 ## 3. まだ決めていないこと
 

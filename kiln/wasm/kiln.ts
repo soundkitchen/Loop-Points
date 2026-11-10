@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MIT
 // K!LN の JS ラッパー。kiln.wasm を読み込み、export 関数を JS から使いやすくする。
-// 型は Loop Points の tsc(npm run build と npm run kiln:test)で確かめる。Node のテストはこのファイルをそのまま読む
-// (型を消すだけで動く書き方にする。enum や namespace、コンストラクタの引数のプロパティは使わない)。
+// 型は Loop Points の tsc(npm run build と、npm run kiln:test の kiln/wasm/tsconfig.json)で確かめる。
+// Node のテストはこのファイルを型を消してそのまま読むので、型を消すだけで動く書き方にする
+// (enum や namespace、コンストラクタの引数のプロパティは使わない。kiln/wasm/tsconfig.json の erasableSyntaxOnly で確かめる)。
 
 // ---- 型 ----
 

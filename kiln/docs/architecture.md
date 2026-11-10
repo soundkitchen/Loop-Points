@@ -22,7 +22,8 @@
 | `src/flac.zig`, `src/flac/` | FLAC の解析・復号・書き出し(`kiln.flac`)。`bits`(ビットの読み書き)/ `frame`(フレームヘッダ)/ `metadata`(`fLaC` とメタデータブロック)/ `stream`(フレームの区切り)/ `decoder`(サブフレームの復号)/ `encoder`(エンコーダ)/ `lpc`(線形予測の分析)/ `trim`(FLAC → FLAC の切り出し)に分ける(設計は [`flac.md`](flac.md)) | — |
 | `wasm/main.zig` | wasm の export 関数 | `zig-out/kiln.wasm` |
 | `wasm/kiln.ts` | JS 側の包み(TypeScript。`load()` で wasm を読み込む)。型もここに書く。Loop Points はこのファイルを直接 import する | — |
-| `wasm/test/` | kiln.ts の実行時テスト(Node の `node:test`)。`wasm/kiln.ts` を型を消して読み、`zig-out/kiln.wasm` を読む | — |
+| `wasm/test/` | kiln.ts の実行時テスト(Node の `node:test`。`*.test.mjs`)。`wasm/kiln.ts` を型を消して読み、`zig-out/kiln.wasm` を読む。`types.ts` は誤った使い方が型エラーになることの検査(実行しない) | — |
+| `wasm/tsconfig.json` | kiln/wasm の型の検査の設定。Loop Points の `tsconfig.json` に `erasableSyntaxOnly`(型を消すだけで動く書き方)を足したもの | — |
 | `LICENSE` | MIT の全文 | — |
 | `THIRD_PARTY_NOTICES.md` | 外部から取り込んだコードや数表の出所とライセンス(方針は [`draft.md`](draft.md) §2.5) | — |
 | `testdata/` | テスト用の音声(MP3、WAV、FLAC、Ogg、m4a、aac)と、それを `@embedFile` するモジュール(`testdata.zig`)。作り方は `testdata/README.md` | — |
@@ -79,9 +80,9 @@ const nch = try dec.decodeFrame(frame_bytes, &pcm); // pcm: [2][1152]f32。扱�
 
 - JS に返すエラーの名前は、wasm/main.zig の `KilnError`(エラーの集合)に限る。`fail` はこの集合しか受け付けないので、export が新しいエラーを返しうるようになるとコンパイルが通らなくなる。kiln.ts の `KilnErrorCode` も同じ一覧にする(この同期は手作業。両方の定義の横に、もう一方を指すコメントがある)
 - `InternalError` は kiln の不具合(起きるはずのない食い違い。たとえば MP3 → WAV で書いた長さが WAV のヘッダと違う)のときに返す。止めずにエラーとして返すので、wasm のインスタンスはそのまま使い続けられる
-- 型は kiln.ts の中に書き、実装と同じファイルで確かめる(2026-11-11 までは kiln.js と型定義の kiln.d.ts に分けていた。[`draft.md`](draft.md) §2.9)。入力は `ArrayBufferLike | ArrayBufferView`(バイト列として読むものすべて)、出力は `Uint8Array<ArrayBuffer>` / `Float32Array<ArrayBuffer>`(そのまま `Blob` などに渡せる)。`wav.encode` は `AudioBuffer` を構造(`AudioBufferLike`)で受け、`Float32Array[]` を渡すときは `sampleRate` が必須。wasm の export 関数の型は kiln.ts の `Exports` に書く(wasm/main.zig の export を変えたら合わせる)
+- 型は kiln.ts の中に書き、実装と同じファイルで確かめる(2026-11-11 までは kiln.js と型定義の kiln.d.ts に分けていた。[`draft.md`](draft.md) §2.9)。入力は `ArrayBufferLike | ArrayBufferView`(バイト列として読むものすべて)、出力は `Uint8Array<ArrayBuffer>` / `Float32Array<ArrayBuffer>`(そのまま `Blob` などに渡せる)。`wav.encode` は `AudioBuffer` を構造(`AudioBufferLike`)で受け、`Float32Array[]` を渡すときは `sampleRate` が必須。wasm の export 関数の型は kiln.ts の `Exports` に手で写す(wasm/main.zig の export を変えたら合わせる)。引数の数や並びがずれても tsc は気づかず、wasm は足りない引数を 0 として黙って動くので、`wasm/test/convert.test.mjs` で mp3 / wav / flac の各経路を実際に呼んで確かめる
 - `load(source)` の `source` は wasm のバイト列だけで、省けない。URL からは読まない(fetch しない)。Loop Points は CSP の `connect-src 'none'` で fetch を止め、wasm をチャンクに埋め込んでバイト列で渡すため。kiln.ts に `new URL('./kiln.wasm', import.meta.url)` を書くと、Vite や webpack 5 はそれをアセットの参照とみなし、使わない kiln.wasm をビルド結果に出力する(soundkitchen/kiln#11)ので、その書き方も残さない。バイト列でない値(省いたとき、URL、`Response`、`Blob` など)は `TypeError` で reject する(`load` は async なので、投げるのではなく reject した Promise を返す)
-- kiln.ts を変えたら、Loop Points のリポジトリ直下で `npm run kiln:test` を実行する。Loop Points と同じ tsc で型を確かめ(Loop Points が import しているので、`npm run build` でも確かめる)、`wasm/test/` の Node のテストで実行時の振る舞い(`load` の引数の検査、バイト列での読み込みなど)を確かめる。Node は kiln.ts を型を消すだけで実行するので、型を消すだけで動く書き方にする(`enum`、`namespace`、コンストラクタの引数のプロパティは使わない)
+- kiln.ts を変えたら、Loop Points のリポジトリ直下で `npm run kiln:test` を実行する。`kiln/wasm/tsconfig.json` で型を確かめ(Loop Points の `tsconfig.json` の include にも kiln/wasm があるので、`npm run build` でも確かめる)、`wasm/test/` の Node のテストで実行時の振る舞いを確かめる。Node は kiln.ts を型を消すだけで実行するので、型を消すだけで動く書き方にする(`enum`、`namespace`、コンストラクタの引数のプロパティは使わない。`erasableSyntaxOnly` で確かめる)。`wasm/test/types.ts` は、誤った使い方(`start` と `startSample` の同時指定、未知の `format`、`sampleRate` のない `Float32Array[]` など)が型エラーになることを `@ts-expect-error` で確かめる。kiln.ts の型を意図して緩めるときは、ここも直す
 - export 関数は成功なら true を返し、結果(出力のバイト列や数値)をモジュール内の変数に置く。JS 側は `kiln_output_ptr` / `kiln_output_len` / `kiln_value(i)` で読み出し、失敗時は `kiln_error_ptr` / `kiln_error_len` でエラー名を読む
 - JS ラッパーは `load()` が返すオブジェクトに `mp3.probe(bytes)` / `mp3.trim(bytes, { start, end })`(秒)/ `{ startSample, endSample }`(サンプル数)を持つ。失敗時はコアのエラー名を `code` に持つ `KilnError` を投げる
 - 入力は `ArrayBuffer` / `SharedArrayBuffer` / TypedArray / `DataView`(型定義の `BytesInput`)。TypedArray と `DataView` は、要素の値ではなく下のバイト列として読む

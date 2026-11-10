@@ -139,8 +139,10 @@ if (command === 'build') {
 } else if (command === 'test') {
   run(await findZig(), ['build', 'test'], kilnDir);
   run(process.execPath, ['--test', 'wasm/test/*.test.mjs'], kilnDir);
-  // kiln/wasm/kiln.ts の型の検査。画面から import しているので、画面と同じ tsc で確かめる
-  run(process.execPath, [path.join(root, 'node_modules/typescript/bin/tsc'), '--noEmit', '-p', 'tsconfig.json']);
+  // kiln/wasm の型の検査(kiln.ts と、誤った使い方の検査の test/types.ts)。Loop Points の設定に、型を消すだけで動く
+  // 書き方の制約(erasableSyntaxOnly)を足したもの。Loop Points の tsconfig.json の include にも kiln/wasm を入れてあり、
+  // npm run build でも確かめる
+  run(process.execPath, [path.join(root, 'node_modules/typescript/bin/tsc'), '-p', 'kiln/wasm/tsconfig.json']);
 } else if (command === 'check-dist') {
   checkDist();
 } else {
