@@ -1,8 +1,6 @@
-.DS_Store
-
 # Zig のビルド成果物
 zig-out/
 .zig-cache/
 
-# Lyria の実ファイル(手元での確認用。配布しない)
+# Lyria の実ファイル(調べ直すときに置く。docs/lyria-mp3.md。公開しない)
 samples/

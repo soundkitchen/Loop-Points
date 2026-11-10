@@ -13,40 +13,23 @@ export class KilnError extends Error {
   }
 }
 
-// load は既定の読み込み先(kiln.js と同じ場所の kiln.wasm)を持たない。import.meta.url を基準にした URL をここに書くと、
-// バンドラがそれをアセットの参照とみなし、バイト列で読み込む場合にも使わない kiln.wasm をビルド結果に出力するため(soundkitchen/kiln#11)。
-// このファイルには、コメントや文字列でもその書き方を残さない
+// load は wasm のバイト列だけを受け取り、URL から fetch しない。Loop Points は CSP の connect-src 'none' で fetch を止め、
+// wasm をチャンクに埋め込んでバイト列で渡すため。import.meta.url を基準にした URL をこのファイルに書くと、
+// バンドラがそれをアセットの参照とみなし、使わない kiln.wasm をビルド結果に出力する(soundkitchen/kiln#11)。
+// コメントや文字列でもその書き方を残さない
 
 /**
  * kiln.wasm を読み込んで初期化する。
- * @param {string | { href: string } | ArrayBuffer | ArrayBufferView} source wasm の URL(文字列か、URL のように
- *   `href` を持つもの)、またはバイト列。省けない。URL でもバイト列でもない値(省いたとき、Response、Blob など)は
+ * @param {ArrayBuffer | ArrayBufferView} source wasm のバイト列。省けない。バイト列でない値(URL、Response、Blob など)は
  *   TypeError で reject する
  */
 export async function load(source) {
-  let instance;
-  const url = typeof source === 'string' ? source : typeof source?.href === 'string' ? source.href : null;
   // 別の realm(iframe など)の ArrayBuffer も通すよう、instanceof ではなく型の名前で見る
   const isBytes = ArrayBuffer.isView(source) || Object.prototype.toString.call(source) === '[object ArrayBuffer]';
-  if (url === null && !isBytes) {
-    throw new TypeError('load: pass the URL of kiln.wasm (a string or a URL) or its bytes (an ArrayBuffer or a typed array)');
+  if (!isBytes) {
+    throw new TypeError('load: pass the bytes of kiln.wasm (an ArrayBuffer or a typed array)');
   }
-  if (url !== null) {
-    const response = await fetch(url);
-    // 404 の HTML などを wasm として解釈して分かりにくいエラーにならないよう、先に確認する
-    if (!response.ok) {
-      throw new Error(`failed to fetch ${url}: ${response.status} ${response.statusText}`);
-    }
-    // ダウンロードしながらコンパイルする。サーバが application/wasm を返さない場合は
-    // instantiateStreaming が失敗するので、バイト列での読み込みに切り替える
-    try {
-      ({ instance } = await WebAssembly.instantiateStreaming(response.clone(), {}));
-    } catch {
-      ({ instance } = await WebAssembly.instantiate(await response.arrayBuffer(), {}));
-    }
-  } else {
-    ({ instance } = await WebAssembly.instantiate(source, {}));
-  }
+  const { instance } = await WebAssembly.instantiate(source, {});
   const e = instance.exports;
   const decoder = new TextDecoder();
   // export 関数が返すポインタと長さは wasm の i32 で、JS には符号付きで見える

@@ -1,5 +1,5 @@
 // kiln (kiln/) の wasm をビルドし、テストする。
-//   node scripts/kiln.mjs build       kiln/zig-out/wasm/kiln.wasm を作る (npm run dev / build の前に動く)
+//   node scripts/kiln.mjs build       kiln/zig-out/kiln.wasm を作る (npm run dev / build の前に動く)
 //   node scripts/kiln.mjs test        Zig のテスト、kiln.js の実行時のテスト、kiln.d.ts の型の検査
 //   node scripts/kiln.mjs check-dist  dist/ に .wasm のファイルがないことを確かめる (npm run build の後に動く)
 // Zig は PATH にある 0.17.1 を使う (手元は direnv で $HOME/Zig/0.17)。なければ公式のアーカイブを .zig/ に取ってきて、
@@ -139,9 +139,8 @@ if (command === 'build') {
 } else if (command === 'test') {
   run(await findZig(), ['build', 'test'], kilnDir);
   run(process.execPath, ['--test', 'wasm/test/*.test.mjs'], kilnDir);
-  for (const env of ['dom', 'worker', 'es']) {
-    run(process.execPath, [path.join(root, 'node_modules/typescript/bin/tsc'), '-p', `wasm/types/tsconfig.${env}.json`], kilnDir);
-  }
+  // kiln.d.ts の型の検査。画面側の tsc は skipLibCheck で .d.ts を検査しないので、ここで確かめる
+  run(process.execPath, [path.join(root, 'node_modules/typescript/bin/tsc'), '-p', 'wasm/types/tsconfig.dom.json'], kilnDir);
 } else if (command === 'check-dist') {
   checkDist();
 } else {
