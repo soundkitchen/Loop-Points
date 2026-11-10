@@ -5,6 +5,8 @@ import { load, type Kiln } from '../kiln.js';
 export async function usage(wasm: Uint8Array<ArrayBuffer>, bytes: Uint8Array): Promise<number> {
   const k: Kiln = await load(wasm);
   await load('file:///kiln.wasm');
+  // @ts-expect-error wasm の URL かバイト列は省けない
+  await load();
   const f = k.flac.decode(bytes, { startSample: 10n });
   const w: Uint8Array<ArrayBuffer> = k.flac.toWav(bytes, { end: 1, format: 'i24' }).data;
   const bits: number = k.flac.probe(bytes).bitsPerSample;

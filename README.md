@@ -55,7 +55,7 @@ kiln trim in.flac out.flac --start 10 --end 20           # FLAC のまま切り�
 ```js
 import { load } from './kiln.js';
 
-const kiln = await load();
+const kiln = await load(new URL('./kiln.wasm', import.meta.url));
 const bytes = new Uint8Array(await file.arrayBuffer());
 const info = kiln.mp3.probe(bytes);                 // { sampleRate, channels, samples, duration, ... }
 const { data } = kiln.mp3.trim(bytes, { start: 1.5, end: 10 }); // 秒。startSample / endSample でサンプル数も可
@@ -83,8 +83,9 @@ const { data: flacCut } = kiln.flac.trim(flacBytes, { start: 1.5, end: 10 });   
 
 - 失敗すると `KilnError` を投げます。`code` はエラーの名前(`'NotMp3'` / `'EmptyRange'` など。一覧は `kiln.d.ts` の `KilnErrorCode`)
 - 処理は同期です。何分もある曲のデコードには数百 ms かかるので、メインスレッドを止めたくなければ Worker で動かしてください
+- `load` には wasm の URL(fetch します)かバイト列を必ず渡します。既定の読み込み先は持ちません。`new URL('./kiln.wasm', import.meta.url)` を kiln.js の中に書くと、バイト列で読み込むときにも、Vite などのバンドラが使わない `kiln.wasm` をビルド結果に出力してしまうためです
 
-**fetch を使わずに読み込む**: `load()` は既定で `kiln.wasm` を fetch します。CSP で `connect-src` を禁じているときなどは、wasm のバイト列を渡します。wasm のインスタンス化には、CSP の `script-src` に `'wasm-unsafe-eval'` が要ります。
+**fetch を使わずに読み込む**: CSP で `connect-src` を禁じているときなどは、URL の代わりに wasm のバイト列を渡します。wasm のインスタンス化には、CSP の `script-src` に `'wasm-unsafe-eval'` が要ります。
 
 ```js
 // Vite なら ?inline で wasm を JS に埋め込める(base64 の data URL になる)
