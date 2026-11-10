@@ -206,6 +206,8 @@ export type WasmBytes = ArrayBuffer | ArrayBufferView<ArrayBuffer>;
 
 /**
  * kiln.wasm を読み込んで初期化する。
- * @param source wasm の URL(fetch する)、またはバイト列。省くと kiln.js と同じ場所の kiln.wasm
+ * @param source wasm の URL(fetch する)、またはバイト列。省けない。URL は、呼び出す側のモジュールから見た
+ *   kiln.wasm の位置で書く(呼び出す側と同じ場所に置いたなら `new URL('./kiln.wasm', import.meta.url)`)。
+ *   URL でもバイト列でもない値(Response、Blob など)を渡すと、TypeError で reject する
  */
-export function load(source?: WasmUrl | WasmBytes): Promise<Kiln>;
+export function load(source: WasmUrl | WasmBytes): Promise<Kiln>;
