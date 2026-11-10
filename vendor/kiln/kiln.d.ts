@@ -5,9 +5,10 @@
 
 /**
  * kiln のコアが返すエラーの名前。wasm/main.zig の `KilnError` と同じ一覧にする(足したら両方を直す)。
- * - `NotMp3` / `NotWav`: その形式のファイルではない
- * - `UnsupportedFormat`: 扱えない種類(MPEG-2 の MP3、RF64 や圧縮形式の WAV など)
+ * - `NotMp3` / `NotWav` / `NotFlac`: その形式のファイルではない
+ * - `UnsupportedFormat`: 扱えない種類(MPEG-2 の MP3、RF64 や圧縮形式の WAV、Ogg FLAC など)
  * - `InvalidWav`: WAV が壊れている(`fmt ` / `data` チャンクがない、値が不正)
+ * - `InvalidFlac`: FLAC が壊れている(STREAMINFO がない・先頭にない、メタデータブロックの長さが不正など)
  * - `EmptyRange`: 範囲を丸めた結果、区間が空になった
  * - `TooLarge`: 出力が大きすぎる(WAV は 4GiB まで)
  * - `OutOfMemory`: メモリが足りない
@@ -17,8 +18,10 @@
 export type KilnErrorCode =
   | 'NotMp3'
   | 'NotWav'
+  | 'NotFlac'
   | 'UnsupportedFormat'
   | 'InvalidWav'
+  | 'InvalidFlac'
   | 'EmptyRange'
   | 'TooLarge'
   | 'OutOfMemory'
@@ -69,13 +72,23 @@ export interface RangeResult {
 
 /** WAV の書き出しの指定 */
 export interface WavFormatOptions {
-  /** 既定は `'i16'` */
+  /** 既定は `'i16'`(`flac.toWav` はビット深度を保つ形式) */
   format?: SampleFormat;
-  /** 既定は `'tpdf'`(整数形式のときだけ効く) */
+  /** 既定は `'tpdf'`(浮動小数点から整数にするときと、整数のビット数を減らすときに効く) */
   dither?: Dither;
 }
 
-/** `wav.encode` が受け取る PCM。`AudioBuffer` はこの形を満たす(Worker の型にない AudioBuffer の代わり) */
+/** FLAC の書き出しの指定 */
+export interface FlacFormatOptions {
+  /** ビット深度(4〜32)。既定は 16(`wav.toFlac` は、整数の WAV なら元のビット深度) */
+  bitsPerSample?: number;
+  /** 圧縮の段階(0〜8。flac コマンドの -0〜-8 と同じ)。既定は 5 */
+  compression?: number;
+  /** 既定は `'tpdf'`(浮動小数点から整数にするときと、整数のビット数を減らすときに効く) */
+  dither?: Dither;
+}
+
+/** `wav.encode` / `flac.encode` が受け取る PCM。`AudioBuffer` はこの形を満たす(Worker の型にない AudioBuffer の代わり) */
 export interface AudioBufferLike {
   readonly numberOfChannels: number;
   readonly sampleRate: number;
@@ -104,6 +117,18 @@ export interface WavInfo {
   duration: number;
 }
 
+export interface FlacInfo {
+  sampleRate: number;
+  channels: number;
+  /** ビット深度(4〜32) */
+  bitsPerSample: number;
+  /** 長さ(サンプル数。実際のフレームから数えたもの) */
+  samples: number;
+  frames: number;
+  /** 秒 */
+  duration: number;
+}
+
 export interface Mp3 {
   probe(input: BytesInput): Mp3Info;
   /** 再エンコードせずにサンプル単位で切り出す。結果は MP3 のバイト列 */
@@ -118,6 +143,11 @@ export interface Mp3 {
     input: BytesInput,
     options?: RangeOptions & WavFormatOptions,
   ): RangeResult & { data: Uint8Array<ArrayBuffer>; invalidFrames: number };
+  /** デコードして FLAC にする。`invalidFrames` は toWav と同じ */
+  toFlac(
+    input: BytesInput,
+    options?: RangeOptions & FlacFormatOptions,
+  ): RangeResult & { data: Uint8Array<ArrayBuffer>; invalidFrames: number };
 }
 
 export interface Wav {
@@ -128,6 +158,34 @@ export interface Wav {
   encode(source: AudioBufferLike, options?: WavFormatOptions & { sampleRate?: number }): Uint8Array<ArrayBuffer>;
   /** チャンネルごとの PCM を WAV にする。どのチャンネルも同じ長さで、`sampleRate` は必須 */
   encode(source: Float32Array[], options: WavFormatOptions & { sampleRate: number }): Uint8Array<ArrayBuffer>;
+  /** 区間を FLAC にする。整数の WAV はビット深度を変えなければ可逆 */
+  toFlac(input: BytesInput, options?: RangeOptions & FlacFormatOptions): RangeResult & { data: Uint8Array<ArrayBuffer> };
+}
+
+export interface Flac {
+  probe(input: BytesInput): FlacInfo;
+  /**
+   * FLAC のまま切り出す(可逆。区間の先頭と末尾にかかるフレームだけを作り直す)。結果は FLAC のバイト列。
+   * `invalidFrames` は、区間にかかった壊れたフレーム(無音として作り直した)の数
+   */
+  trim(input: BytesInput, options?: RangeOptions): RangeResult & { data: Uint8Array<ArrayBuffer>; invalidFrames: number };
+  /**
+   * デコードする。`channels` はチャンネルごとの PCM(整数のサンプルを 2^(bitsPerSample - 1) で割ったもの)。
+   * `invalidFrames` は復号できなかった(無音にした)フレームの数
+   */
+  decode(
+    input: BytesInput,
+    options?: RangeOptions,
+  ): RangeResult & { channels: Float32Array<ArrayBuffer>[]; sampleRate: number; invalidFrames: number };
+  /** デコードして WAV にする。`format` を省くとビット深度を保つ形式で、元の PCM のまま */
+  toWav(
+    input: BytesInput,
+    options?: RangeOptions & WavFormatOptions,
+  ): RangeResult & { data: Uint8Array<ArrayBuffer>; invalidFrames: number };
+  /** AudioBuffer(や同じ形のもの。1〜8 チャンネル)を FLAC にする。`sampleRate` を省くと AudioBuffer のもの */
+  encode(source: AudioBufferLike, options?: FlacFormatOptions & { sampleRate?: number }): Uint8Array<ArrayBuffer>;
+  /** チャンネルごとの PCM を FLAC にする。どのチャンネルも同じ長さで、`sampleRate` は必須 */
+  encode(source: Float32Array[], options: FlacFormatOptions & { sampleRate: number }): Uint8Array<ArrayBuffer>;
 }
 
 export interface Kiln {
@@ -135,6 +193,7 @@ export interface Kiln {
   readonly version: string;
   readonly mp3: Mp3;
   readonly wav: Wav;
+  readonly flac: Flac;
   /** 生の export 関数(低レベル API。WebAssembly.Exports) */
   readonly exports: Record<string, unknown>;
 }
@@ -147,6 +206,8 @@ export type WasmBytes = ArrayBuffer | ArrayBufferView<ArrayBuffer>;
 
 /**
  * kiln.wasm を読み込んで初期化する。
- * @param source wasm の URL(fetch する)、またはバイト列。省くと kiln.js と同じ場所の kiln.wasm
+ * @param source wasm の URL(fetch する)、またはバイト列。省けない。URL は、呼び出す側のモジュールから見た
+ *   kiln.wasm の位置で書く(呼び出す側と同じ場所に置いたなら `new URL('./kiln.wasm', import.meta.url)`)。
+ *   URL でもバイト列でもない値(Response、Blob など)を渡すと、TypeError で reject する
  */
-export function load(source?: WasmUrl | WasmBytes): Promise<Kiln>;
+export function load(source: WasmUrl | WasmBytes): Promise<Kiln>;
