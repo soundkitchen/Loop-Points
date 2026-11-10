@@ -1,0 +1,296 @@
+// SPDX-License-Identifier: MIT
+//! PCM のサンプル形式と、形式どうしの変換。
+//!
+//! PCM は読み込んだ元の形式(8bit 符号なし、16 / 24 / 32bit 整数、32 / 64bit 浮動小数点)のまま
+//! バイト列で持ち、必要なときだけ f32 との間で変換する。整数と浮動小数点の対応は
+//! `値 / 2^(bits - 1)` で、整数 → f32 → 整数(16 / 24bit)は元に戻る。
+//! バイト列はリトルエンディアンで、チャンネルはインターリーブ(WAV と同じ並び)。
+const std = @import("std");
+
+pub const Format = enum {
+    /// 8bit 符号なし整数(128 が無音)
+    u8,
+    i16,
+    /// 24bit 整数(3 バイト詰め)
+    i24,
+    i32,
+    f32,
+    f64,
+
+    /// 1 サンプルのバイト数
+    pub fn bytes(f: Format) u8 {
+        return switch (f) {
+            .u8 => 1,
+            .i16 => 2,
+            .i24 => 3,
+            .i32, .f32 => 4,
+            .f64 => 8,
+        };
+    }
+
+    pub fn bits(f: Format) u8 {
+        return f.bytes() * 8;
+    }
+
+    pub fn isFloat(f: Format) bool {
+        return f == .f32 or f == .f64;
+    }
+
+    /// 整数形式の満幅(2^(bits - 1))。浮動小数点との変換の倍率
+    fn scale(f: Format) f64 {
+        return std.math.ldexp(@as(f64, 1), @as(i32, f.bits()) - 1);
+    }
+};
+
+/// 浮動小数点から整数に変換するときのディザ
+pub const Dither = enum {
+    /// 四捨五入して、範囲外はクリップする
+    none,
+    /// TPDF(三角分布、振幅 ±1 LSB)のディザを足してから丸める
+    tpdf,
+};
+
+/// 浮動小数点から整数への変換器。TPDF ディザの乱数の状態を持つ。
+/// 乱数の種は固定なので、同じ入力からは毎回同じ結果になる
+pub const Quantizer = struct {
+    dither: Dither,
+    rng: std.Random.DefaultPrng,
+
+    pub const seed = 0x6B696C6E; // "kiln"
+
+    pub fn init(dither: Dither) Quantizer {
+        return .{ .dither = dither, .rng = .init(seed) };
+    }
+
+    /// `x`(満幅を ±1 とする値)を整数形式 `f` の値にする
+    fn quantize(q: *Quantizer, f: Format, x: f64) i64 {
+        return quantizeBits(q, f.bits(), x);
+    }
+};
+
+/// 整数形式 `f` のサンプル 1 つ(`b` は `f.bytes()` バイト)を、`f.bits()` ビットの符号付き整数として読む
+inline fn readInt(f: Format, b: []const u8) i32 {
+    return switch (f) {
+        .u8 => @as(i32, b[0]) - 128,
+        .i16 => std.mem.readInt(i16, b[0..2], .little),
+        .i24 => std.mem.readInt(i24, b[0..3], .little),
+        .i32 => std.mem.readInt(i32, b[0..4], .little),
+        .f32, .f64 => unreachable,
+    };
+}
+
+/// `src`(形式 `f` のバイト列)を f32 にする。`dst.len` はサンプル数で、`src.len == dst.len * f.bytes()`
+pub fn toF32(f: Format, src: []const u8, dst: []f32) void {
+    std.debug.assert(src.len == dst.len * f.bytes());
+    const n = f.bytes();
+    const inv: f64 = 1 / f.scale();
+    for (dst, 0..) |*d, i| {
+        const b = src[i * n ..][0..n];
+        d.* = switch (f) {
+            .u8, .i16, .i24, .i32 => @floatCast(@as(f64, @floatFromInt(readInt(f, b))) * inv),
+            .f32 => @bitCast(std.mem.readInt(u32, b[0..4], .little)),
+            .f64 => @floatCast(@as(f64, @bitCast(std.mem.readInt(u64, b[0..8], .little)))),
+        };
+    }
+}
+
+/// f32 の `src` を形式 `f` のバイト列にする。`dst.len == src.len * f.bytes()`。
+/// 整数形式へは `q` のディザで丸め、範囲外はクリップする。浮動小数点形式へはそのまま(クリップしない)
+pub fn fromF32(f: Format, src: []const f32, dst: []u8, q: *Quantizer) void {
+    std.debug.assert(dst.len == src.len * f.bytes());
+    const n = f.bytes();
+    for (src, 0..) |x, i| {
+        const b = dst[i * n ..][0..n];
+        switch (f) {
+            .u8 => b[0] = @intCast(q.quantize(f, x) + 128),
+            .i16 => std.mem.writeInt(i16, b[0..2], @intCast(q.quantize(f, x)), .little),
+            .i24 => std.mem.writeInt(i24, b[0..3], @intCast(q.quantize(f, x)), .little),
+            .i32 => std.mem.writeInt(i32, b[0..4], @intCast(q.quantize(f, x)), .little),
+            .f32 => std.mem.writeInt(u32, b[0..4], @bitCast(x), .little),
+            .f64 => std.mem.writeInt(u64, b[0..8], @bitCast(@as(f64, x)), .little),
+        }
+    }
+}
+
+/// `bits` ビット(1〜32)の符号付き整数の `src` を形式 `f` のバイト列にする。`dst.len == src.len * f.bytes()`。
+/// 整数形式で `f` のビット数が `bits` 以上なら、下位に 0 を足す(左シフトする)だけなので可逆。
+/// 少ないときは `q` のディザで丸める。浮動小数点形式へは `値 / 2^(bits - 1)`
+pub fn fromInt(f: Format, bits: u8, src: []const i32, dst: []u8, q: *Quantizer) void {
+    std.debug.assert(dst.len == src.len * f.bytes());
+    std.debug.assert(bits >= 1 and bits <= 32);
+    const n = f.bytes();
+    const inv = std.math.ldexp(@as(f64, 1), 1 - @as(i32, bits));
+    if (!f.isFloat() and f.bits() >= bits) {
+        const shift: u5 = @intCast(f.bits() - bits);
+        for (src, 0..) |v, i| {
+            const b = dst[i * n ..][0..n];
+            const x = @as(i64, v) << shift;
+            switch (f) {
+                .u8 => b[0] = @intCast(x + 128),
+                .i16 => std.mem.writeInt(i16, b[0..2], @intCast(x), .little),
+                .i24 => std.mem.writeInt(i24, b[0..3], @intCast(x), .little),
+                .i32 => std.mem.writeInt(i32, b[0..4], @intCast(x), .little),
+                .f32, .f64 => unreachable,
+            }
+        }
+        return;
+    }
+    for (src, 0..) |v, i| {
+        const b = dst[i * n ..][0..n];
+        const x = @as(f64, @floatFromInt(v)) * inv;
+        switch (f) {
+            .u8 => b[0] = @intCast(q.quantize(f, x) + 128),
+            .i16 => std.mem.writeInt(i16, b[0..2], @intCast(q.quantize(f, x)), .little),
+            .i24 => std.mem.writeInt(i24, b[0..3], @intCast(q.quantize(f, x)), .little),
+            .i32 => std.mem.writeInt(i32, b[0..4], @intCast(q.quantize(f, x)), .little),
+            .f32 => std.mem.writeInt(u32, b[0..4], @bitCast(@as(f32, @floatCast(x))), .little),
+            .f64 => std.mem.writeInt(u64, b[0..8], @bitCast(x), .little),
+        }
+    }
+}
+
+/// 整数形式 `f` のバイト列 `src` を、`f.bits()` ビットの符号付き整数にする(u8 は 128 を引く)。可逆
+pub fn toInt(f: Format, src: []const u8, dst: []i32) void {
+    std.debug.assert(!f.isFloat());
+    std.debug.assert(src.len == dst.len * f.bytes());
+    const n = f.bytes();
+    for (dst, 0..) |*d, i| d.* = readInt(f, src[i * n ..][0..n]);
+}
+
+/// `x`(満幅を ±1 とする値)を `bits` ビット(1〜32)の符号付き整数にする。`q` のディザで丸め、範囲外はクリップする
+pub fn quantizeBits(q: *Quantizer, bits: u8, x: f64) i32 {
+    const s = std.math.ldexp(@as(f64, 1), @as(i32, bits) - 1);
+    var v = if (std.math.isNan(x)) 0 else x * s;
+    if (q.dither == .tpdf) {
+        const r = q.rng.random();
+        v += r.float(f64) - r.float(f64);
+    }
+    v = @round(v);
+    return @intFromFloat(std.math.clamp(v, -s, s - 1));
+}
+
+/// `src_bits` ビットの符号付き整数を `dst_bits` ビットにする。増やすときは下位に 0 を足す(可逆)。
+/// 減らすときは `q` のディザで丸める
+pub fn convertInt(src_bits: u8, dst_bits: u8, src: []const i32, dst: []i32, q: *Quantizer) void {
+    std.debug.assert(src.len == dst.len);
+    if (dst_bits >= src_bits) {
+        const shift: u5 = @intCast(dst_bits - src_bits);
+        for (src, dst) |v, *d| d.* = v << shift;
+        return;
+    }
+    const inv = std.math.ldexp(@as(f64, 1), 1 - @as(i32, src_bits));
+    for (src, dst) |v, *d| d.* = quantizeBits(q, dst_bits, @as(f64, @floatFromInt(v)) * inv);
+}
+
+test "toInt / convertInt / quantizeBits" {
+    var q: Quantizer = .init(.none);
+    var i8s: [2]i32 = undefined;
+    toInt(.u8, &.{ 0, 255 }, &i8s);
+    try std.testing.expectEqualSlices(i32, &.{ -128, 127 }, &i8s);
+    var i24s: [1]i32 = undefined;
+    toInt(.i24, &.{ 0x00, 0x00, 0x80 }, &i24s);
+    try std.testing.expectEqual(-0x800000, i24s[0]);
+    var out: [2]i32 = undefined;
+    convertInt(16, 20, &.{ -32768, 3 }, &out, &q);
+    try std.testing.expectEqualSlices(i32, &.{ -32768 << 4, 3 << 4 }, &out);
+    convertInt(24, 16, &.{ 0x7FFFFF, 0x180 }, &out, &q);
+    try std.testing.expectEqualSlices(i32, &.{ 32767, 2 }, &out);
+    try std.testing.expectEqual(-8, quantizeBits(&q, 4, -2.0));
+    try std.testing.expectEqual(16384, quantizeBits(&q, 16, 0.5));
+}
+
+test fromInt {
+    var q: Quantizer = .init(.none);
+    // 12bit → i16 は左シフト、8bit → u8 は 128 を足す
+    var b16: [4]u8 = undefined;
+    fromInt(.i16, 12, &.{ -2048, 2047 }, &b16, &q);
+    try std.testing.expectEqual(-32768, std.mem.readInt(i16, b16[0..2], .little));
+    try std.testing.expectEqual(2047 << 4, std.mem.readInt(i16, b16[2..4], .little));
+    var b8: [2]u8 = undefined;
+    fromInt(.u8, 8, &.{ -128, 127 }, &b8, &q);
+    try std.testing.expectEqualSlices(u8, &.{ 0, 255 }, &b8);
+    // 24bit → i16 は丸める(ディザなしなら四捨五入)
+    fromInt(.i16, 24, &.{ 0x7FFFFF, 0x180 }, &b16, &q);
+    try std.testing.expectEqual(32767, std.mem.readInt(i16, b16[0..2], .little));
+    try std.testing.expectEqual(2, std.mem.readInt(i16, b16[2..4], .little));
+    // 16bit → f32
+    var f: [4]u8 = undefined;
+    fromInt(.f32, 16, &.{-16384}, &f, &q);
+    try std.testing.expectEqual(-0.5, @as(f32, @bitCast(std.mem.readInt(u32, &f, .little))));
+}
+
+test "整数 → f32 → 整数で元に戻る(16 / 24bit、8bit)" {
+    var q: Quantizer = .init(.none);
+    inline for (.{ Format.u8, Format.i16, Format.i24 }) |f| {
+        var src: [6 * f.bytes()]u8 = undefined;
+        var x: [6]f32 = undefined;
+        var back: [src.len]u8 = undefined;
+        // 最小値・最大値・0 付近を含む値
+        const full: i64 = @intFromFloat(f.scale());
+        const vals = [_]i64{ -full, full - 1, 0, 1, -1, @rem(12345, full) };
+        for (vals, 0..) |v, i| {
+            const b = src[i * f.bytes() ..][0..f.bytes()];
+            switch (f) {
+                .u8 => b[0] = @intCast(v + 128),
+                .i16 => std.mem.writeInt(i16, b[0..2], @intCast(v), .little),
+                .i24 => std.mem.writeInt(i24, b[0..3], @intCast(v), .little),
+                else => unreachable,
+            }
+        }
+        toF32(f, &src, &x);
+        fromF32(f, &x, &back, &q);
+        try std.testing.expectEqualSlices(u8, &src, &back);
+    }
+}
+
+test "f32 → 16bit: 四捨五入とクリップ" {
+    var q: Quantizer = .init(.none);
+    const src = [_]f32{ 0, 1.0, -1.0, 2.0, -2.0, 0.5 / 32768.0 * 1.0001, std.math.nan(f32), 1000.4 / 32768.0 };
+    var dst: [src.len * 2]u8 = undefined;
+    fromF32(.i16, &src, &dst, &q);
+    var got: [src.len]i16 = undefined;
+    for (&got, 0..) |*g, i| g.* = std.mem.readInt(i16, dst[i * 2 ..][0..2], .little);
+    try std.testing.expectEqualSlices(i16, &.{ 0, 32767, -32768, 32767, -32768, 1, 0, 1000 }, &got);
+}
+
+test "f32 / f64 はそのまま" {
+    var q: Quantizer = .init(.tpdf);
+    const src = [_]f32{ 0.25, -1.5, 3.0 };
+    var b32: [12]u8 = undefined;
+    var b64: [24]u8 = undefined;
+    var back: [3]f32 = undefined;
+    fromF32(.f32, &src, &b32, &q);
+    toF32(.f32, &b32, &back);
+    try std.testing.expectEqualSlices(f32, &src, &back);
+    fromF32(.f64, &src, &b64, &q);
+    toF32(.f64, &b64, &back);
+    try std.testing.expectEqualSlices(f32, &src, &back);
+}
+
+test "TPDF ディザ: 毎回同じ結果で、誤差は ±1 LSB 程度、平均は 0 付近" {
+    const n = 4096;
+    var src: [n]f32 = undefined;
+    for (&src, 0..) |*s, i| s.* = @floatCast(0.3 * @sin(@as(f64, @floatFromInt(i)) * 0.01));
+    var a: [n * 2]u8 = undefined;
+    var b: [n * 2]u8 = undefined;
+    var qa: Quantizer = .init(.tpdf);
+    var qb: Quantizer = .init(.tpdf);
+    fromF32(.i16, &src, &a, &qa);
+    fromF32(.i16, &src, &b, &qb);
+    try std.testing.expectEqualSlices(u8, &a, &b);
+
+    var sum: f64 = 0;
+    for (src, 0..) |x, i| {
+        const v: f64 = @floatFromInt(std.mem.readInt(i16, a[i * 2 ..][0..2], .little));
+        const err = v - @as(f64, x) * 32768;
+        try std.testing.expect(@abs(err) <= 1.5);
+        sum += err;
+    }
+    try std.testing.expect(@abs(sum / n) < 0.1);
+
+    // ディザなしとは結果が変わる
+    var c: [n * 2]u8 = undefined;
+    var qn: Quantizer = .init(.none);
+    fromF32(.i16, &src, &c, &qn);
+    try std.testing.expect(!std.mem.eql(u8, &a, &c));
+}

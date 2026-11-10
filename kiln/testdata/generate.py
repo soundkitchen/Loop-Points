@@ -1,0 +1,277 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+"""テスト用の MP3、WAV、FLAC を作り直すスクリプト。
+
+MP3: 正弦波と疑似乱数ノイズを混ぜた 2 秒の音声を Python で合成し、lame でエンコードする。
+lame のバージョンが変わると出力のバイト列も変わるため、作り直したら testdata/README.md の
+lame のバージョンも更新すること。
+
+WAV: 同じような合成音(0.25 秒)を、形式やチャンクの並びを変えて Python だけで書く。
+
+FLAC: WAV と同じ合成音を、flac(参照実装のコマンド)でエンコードする。flac のバージョンが
+変わると出力のバイト列も変わるため、作り直したら testdata/README.md の flac のバージョンも更新すること。
+
+Ogg / m4a / aac: MP3 と同じ合成音(0.5 秒)を、opusenc / oggenc / ffmpeg / afconvert でエンコードする。
+afconvert は macOS にしかない。ツールのバージョンは testdata/README.md に書く。
+
+使い方: python3 testdata/generate.py [mp3|wav|flac|ogg|m4a|aac](省くとすべて。mp3 は lame、flac は flac、
+ogg は opusenc・oggenc・ffmpeg、m4a と aac は ffmpeg・afconvert が PATH にあること)
+"""
+import math
+import os
+import struct
+import subprocess
+import sys
+import tempfile
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+
+
+def synth(rate, channels, seconds=2.0):
+    """チャンネルごとに周波数の違う正弦波に、小さなノイズを混ぜた 16bit PCM を返す。"""
+    n = int(rate * seconds)
+    seed = 1
+    out = bytearray()
+    for i in range(n):
+        t = i / rate
+        for ch in range(channels):
+            seed = (seed * 1103515245 + 12345) & 0x7FFFFFFF
+            noise = (seed / 0x7FFFFFFF - 0.5) * 0.1
+            freq = 440.0 * (1 + ch) * (1 + 0.5 * t)  # ゆっくり上がるスイープ
+            v = 0.5 * math.sin(2 * math.pi * freq * t) + noise
+            out += struct.pack('<h', int(max(-1.0, min(1.0, v)) * 32767))
+    return bytes(out)
+
+
+def wav(path, rate, channels, seconds=2.0):
+    pcm = synth(rate, channels, seconds)
+    with open(path, 'wb') as f:
+        f.write(b'RIFF' + struct.pack('<I', 36 + len(pcm)) + b'WAVE')
+        f.write(b'fmt ' + struct.pack('<IHHIIHH', 16, 1, channels, rate,
+                                      rate * channels * 2, channels * 2, 16))
+        f.write(b'data' + struct.pack('<I', len(pcm)) + pcm)
+
+
+def syncsafe(n):
+    return bytes([(n >> 21) & 0x7F, (n >> 14) & 0x7F, (n >> 7) & 0x7F, n & 0x7F])
+
+
+def c2pa_like_id3():
+    """Lyria の出力と同じく、MIME が application/c2pa の GEOB を 1 つだけ持つ ID3v2.3 タグ。
+    中身は検証できない仮のバイト列。"""
+    body = b'\x00' + b'application/c2pa\x00' + b'c2pa\x00' + b'c2pa manifest store\x00'
+    body += bytes(range(256)) * 4
+    frame = b'GEOB' + struct.pack('>I', len(body)) + b'\x00\x00' + body
+    return b'ID3\x03\x00\x00' + syncsafe(len(frame)) + frame
+
+
+# (出力名, サンプルレート, チャンネル数, lame の引数, 先頭に付ける ID3v2)
+CASES = [
+    # Lyria と同じ構成: CBR 192kbps、joint stereo、Xing/LAME タグなし、C2PA の GEOB 付き
+    ('lyria-like.mp3', 44100, 2, ['-b', '192', '-m', 'j', '-t'], c2pa_like_id3),
+    # LAME タグ付きの CBR(Info フレームあり)
+    ('cbr128-lame.mp3', 44100, 2, ['-b', '128', '-m', 'j'], None),
+    # LAME タグ付きの VBR(Xing フレームあり)
+    ('vbr-lame.mp3', 44100, 2, ['-V', '4', '-m', 'j'], None),
+    # 低ビットレートのモノラル 48kHz、タグなし。Info フレームが元のビットレートに収まらず、
+    # ビットリザーバが深い(先頭に多くのフレームが要る)場合の確認用
+    ('mono48k-notag.mp3', 48000, 1, ['-b', '48', '-m', 'm', '--resample', '48', '-t'], None),
+]
+
+
+def synth_float(rate, channels, seconds):
+    """synth と同じ考え方の合成音を、-1〜1 の浮動小数点のフレームの列で返す。"""
+    seed = 1
+    frames = []
+    for i in range(int(rate * seconds)):
+        t = i / rate
+        frame = []
+        for ch in range(channels):
+            seed = (seed * 1103515245 + 12345) & 0x7FFFFFFF
+            noise = (seed / 0x7FFFFFFF - 0.5) * 0.1
+            frame.append(0.5 * math.sin(2 * math.pi * 330.0 * (1 + ch) * (1 + t) * t) + noise)
+        frames.append(frame)
+    return frames
+
+
+def encode_sample(v, fmt):
+    """-1〜1 の値を WAV のサンプル 1 つのバイト列にする。"""
+    if fmt == 'u8':
+        return struct.pack('<B', round(v * 127) + 128)
+    if fmt == 's16':
+        return struct.pack('<h', round(v * 32767))
+    if fmt == 's24':
+        return struct.pack('<i', round(v * 8388607))[:3]
+    if fmt == 's32':
+        return struct.pack('<i', round(v * 2147483647))
+    if fmt == 'f32':
+        return struct.pack('<f', v)
+    if fmt == 'f64':
+        return struct.pack('<d', v)
+    raise ValueError(fmt)
+
+
+def chunk(cid, body):
+    """RIFF のチャンク。中身が奇数バイトなら、詰め物の 1 バイトを足す。"""
+    return cid + struct.pack('<I', len(body)) + body + (b'\x00' if len(body) % 2 else b'')
+
+
+def wav_case(rate, channels, fmt, seconds=0.25, extensible=False, fact=False, list_before=False, extra_after=False,
+             valid_bits=None):
+    """valid_bits を指定すると(EXTENSIBLE のときだけ)、そのビット数に丸めた値を上位に詰めて書く。"""
+    bits = {'u8': 8, 's16': 16, 's24': 24, 's32': 32, 'f32': 32, 'f64': 64}[fmt]
+    is_float = fmt in ('f32', 'f64')
+    block = channels * bits // 8
+    frames = synth_float(rate, channels, seconds)
+    if valid_bits:
+        # valid_bits の整数にしてから、下位を 0 で埋めて器のビット数にする
+        shift = bits - valid_bits
+        data = b''.join(struct.pack('<i', round(v * (2 ** (valid_bits - 1) - 1)) << shift)[:bits // 8]
+                        for fr in frames for v in fr)
+    else:
+        data = b''.join(encode_sample(v, fmt) for fr in frames for v in fr)
+    base = struct.pack('<HHIIHH', 0xFFFE if extensible else (3 if is_float else 1),
+                       channels, rate, rate * block, block, bits)
+    if extensible:
+        guid_tail = b'\x00\x00\x00\x00\x10\x00\x80\x00\x00\xaa\x00\x38\x9b\x71'
+        fmt_body = base + struct.pack('<HHI', 22, valid_bits or bits, (1 << channels) - 1) + struct.pack('<H', 3 if is_float else 1) + guid_tail
+    elif is_float:
+        fmt_body = base + struct.pack('<H', 0)  # cbSize
+    else:
+        fmt_body = base
+    chunks = chunk(b'fmt ', fmt_body)
+    if fact:
+        chunks += chunk(b'fact', struct.pack('<I', len(frames)))
+    if list_before:
+        chunks += chunk(b'LIST', b'INFO' + chunk(b'ISFT', b'kiln testdata\x00'))
+    chunks += chunk(b'data', data)
+    if extra_after:
+        chunks += chunk(b'id3 ', b'ID3\x03\x00\x00\x00\x00\x00\x00')
+    return b'RIFF' + struct.pack('<I', 4 + len(chunks)) + b'WAVE' + chunks
+
+
+# (出力名, wav_case の引数)
+WAV_CASES = [
+    # 16bit ステレオ。data の前に LIST チャンク
+    ('s16-stereo.wav', dict(rate=44100, channels=2, fmt='s16', list_before=True)),
+    # 8bit モノラル、奇数フレーム(data の後に詰め物の 1 バイト)。data の後にもチャンク
+    ('u8-mono.wav', dict(rate=8000, channels=1, fmt='u8', seconds=0.250125, extra_after=True)),
+    # 24bit ステレオ 48kHz
+    ('s24-stereo.wav', dict(rate=48000, channels=2, fmt='s24')),
+    # 32bit 浮動小数点ステレオ(fmt は 18 バイト、fact チャンク付き)
+    ('f32-stereo.wav', dict(rate=44100, channels=2, fmt='f32', fact=True)),
+    # 64bit 浮動小数点モノラル
+    ('f64-mono.wav', dict(rate=22050, channels=1, fmt='f64', fact=True)),
+    # WAVE_FORMAT_EXTENSIBLE、32bit 整数 3 チャンネル
+    ('s32-3ch-ext.wav', dict(rate=48000, channels=3, fmt='s32', extensible=True)),
+]
+
+
+# (出力名, wav_case の引数, flac の引数)
+FLAC_CASES = [
+    # 16bit ステレオ。LPC(-8)、ブロック長 1152(10 フレーム)、Vorbis コメント付き
+    ('s16-stereo.flac', dict(rate=44100, channels=2, fmt='s16'), ['-8', '--blocksize=1152', '-T', 'TITLE=kiln testdata']),
+    # 8bit モノラル、固定予測だけ(-0)、ブロック長 576、最後のフレームは短い
+    ('u8-mono.flac', dict(rate=8000, channels=1, fmt='u8', seconds=0.250125), ['-0', '--blocksize=576']),
+    # 24bit ステレオ 48kHz(既定の -5)
+    ('s24-stereo.flac', dict(rate=48000, channels=2, fmt='s24'), ['-5']),
+    # 20bit モノラル 96kHz(24bit の器に 20bit の値を入れた WAV から作る)
+    ('s20-mono.flac', dict(rate=96000, channels=1, fmt='s24', seconds=0.05, extensible=True, valid_bits=20), ['-5']),
+    # 32bit 整数 3 チャンネル 48kHz
+    ('s32-3ch.flac', dict(rate=48000, channels=3, fmt='s32', seconds=0.05, extensible=True), ['-5']),
+]
+
+
+def main_flac():
+    with tempfile.TemporaryDirectory() as tmp:
+        for name, args, flac_args in FLAC_CASES:
+            src = os.path.join(tmp, 'in.wav')
+            enc = os.path.join(tmp, 'out.flac')
+            with open(src, 'wb') as f:
+                f.write(wav_case(**args))
+            subprocess.run(['flac', '--silent', '--force', '--no-seektable', *flac_args, '-o', enc, src], check=True)
+            data = open(enc, 'rb').read()
+            with open(os.path.join(HERE, name), 'wb') as f:
+                f.write(data)
+            print(name, len(data))
+
+
+def main_wav():
+    for name, args in WAV_CASES:
+        data = wav_case(**args)
+        with open(os.path.join(HERE, name), 'wb') as f:
+            f.write(data)
+        print(name, len(data))
+
+
+def main_mp3():
+    with tempfile.TemporaryDirectory() as tmp:
+        for name, rate, channels, args, id3 in CASES:
+            src = os.path.join(tmp, 'in.wav')
+            enc = os.path.join(tmp, 'out.mp3')
+            wav(src, rate, channels)
+            subprocess.run(['lame', '--quiet', *args, src, enc], check=True)
+            data = open(enc, 'rb').read()
+            if id3:
+                data = id3() + data
+            with open(os.path.join(HERE, name), 'wb') as f:
+                f.write(data)
+            print(name, len(data))
+
+
+# ffmpeg の出力を再現できるようにする(エンコーダ名などのメタデータを書かない)
+FFMPEG = ['ffmpeg', '-hide_banner', '-loglevel', 'error', '-y', '-i', '{in}', '-map_metadata', '-1',
+          '-fflags', '+bitexact', '-flags:a', '+bitexact']
+
+# (ファイル名, サンプルレート, チャンネル数, 秒, コマンド)。コマンドの {in} / {out} は入力と出力のパス
+ENCODED_CASES = {
+    'ogg': [
+        # opusenc は元のレート(44.1kHz)を ID ヘッダに書く。pre-skip は 312
+        ('opus-stereo.opus', 44100, 2, 0.5, ['opusenc', '--quiet', '--bitrate', '32', '{in}', '{out}']),
+        # ffmpeg(libopus)のモノラル 48kHz
+        ('opus-mono-ffmpeg.opus', 48000, 1, 0.5, FFMPEG + ['-c:a', 'libopus', '-b:a', '24k', '{out}']),
+        ('vorbis-stereo.ogg', 44100, 2, 0.5, ['oggenc', '-Q', '-q', '0', '{in}', '-o', '{out}']),
+        ('vorbis-mono22k.ogg', 22050, 1, 0.5, ['oggenc', '-Q', '-q', '2', '{in}', '-o', '{out}']),
+    ],
+    'm4a': [
+        # ffmpeg は先頭の遅延(1024)を編集リスト(elst)に書く
+        ('aac-lc-ffmpeg.m4a', 44100, 2, 0.5, FFMPEG + ['-c:a', 'aac', '-b:a', '64k', '{out}']),
+        # afconvert は編集リストを書かず、iTunSMPB に遅延(2112)と長さを書く
+        ('aac-lc-afconvert.m4a', 44100, 2, 0.5, ['afconvert', '-f', 'm4af', '-d', 'aac', '{in}', '{out}']),
+        ('aac-he-afconvert.m4a', 44100, 2, 0.5, ['afconvert', '-f', 'm4af', '-d', 'aach', '-b', '48000', '{in}', '{out}']),
+        ('aac-hev2-afconvert.m4a', 44100, 2, 0.5, ['afconvert', '-f', 'm4af', '-d', 'aacp', '-b', '32000', '{in}', '{out}']),
+        ('alac-afconvert.m4a', 44100, 2, 0.25, ['afconvert', '-f', 'm4af', '-d', 'alac', '{in}', '{out}']),
+    ],
+    'aac': [
+        ('lc-ffmpeg.aac', 44100, 2, 0.5, FFMPEG + ['-c:a', 'aac', '-b:a', '64k', '-f', 'adts', '{out}']),
+        ('lc-afconvert.aac', 44100, 2, 0.5, ['afconvert', '-f', 'adts', '-d', 'aac', '{in}', '{out}']),
+        # ADTS のヘッダには SBR を書けないので、ヘッダは 22.05kHz の AAC-LC に見える
+        ('he-afconvert.aac', 44100, 2, 0.5, ['afconvert', '-f', 'adts', '-d', 'aach', '-b', '48000', '{in}', '{out}']),
+    ],
+}
+
+
+def main_encoded(kind):
+    with tempfile.TemporaryDirectory() as tmp:
+        for name, rate, channels, seconds, cmd in ENCODED_CASES[kind]:
+            src = os.path.join(tmp, 'in.wav')
+            enc = os.path.join(tmp, 'out' + os.path.splitext(name)[1])
+            wav(src, rate, channels, seconds)
+            subprocess.run([a.replace('{in}', src).replace('{out}', enc) for a in cmd], check=True)
+            data = open(enc, 'rb').read()
+            with open(os.path.join(HERE, name), 'wb') as f:
+                f.write(data)
+            print(name, len(data))
+
+
+if __name__ == '__main__':
+    which = sys.argv[1] if len(sys.argv) > 1 else 'all'
+    if which in ('all', 'mp3'):
+        main_mp3()
+    if which in ('all', 'wav'):
+        main_wav()
+    if which in ('all', 'flac'):
+        main_flac()
+    for kind in ENCODED_CASES:
+        if which in ('all', kind):
+            main_encoded(kind)
