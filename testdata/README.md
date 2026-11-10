@@ -60,7 +60,7 @@ MP3 と同じ合成音(0.5 秒。ALAC は 0.25 秒)を、各ツールでエン�
 ## 作り直し方
 
 ```sh
-python3 testdata/generate.py        # すべて(lame と flac が PATH にあること)
+python3 testdata/generate.py        # すべて(lame、flac、opusenc、oggenc、ffmpeg、afconvert が PATH にあること。afconvert は macOS にしかない)
 python3 testdata/generate.py wav    # WAV だけ(外部のツールは不要)
 python3 testdata/generate.py flac   # FLAC だけ(flac が PATH にあること)
 python3 testdata/generate.py ogg    # Ogg だけ(opusenc、oggenc、ffmpeg が PATH にあること)
