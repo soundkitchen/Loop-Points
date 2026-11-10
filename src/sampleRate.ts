@@ -1,6 +1,5 @@
-// kiln で調べない音源 (Ogg と FLAC) の元のサンプルレートを、ファイルの先頭から読む。
-// 分からない形式 (m4a、aac など) は null を返し、呼ぶ側でデコード後のレートを使う。mp3 と WAV は kiln が読む。
-// FLAC は今の kiln でも読めるが、クロップではまだ使っていない
+// kiln で調べない音源の元のサンプルレートを、ファイルの先頭から読む。Ogg と、kiln で読めなかった FLAC (壊れたものなど) に使う。
+// 分からない形式 (m4a、aac など) は null を返し、呼ぶ側でデコード後のレートを使う。mp3、WAV、FLAC は、読めれば kiln が扱う
 
 // OfflineAudioContext が受け付けるレートの範囲。外れた値はヘッダーが壊れているとみなし、デコード後のレートを使う
 const MIN_RATE = 3000;
@@ -19,7 +18,8 @@ function oggRate(d: Uint8Array): number | null {
 
 function headerRate(d: Uint8Array): number | null {
   if (startsWith(d, 0, 'OggS')) return oggRate(d);
-  if (startsWith(d, 0, 'fLaC') && d.length >= 21) return (d[18] << 12) | (d[19] << 4) | (d[20] >> 4);   // STREAMINFO の 20 ビット
+  // 最初のメタデータブロックが STREAMINFO (種類 0) のときだけ読む。ほかのブロックなら 18〜20 バイト目は関係のない値
+  if (startsWith(d, 0, 'fLaC') && d.length >= 21 && (d[4] & 0x7f) === 0) return (d[18] << 12) | (d[19] << 4) | (d[20] >> 4);   // STREAMINFO の 20 ビット
   return null;
 }
 

@@ -198,13 +198,14 @@ function setMode(next: Mode) {
 // ループモードに戻ったら、読んだバイト列を手放す
 function inspectCropSource() {
   const file = mode === 'crop' && buffer ? files.get(name) : undefined;
+  const decoded = buffer;
   if (file === inspecting) return;
   inspecting = file;
   cropSource = null;
   cropError = null;
   updateOutFormats();
   if (!file) return;
-  import('./cropRender').then((m) => m.inspect(file)).then(
+  import('./cropRender').then((m) => m.inspect(file, decoded!)).then(
     (s) => { if (inspecting === file) cropSource = s; },
     (e) => { if (inspecting === file) cropError = `${file.name} を書き出す準備ができませんでした (${e})`; },
   ).finally(() => {
@@ -225,7 +226,9 @@ function updateWarning() {
   const messages = [];
   if (mismatch) messages.push(`${name}: JSON の duration (${formatTime(want)}) と音源の長さ (${formatTime(buffer!.duration)}) が違います。別の音源か、デコードの差でループ位置がずれている可能性があります`);
   if (mode === 'crop' && cropError) messages.push(cropError);
-  else if (mode === 'crop' && cropCutsLoop()) {
+  else if (mode === 'crop' && cropSource?.lengthMismatch) {
+    messages.push(`${name} は、ブラウザでデコードした長さ (${formatTime(buffer!.duration)}) と FLAC の長さ (${formatTime(cropSource.flac!.duration)}) が違います。壊れたフレームをブラウザが飛ばしていると、波形で選んだ位置と書き出す位置がずれるので、書き出せません`);
+  } else if (mode === 'crop' && cropCutsLoop()) {
     messages.push(cropCutsLoop('wav')
       ? 'クロップの範囲がループ区間にかかっているので、書き出せません。線を区間の外へ動かすか、ループモードで区間を動かしてください'
       : `長さの情報のない mp3 は、無劣化では ${formatTime(cropSource!.mp3Start)} より前から切り出せません。ループの開始が削れるので、書き出せません。WAV を選ぶと書き出せます`);
@@ -249,7 +252,7 @@ function updateStatus() {
   download.disabled = !hasLoops || writing;
   download.classList.toggle('primary', jsonTarget === null);
   $<HTMLButtonElement>('copy').disabled = !hasLoops;
-  $<HTMLButtonElement>('export-crop').disabled = !buffer || writing || !cropSource || cropCutsLoop();
+  $<HTMLButtonElement>('export-crop').disabled = !buffer || writing || !cropSource || cropSource.lengthMismatch || cropCutsLoop();
 }
 
 // handle を渡すと、そのファイルを上書き保存の対象にする。渡さなければ対象をなくす
@@ -502,7 +505,7 @@ addEventListener('drop', (e) => {
 
 // 開いている音源で選べる形式を入れる。kiln で調べ終わるまでは拡張子から決め、選べないようにする
 function updateOutFormats() {
-  const formats = cropSource?.formats ?? formatsFor(name);
+  const formats = cropSource?.formats ?? formatsFor(extFormat(name));
   outFormat.replaceChildren(...formats.map((f) => new Option(OUT_FORMATS[f].label, f)));
   outFormat.disabled = formats.length < 2 || !cropSource;
 }
@@ -550,7 +553,9 @@ $('export-crop').addEventListener('click', () => void whileWriting('音源を書
   const notes: string[] = [];
   if (named !== written) notes.push(`${handle.name} に ${OUT_FORMATS[written].description} で保存しました。拡張子が ${OUT_FORMATS[written].ext} でないので、開くときに形式を読み違えることがあります`);
   // 長さの情報のない mp3 は、先頭のデコーダの遅延 (529 サンプル) より前を無劣化では切れない
-  if (out.start - from / rate >= SHIFT_NOTICE) notes.push(`mp3 の先頭は無劣化では切り出せないので、${formatTime(out.start)} から切り出しました`);
+  if (written === 'mp3' && out.start - from / rate >= SHIFT_NOTICE) notes.push(`mp3 の先頭は無劣化では切り出せないので、${formatTime(out.start)} から切り出しました`);
+  // kiln は壊れたフレームを無音で埋めて長さを保つが、ブラウザのデコードは飛ばすことがあるので、波形の位置とずれうる
+  if (out.invalidFrames > 0) notes.push(`壊れていたフレームが ${out.invalidFrames} 個あったので、その部分は無音にして書き出しました。ブラウザは壊れたフレームを飛ばして表示することがあるので、その後ろでは、波形で選んだ位置と書き出した位置がずれていることがあります`);
   if (notes.length > 0) alert(notes.join('\n'));
   await openCropped(new File([out.blob], handle.name, { type: out.blob.type }), sourceLoop, loopStart - out.start, loopEnd - out.start);
 }));
