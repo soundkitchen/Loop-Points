@@ -84,7 +84,9 @@ function extract(archive, dest) {
   console.log('tar failed; extracting with python3');
   rmSync(dest, { recursive: true, force: true });
   mkdirSync(dest, { recursive: true });
-  run('python3', ['-c', 'import sys, tarfile; tarfile.open(sys.argv[1]).extractall(sys.argv[2])', archive, dest]);
+  // 失敗は投げて、呼ぶ側の finally で一時ディレクトリを消す (run は process.exit するので finally が動かない)
+  const py = spawnSync('python3', ['-c', 'import sys, tarfile; tarfile.open(sys.argv[1]).extractall(sys.argv[2])', archive, dest], { stdio: 'inherit' });
+  if (py.status !== 0) throw new Error(`Could not extract ${path.basename(archive)} (python3: ${py.error?.message ?? `exit ${py.status}`})`);
 }
 
 async function downloadZig() {
