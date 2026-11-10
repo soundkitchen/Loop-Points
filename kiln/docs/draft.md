@@ -82,7 +82,7 @@ Loop Points のクロップの書き出しを受け持つ、Zig 製のライブ�
 ### 2.9 2026-11-11 に決めたこと(Loop Points への取り込みと整理)
 
 - **開発の場所**: kiln を使うのは Loop Points だけなので、Loop Points のリポジトリの `kiln/` で開発する(Loop Points の #16、#17)。soundkitchen/kiln の `1eebfb7` までを、`git subtree` で履歴ごと取り込んだ。soundkitchen/kiln はそのまま残す
-- **ビルド**: ビルドした wasm はコミットしない。Loop Points の `npm run dev` / `npm run build` の前に、`scripts/kiln.mjs` が `zig-out/wasm/kiln.wasm` をビルドする。Loop Points は `wasm/kiln.js` をソースから直接 import する
+- **ビルド**: ビルドした wasm はコミットしない。Loop Points の `npm run dev` / `npm run build` の前に、`scripts/kiln.mjs` が `zig-out/kiln.wasm` をビルドする。Loop Points は `wasm/kiln.js` をソースから直接 import する
 - **外したもの**: 単体のライブラリとして配るための部分を外した
   - CLI(`kiln trim` / `kiln info`)
   - `load` の URL からの読み込み(fetch)。Loop Points は CSP で fetch を止め、wasm をバイト列で渡すため

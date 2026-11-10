@@ -5,7 +5,7 @@
 //   ほかの形式 → WAV: ブラウザでデコードし、kiln で 16-bit で書く (元のレートが分かればそのレート)
 import { KilnError, load, type Kiln, type Mp3Info, type WavInfo } from '../kiln/wasm/kiln.js';
 // CSP の connect-src 'none' では fetch で wasm を読めない (data: URL も止まる) ので、チャンクに埋め込んでバイト列で渡す
-import kilnWasm from '../kiln/zig-out/wasm/kiln.wasm?url&inline';
+import kilnWasm from '../kiln/zig-out/kiln.wasm?url&inline';
 import { OUT_FORMATS, extFormat, type OutFormat } from './cropFormat';
 import { sampleRateOf, startsWith } from './sampleRate';
 

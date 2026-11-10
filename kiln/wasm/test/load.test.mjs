@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// kiln.js の load の実行時テスト。wasm/kiln.js と、zig build でできた zig-out/wasm/kiln.wasm を読む。
+// kiln.js の load の実行時テスト。wasm/kiln.js と、zig build でできた zig-out/kiln.wasm を読む。
 // Loop Points のリポジトリ直下の `npm run kiln:test` で動く(kiln/ で `zig build && node --test 'wasm/test/*.test.mjs'` でもよい)
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -9,7 +9,7 @@ import path from 'node:path';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const { load } = await import(path.join(root, 'wasm/kiln.js'));
-const wasm = await readFile(path.join(root, 'zig-out/wasm/kiln.wasm'));
+const wasm = await readFile(path.join(root, 'zig-out/kiln.wasm'));
 const flac = await readFile(path.join(root, 'testdata/s16-stereo.flac'));
 
 test('バイト列でない値(URL を含む)は、TypeError で reject する', async () => {

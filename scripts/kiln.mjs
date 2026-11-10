@@ -1,5 +1,5 @@
 // kiln (kiln/) の wasm をビルドし、テストする。
-//   node scripts/kiln.mjs build       kiln/zig-out/wasm/kiln.wasm を作る (npm run dev / build の前に動く)
+//   node scripts/kiln.mjs build       kiln/zig-out/kiln.wasm を作る (npm run dev / build の前に動く)
 //   node scripts/kiln.mjs test        Zig のテスト、kiln.js の実行時のテスト、kiln.d.ts の型の検査
 //   node scripts/kiln.mjs check-dist  dist/ に .wasm のファイルがないことを確かめる (npm run build の後に動く)
 // Zig は PATH にある 0.17.1 を使う (手元は direnv で $HOME/Zig/0.17)。なければ公式のアーカイブを .zig/ に取ってきて、

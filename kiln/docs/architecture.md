@@ -20,11 +20,11 @@
 | `src/m4a.zig`, `src/m4a/` | m4a(MP4 コンテナの AAC / ALAC)の解析(`kiln.m4a`)。`box`(ボックスの読み取り)/ `asc`(AudioSpecificConfig)に分ける(設計は [`m4a.md`](m4a.md)) | — |
 | `src/aac.zig` | aac(ADTS)の解析(`kiln.aac`。設計は [`aac.md`](aac.md)) | — |
 | `src/flac.zig`, `src/flac/` | FLAC の解析・復号・書き出し(`kiln.flac`)。`bits`(ビットの読み書き)/ `frame`(フレームヘッダ)/ `metadata`(`fLaC` とメタデータブロック)/ `stream`(フレームの区切り)/ `decoder`(サブフレームの復号)/ `encoder`(エンコーダ)/ `lpc`(線形予測の分析)/ `trim`(FLAC → FLAC の切り出し)に分ける(設計は [`flac.md`](flac.md)) | — |
-| `wasm/main.zig` | wasm の export 関数 | `zig-out/wasm/kiln.wasm` |
+| `wasm/main.zig` | wasm の export 関数 | `zig-out/kiln.wasm` |
 | `wasm/kiln.js` | JS ラッパー(ES module。`load()` で wasm を読み込む)。Loop Points はこのファイルを直接 import する | — |
 | `wasm/kiln.d.ts` | JS ラッパーの TypeScript の型定義(TypeScript 5.7 以降) | — |
 | `wasm/types/` | kiln.d.ts の型検査用のファイル(ブラウザのメインスレッド、lib: DOM) | — |
-| `wasm/test/` | kiln.js の実行時テスト(Node の `node:test`)。`wasm/kiln.js` と `zig-out/wasm/kiln.wasm` を読む | — |
+| `wasm/test/` | kiln.js の実行時テスト(Node の `node:test`)。`wasm/kiln.js` と `zig-out/kiln.wasm` を読む | — |
 | `LICENSE` | MIT の全文 | — |
 | `THIRD_PARTY_NOTICES.md` | 外部から取り込んだコードや数表の出所とライセンス(方針は [`draft.md`](draft.md) §2.5) | — |
 | `testdata/` | テスト用の音声(MP3、WAV、FLAC、Ogg、m4a、aac)と、それを `@embedFile` するモジュール(`testdata.zig`)。作り方は `testdata/README.md` | — |

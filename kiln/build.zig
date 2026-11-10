@@ -27,8 +27,8 @@ pub fn build(b: *std.Build) void {
     wasm.entry = .disabled;
     wasm.rdynamic = true;
 
-    // zig-out/wasm/kiln.wasm に置く。JS ラッパー(wasm/kiln.js)と型定義は、Loop Points がソースから直接 import する
-    const install_wasm = b.addInstallArtifact(wasm, .{ .dest_dir = .{ .override = .{ .custom = "wasm" } } });
+    // zig-out/kiln.wasm に置く。JS ラッパー(wasm/kiln.js)と型定義は、Loop Points がソースから直接 import する
+    const install_wasm = b.addInstallArtifact(wasm, .{ .dest_dir = .{ .override = .prefix } });
     const wasm_step = b.step("wasm", "wasm をビルドする");
     wasm_step.dependOn(&install_wasm.step);
     b.getInstallStep().dependOn(wasm_step);

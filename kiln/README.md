@@ -19,7 +19,7 @@ Zig 0.17.1 を使います。手元では、Loop Points のリポジトリ直下
 Loop Points のリポジトリ直下で実行します。
 
 ```sh
-npm run kiln:build   # zig-out/wasm/kiln.wasm をビルドする(npm run dev / build の前にも動く)
+npm run kiln:build   # zig-out/kiln.wasm をビルドする(npm run dev / build の前にも動く)
 npm run kiln:test    # Zig のテスト、kiln.js の実行時のテスト、kiln.d.ts の型検査
 ```
 
@@ -32,7 +32,7 @@ zig build test       # コアのテスト(wasm のビルドも含む)
 
 ## Loop Points からの使い方
 
-Loop Points は `wasm/kiln.js` をソースから直接 import し、`zig-out/wasm/kiln.wasm` を Vite の `?url&inline` でチャンクに埋め込んで、バイト列で `load` に渡します(`src/cropRender.ts`)。CSP の `connect-src 'none'` で fetch を止めているので、`load` は URL を受け取らず、バイト列だけを受け取ります。wasm を動かすには、CSP の `script-src` に `'wasm-unsafe-eval'` が要ります。
+Loop Points は `wasm/kiln.js` をソースから直接 import し、`zig-out/kiln.wasm` を Vite の `?url&inline` でチャンクに埋め込んで、バイト列で `load` に渡します(`src/cropRender.ts`)。CSP の `connect-src 'none'` で fetch を止めているので、`load` は URL を受け取らず、バイト列だけを受け取ります。wasm を動かすには、CSP の `script-src` に `'wasm-unsafe-eval'` が要ります。
 
 ```js
 import { load, KilnError } from '../kiln/wasm/kiln.js';
