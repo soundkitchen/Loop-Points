@@ -1,12 +1,14 @@
 // SPDX-License-Identifier: MIT
-//! Ogg(Vorbis / Opus)の解析(設計は docs/ogg.md)。
+//! Ogg(Vorbis / Opus)の解析と、Opus の無劣化の切り出し(設計は docs/ogg.md)。
 //!
 //! 中身が 1 本のストリーム(論理ビットストリーム)だけのファイルを扱う。長さはグラニュール位置から数え、
 //! 先頭と末尾の切り詰め(Opus の pre-skip、最初と最後のページのグラニュール位置)を反映する。
 const std = @import("std");
+const Io = std.Io;
 const page = @import("ogg/page.zig");
 const vorbis = @import("ogg/vorbis.zig");
 const opus = @import("ogg/opus.zig");
+const trim_impl = @import("ogg/trim.zig");
 
 pub const ParseError = error{
     /// 先頭が Ogg のページ(`OggS`)ではない
@@ -173,6 +175,57 @@ pub fn probe(input: []const u8) ParseError!Info {
     return info;
 }
 
+pub const TrimOptions = struct {
+    /// 切り出す区間の先頭(再生位置のサンプル数。Opus は 48kHz で、pre-skip を除いた位置)
+    start: u64 = 0,
+    /// 切り出す区間の終わり(この位置は含まない)。null なら末尾まで
+    end: ?u64 = null,
+};
+
+/// 実際に切り出した区間(範囲外の指定を丸めた後の位置)
+pub const TrimResult = struct {
+    start: u64,
+    end: u64,
+    sample_rate: u32,
+};
+
+pub const TrimError = ParseError || Io.Writer.Error || error{
+    OutOfMemory,
+    /// 丸めた後の区間が空(start >= end)
+    EmptyRange,
+};
+
+/// 区間 `[options.start, options.end)` を、再エンコードせずに切り出して `w` に Ogg で書く。末尾は長さで切り詰める。
+/// 今は Opus だけ(Vorbis は UnsupportedFormat)。読めないページや欠けたページがあるものは InvalidOgg
+/// (欠けた分の位置が分からないため)。サンプル単位で区間どおりになる(docs/ogg.md §6)。`w.flush()` は呼び出し側が行う
+pub fn trim(gpa: std.mem.Allocator, input: []const u8, options: TrimOptions, w: *Io.Writer) TrimError!TrimResult {
+    const info = try probe(input);
+    if (info.codec != .opus) return error.UnsupportedFormat;
+    if (info.invalid_pages != 0) return error.InvalidOgg;
+    const end = @min(options.end orelse info.samples, info.samples);
+    if (options.start >= end) return error.EmptyRange;
+    try trim_impl.opusTrim(gpa, input, info.pre_skip, options.start, end, w);
+    return .{ .start = options.start, .end = end, .sample_rate = info.sample_rate };
+}
+
+pub const Trimmed = struct {
+    data: []u8,
+    start: u64,
+    end: u64,
+    sample_rate: u32,
+};
+
+/// `trim` の一括版。返した `data` は呼び出し側が `gpa` で解放する
+pub fn trimAlloc(gpa: std.mem.Allocator, input: []const u8, options: TrimOptions) (ParseError || error{ OutOfMemory, EmptyRange })!Trimmed {
+    var out: Io.Writer.Allocating = .init(gpa);
+    defer out.deinit();
+    const r = trim(gpa, input, options, &out.writer) catch |err| switch (err) {
+        error.WriteFailed => return error.OutOfMemory,
+        else => |e| return e,
+    };
+    return .{ .data = try out.toOwnedSlice(), .start = r.start, .end = r.end, .sample_rate = r.sample_rate };
+}
+
 const Start = struct { page: page.Page, seg: usize };
 
 /// ヘッダのパケット(Opus のコメント、Vorbis のコメントと設定)を確かめる
@@ -212,6 +265,7 @@ test {
     _ = page;
     _ = vorbis;
     _ = opus;
+    _ = trim_impl;
 }
 
 const testdata = @import("testdata");
@@ -334,4 +388,87 @@ test "probe: エラー" {
     var buf: [128]u8 = undefined;
     const p = page.build(&buf, page.flag_bos, 0, 1, 0, &.{"\x7FFLAC\x01\x00\x00\x01fLaC"}, false);
     try std.testing.expectError(error.UnsupportedFormat, probe(p));
+}
+
+/// テスト用: 音声パケット(ヘッダの 2 つを除く)のバイト列を順に集める。返したものは呼び出し側が解放する
+fn audioPackets(gpa: std.mem.Allocator, input: []const u8) ![][]u8 {
+    var it: page.Iterator = .{ .input = input };
+    var packets = try trim_impl.collect(gpa, input, it.next().?.serial);
+    defer packets.deinit(gpa);
+    const out = try gpa.alloc([]u8, packets.items.len - 2);
+    for (packets.items[2..], out) |pk, *o| {
+        o.* = try gpa.alloc(u8, pk.len);
+        var r: page.PacketReader = .init(input, pk.page, pk.seg);
+        for (o.*) |*b| b.* = r.byte().?;
+    }
+    return out;
+}
+
+fn freePackets(gpa: std.mem.Allocator, packets: [][]u8) void {
+    for (packets) |p| gpa.free(p);
+    gpa.free(packets);
+}
+
+test "trim: Opus を区間どおりに切り出す" {
+    const gpa = std.testing.allocator;
+    for ([_][]const u8{ testdata.opus_stereo, testdata.opus_mono_ffmpeg }) |src| {
+        const base = try probe(src);
+        const src_packets = try audioPackets(gpa, src);
+        defer freePackets(gpa, src_packets);
+        for ([_][2]u64{ .{ 0, base.samples }, .{ 5000, 15000 }, .{ 0, 100 }, .{ 1, 2 }, .{ 23000, base.samples }, .{ 3840, 7000 } }) |se| {
+            const t = try trimAlloc(gpa, src, .{ .start = se[0], .end = se[1] });
+            defer gpa.free(t.data);
+            try std.testing.expectEqual(se[0], t.start);
+            try std.testing.expectEqual(se[1], t.end);
+            try std.testing.expectEqual(48000, t.sample_rate);
+            const got = try probe(t.data);
+            try std.testing.expectEqual(Codec.opus, got.codec);
+            try std.testing.expectEqual(se[1] - se[0], got.samples);
+            try std.testing.expectEqual(base.channels, got.channels);
+            try std.testing.expectEqual(base.input_sample_rate, got.input_sample_rate);
+            try std.testing.expectEqual(0, got.invalid_pages);
+            // 区間の前に 80ms 以上(ファイルの先頭に近ければ取れる分だけ)残し、パケットは元のままコピーする
+            try std.testing.expect(got.pre_skip >= @min(trim_impl.preroll, se[0] + base.pre_skip));
+            const out_packets = try audioPackets(gpa, t.data);
+            defer freePackets(gpa, out_packets);
+            const first = for (src_packets, 0..) |p, i| {
+                if (std.mem.eql(u8, p, out_packets[0])) break i;
+            } else unreachable;
+            for (out_packets, src_packets[first..][0..out_packets.len]) |o, s| try std.testing.expectEqualSlices(u8, s, o);
+        }
+    }
+}
+
+test "trim: 途中から切り出したストリーム(最初のグラニュール位置が先にある)" {
+    const gpa = std.testing.allocator;
+    const buf = try gpa.dupe(u8, testdata.opus_stereo);
+    defer gpa.free(buf);
+    const n, const g = firstAudioPage(buf);
+    setGranule(buf, n, g + 1000);
+    const base = try probe(buf);
+    const t = try trimAlloc(gpa, buf, .{ .start = 2000, .end = 6000 });
+    defer gpa.free(t.data);
+    try std.testing.expectEqual(4000, (try probe(t.data)).samples);
+    // 全体を切り出すと、長さは元と同じ
+    const all = try trimAlloc(gpa, buf, .{});
+    defer gpa.free(all.data);
+    try std.testing.expectEqual(base.samples, (try probe(all.data)).samples);
+}
+
+test "trim: 範囲外と、扱えない入力" {
+    const gpa = std.testing.allocator;
+    // 末尾は長さで切り詰める
+    const t = try trimAlloc(gpa, testdata.opus_stereo, .{ .start = 20000, .end = 1_000_000 });
+    defer gpa.free(t.data);
+    try std.testing.expectEqual(24000, t.end);
+    try std.testing.expectError(error.EmptyRange, trimAlloc(gpa, testdata.opus_stereo, .{ .start = 24000 }));
+    try std.testing.expectError(error.EmptyRange, trimAlloc(gpa, testdata.opus_stereo, .{ .start = 5, .end = 5 }));
+    // Vorbis はまだ切り出せない
+    try std.testing.expectError(error.UnsupportedFormat, trimAlloc(gpa, testdata.vorbis_stereo, .{}));
+    // 壊れたページがあるものは切り出さない
+    const buf = try gpa.dupe(u8, testdata.opus_stereo);
+    defer gpa.free(buf);
+    buf[buf.len - 1] ^= 0xFF;
+    try std.testing.expectError(error.InvalidOgg, trimAlloc(gpa, buf, .{}));
+    try std.testing.expectError(error.NotOgg, trimAlloc(gpa, "RIFF", .{}));
 }

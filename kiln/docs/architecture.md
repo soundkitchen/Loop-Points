@@ -16,7 +16,7 @@
 | `src/pcm.zig` | PCM のサンプル形式と、f32 との変換(`kiln.pcm`) | — |
 | `src/mp3.zig`, `src/mp3/` | MP3 の解析と無劣化トリム(`kiln.mp3`)。`frame`(フレームヘッダ)/ `id3` / `xing`(Xing・LAME タグ)/ `stream`(入力の解析)/ `trim` に分ける。デコーダは `bits`(ビット読み取り)/ `huffman` / `layer3`(周波数領域の処理)/ `synth`(IMDCT と合成フィルタ)/ `decoder`(設計は [`mp3-decoder.md`](mp3-decoder.md)) | — |
 | `src/wav.zig`, `src/wav/` | WAV の解析とサンプル精度のトリム、エンコーダ(`kiln.wav`)。`parse`(チャンクの解析)/ `header`(ヘッダの書き出し)/ `encoder` に分ける | — |
-| `src/ogg.zig`, `src/ogg/` | Ogg(Vorbis / Opus)の解析(`kiln.ogg`)。`page`(ページとパケットの読み出し)/ `vorbis`(識別ヘッダと設定ヘッダ)/ `opus`(ID ヘッダとパケットの長さ)に分ける(設計は [`ogg.md`](ogg.md)) | — |
+| `src/ogg.zig`, `src/ogg/` | Ogg(Vorbis / Opus)の解析と Opus の無劣化の切り出し(`kiln.ogg`)。`page`(ページとパケットの読み出し)/ `vorbis`(識別ヘッダと設定ヘッダ)/ `opus`(ID ヘッダとパケットの長さ)/ `trim`(パケットを集めてページを作り直す)に分ける(設計は [`ogg.md`](ogg.md)) | — |
 | `src/m4a.zig`, `src/m4a/` | m4a(MP4 コンテナの AAC / ALAC)の解析(`kiln.m4a`)。`box`(ボックスの読み取り)/ `asc`(AudioSpecificConfig)に分ける(設計は [`m4a.md`](m4a.md)) | — |
 | `src/aac.zig` | aac(ADTS)の解析(`kiln.aac`。設計は [`aac.md`](aac.md)) | — |
 | `src/flac.zig`, `src/flac/` | FLAC の解析・復号・書き出し(`kiln.flac`)。`bits`(ビットの読み書き)/ `frame`(フレームヘッダ)/ `metadata`(`fLaC` とメタデータブロック)/ `stream`(フレームの区切り)/ `decoder`(サブフレームの復号)/ `encoder`(エンコーダ)/ `lpc`(線形予測の分析)/ `trim`(FLAC → FLAC の切り出し)に分ける(設計は [`flac.md`](flac.md)) | — |
@@ -201,12 +201,14 @@ const o = try kiln.ogg.probe(input);  // codec(.vorbis / .opus), sample_rate, in
 const m = try kiln.m4a.probe(input);  // codec(.aac / .alac), object_type, sbr, ps, sample_rate, channels, bits_per_sample,
                                       // samples, encoder_delay, audio_specific_config
 const a = try kiln.aac.probe(input);  // profile, mpeg_version, sample_rate, channels, frames, samples(ヘッダの値)
+// Opus を再エンコードせずに切り出す(位置は再生位置の 48kHz のサンプル数)。trimAlloc は一括版
+const r = try kiln.ogg.trim(gpa, input, .{ .start = 48000, .end = 96000 }, writer);  // r.start / r.end / r.sample_rate
 ```
 
-- 今は解析だけ(切り出しは後の PR で足す。[`draft.md`](draft.md) §2.8)。どれもアロケータを使わず、入力全体の `[]const u8` を受け取る
+- `probe` はアロケータを使わず、入力全体の `[]const u8` を受け取る。切り出しは Ogg の Opus だけ(Vorbis と m4a / aac は後の PR で足す。[`draft.md`](draft.md) §2.10)。`ogg.trim` はパケットの一覧とページの組み立てにアロケータを使う。方式は [`ogg.md`](ogg.md) §6
 - 長さ(`samples`)は再生される長さ。Ogg は先頭と末尾の切り詰め(Opus の pre-skip を含む)、m4a は編集リストか iTunSMPB の遅延と詰め物を除く。aac(ADTS)には書く場所がないので含む
 - サンプルレートとチャンネル数はデコード結果のもの(Opus は 48kHz、HE-AAC は SBR / PS の後)。ただし aac(ADTS)はヘッダの値で、HE-AAC かどうかは分からない(音声データを読まないため。[`aac.md`](aac.md) §3)。m4a でもファイルから分からなければ `sbr` / `ps` が null
-- JS は `ogg.probe` / `m4a.probe` / `aac.probe`。`aac.probe` の `sbr` は常に null。`m4a.probe` の `audioSpecificConfig` は WebCodecs の `AudioDecoder` の `description` に使える
+- JS は `ogg.probe` / `ogg.trim` / `m4a.probe` / `aac.probe`。`ogg.trim` は `mp3.trim` と同じ形で、`kiln_ogg_trim` の `kiln_value` は 0: start、1: end、2: サンプルレート。`aac.probe` の `sbr` は常に null。`m4a.probe` の `audioSpecificConfig` は WebCodecs の `AudioDecoder` の `description` に使える
 - 設計と検証は [`ogg.md`](ogg.md) / [`m4a.md`](m4a.md) / [`aac.md`](aac.md)
 
 ## 3. Zig 0.17.1 で確認したこと

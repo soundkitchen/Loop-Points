@@ -6,6 +6,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
+import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 
@@ -69,4 +70,17 @@ test('flac.trim / toWav / decode / encode', async () => {
   const e = kiln.flac.probe(kiln.flac.encode(buffer, { bitsPerSample: 20 }));
   assert.deepEqual([e.sampleRate, e.channels, e.bitsPerSample, e.samples], [44100, 2, 20, 1000]);
   assert.equal(kiln.flac.probe(kiln.flac.encode(pcm, { sampleRate: 8000 })).bitsPerSample, 16);
+});
+
+test('ogg.trim(Opus)', async () => {
+  const opus = await data('opus-stereo.opus');   // 48kHz(Opus のデコード結果)、24000 サンプル
+  const t = kiln.ogg.trim(opus, { startSample: 5000, endSample: 15000 });
+  assert.deepEqual([t.startSample, t.endSample], [5000, 15000]);
+  const p = kiln.ogg.probe(t.data);
+  assert.deepEqual([p.codec, p.samples, p.sampleRate, p.channels, p.invalidPages], ['opus', 10000, 48000, 2, 0]);
+  // 秒でも指定できる。末尾は長さで切り詰める
+  const s = kiln.ogg.trim(opus, { start: 0.25, end: 10 });
+  assert.deepEqual([s.startSample, s.endSample, kiln.ogg.probe(s.data).samples], [12000, 24000, 12000]);
+  // Vorbis はまだ切り出せない
+  assert.throws(() => kiln.ogg.trim(readFileSync(path.join(root, 'testdata/vorbis-stereo.ogg'))), (e) => e.code === 'UnsupportedFormat');
 });

@@ -10,7 +10,8 @@ Loop Points のクロップの書き出しを受け持つ、Zig 製のライブ�
 - MP3(MPEG-1 Layer III)と WAV(PCM・浮動小数点)を、形式を変えずにサンプル精度で切り出す
 - FLAC を FLAC のまま可逆に切り出す
 - MP3 と FLAC をデコードして WAV に、WAV と MP3 を FLAC に書き出す。`AudioBuffer` などの PCM を WAV や FLAC にする
-- Ogg(Vorbis / Opus)・m4a(AAC / ALAC)・aac(ADTS)のサンプルレートや長さを調べる(probe)。切り出しはまだです
+- Ogg の Opus を Opus のまま、サンプル単位で切り出す(パケットをコピーし、pre-skip とグラニュール位置で前後の余分を捨てさせる)
+- Ogg(Vorbis / Opus)・m4a(AAC / ALAC)・aac(ADTS)のサンプルレートや長さを調べる(probe)。Vorbis と m4a / aac の切り出しはまだです
 
 ## ビルドとテスト
 
@@ -48,6 +49,7 @@ const { data: wavOfFlac } = kiln.flac.toWav(flacBytes, { start: 1.5, end: 10 });
 const pcmWav = kiln.wav.encode(audioBuffer, { format: 'i16' });                  // 既定は 16bit、TPDF ディザ
 const pcmFlac = kiln.flac.encode(audioBuffer, { compression: 8 });
 const oggInfo = kiln.ogg.probe(oggBytes);                   // Opus のサンプルレートは 48000。元のレートは inputSampleRate
+const { data: opusCut } = kiln.ogg.trim(opusBytes, { start: 1.5, end: 10 }); // Opus のまま切り出す
 ```
 
 - 失敗すると `KilnError` を投げます。`code` はエラーの名前(`'NotMp3'` / `'EmptyRange'` など。一覧は `kiln.ts` の `KilnErrorCode`)
@@ -71,7 +73,7 @@ const oggInfo = kiln.ogg.probe(oggBytes);                   // Opus のサンプ
 - [`docs/lyria-mp3.md`](docs/lyria-mp3.md): Lyria 出力 MP3 の調査と、MP3 の無劣化トリムの方式
 - [`docs/mp3-decoder.md`](docs/mp3-decoder.md): MP3 デコーダの設計と検証
 - [`docs/flac.md`](docs/flac.md): FLAC の設計と検証
-- [`docs/ogg.md`](docs/ogg.md) / [`docs/m4a.md`](docs/m4a.md) / [`docs/aac.md`](docs/aac.md): Ogg・m4a・aac の解析の設計と検証
+- [`docs/ogg.md`](docs/ogg.md) / [`docs/m4a.md`](docs/m4a.md) / [`docs/aac.md`](docs/aac.md): Ogg・m4a・aac の解析と、Opus の切り出しの設計と検証
 
 検証の記録には、2026-11-11 に外した CLI(`kiln trim`)を使って確かめたものがあります。
 
