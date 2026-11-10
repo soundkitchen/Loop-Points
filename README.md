@@ -18,7 +18,7 @@ Node.js `^24.22.1` または `>=26.12.1` が必要です(それぞれのセキ�
 npm install
 npm run dev     # 開発サーバー。表示された URL を開く
 npm run build   # 型チェックのあと、dist/ に静的ファイルを出力する
-npm run kiln:test   # kiln のテスト(Zig のテスト、kiln.js の実行時のテスト、型定義の検査)
+npm run kiln:test   # kiln のテスト(Zig のテスト、kiln.ts の実行時のテスト、型の検査)
 ```
 
 - 開発サーバーが wasm をビルドするのは起動するときだけです。動かしたまま `kiln/` の Zig のソースを直したときは、`npm run kiln:build` でビルドし直してから、ブラウザを再読み込みしてください

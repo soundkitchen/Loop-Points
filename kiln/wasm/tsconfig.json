@@ -1,0 +1,9 @@
+{
+  // kiln/wasm の型の検査(npm run kiln:test)。Loop Points の設定に、型を消すだけで動く書き方の制約を足す。
+  // Node のテストは kiln.ts を型を消してそのまま読むため(画面のコードにはこの制約をかけない)
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    "erasableSyntaxOnly": true
+  },
+  "include": ["."]
+}

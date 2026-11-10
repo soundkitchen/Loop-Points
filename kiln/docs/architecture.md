@@ -21,16 +21,15 @@
 | `src/aac.zig` | aac(ADTS)の解析(`kiln.aac`。設計は [`aac.md`](aac.md)) | — |
 | `src/flac.zig`, `src/flac/` | FLAC の解析・復号・書き出し(`kiln.flac`)。`bits`(ビットの読み書き)/ `frame`(フレームヘッダ)/ `metadata`(`fLaC` とメタデータブロック)/ `stream`(フレームの区切り)/ `decoder`(サブフレームの復号)/ `encoder`(エンコーダ)/ `lpc`(線形予測の分析)/ `trim`(FLAC → FLAC の切り出し)に分ける(設計は [`flac.md`](flac.md)) | — |
 | `wasm/main.zig` | wasm の export 関数 | `zig-out/kiln.wasm` |
-| `wasm/kiln.js` | JS ラッパー(ES module。`load()` で wasm を読み込む)。Loop Points はこのファイルを直接 import する | — |
-| `wasm/kiln.d.ts` | JS ラッパーの TypeScript の型定義(TypeScript 5.7 以降) | — |
-| `wasm/types/` | kiln.d.ts の型検査用のファイル(ブラウザのメインスレッド、lib: DOM) | — |
-| `wasm/test/` | kiln.js の実行時テスト(Node の `node:test`)。`wasm/kiln.js` と `zig-out/kiln.wasm` を読む | — |
+| `wasm/kiln.ts` | JS 側の包み(TypeScript。`load()` で wasm を読み込む)。型もここに書く。Loop Points はこのファイルを直接 import する | — |
+| `wasm/test/` | kiln.ts の実行時テスト(Node の `node:test`。`*.test.mjs`)。`wasm/kiln.ts` を型を消して読み、`zig-out/kiln.wasm` を読む。`types.ts` は誤った使い方が型エラーになることの検査(実行しない) | — |
+| `wasm/tsconfig.json` | kiln/wasm の型の検査の設定。Loop Points の `tsconfig.json` に `erasableSyntaxOnly`(型を消すだけで動く書き方)を足したもの | — |
 | `LICENSE` | MIT の全文 | — |
 | `THIRD_PARTY_NOTICES.md` | 外部から取り込んだコードや数表の出所とライセンス(方針は [`draft.md`](draft.md) §2.5) | — |
 | `testdata/` | テスト用の音声(MP3、WAV、FLAC、Ogg、m4a、aac)と、それを `@embedFile` するモジュール(`testdata.zig`)。作り方は `testdata/README.md` | — |
 
 - `zig build`(`zig build wasm` と同じ)は wasm をビルドする。wasm は `-Dtarget` に関係なく常に `wasm32-freestanding` 向けで、最適化モードが debug のときは small でビルドする
-- `zig build test` はコアのテストを実行し、wasm のビルドが通ることも確かめる(wasm はネイティブで実行できないため)。Loop Points のリポジトリ直下の `npm run kiln:test` は、これに加えて kiln.js の実行時のテストと kiln.d.ts の型検査を実行する
+- `zig build test` はコアのテストを実行し、wasm のビルドが通ることも確かめる(wasm はネイティブで実行できないため)。Loop Points のリポジトリ直下の `npm run kiln:test` は、これに加えて kiln.ts の実行時のテストと型の検査を実行する
 - コアのテストは、`testdata` モジュールを import できるテスト専用のモジュール(ルートは同じ `src/root.zig`)で実行する。wasm に入れる `kiln` モジュールには `testdata` を含めない。`src/` の各ファイルはトップレベルに `const testdata = @import("testdata");` を置き、`test` ブロックからだけ参照する(Zig はトップレベルの宣言を参照されたときにだけ解析するため、テスト以外のビルドでは import が解決されない)
 - wasm とテストの各ビルドで使うコアのモジュールは、`build.zig` の `kilnModuleOptions` で同じ定義から作る。テスト用のモジュールは、それに `testdata` の import を足したもの
 - バージョンは `build.zig.zon` の `.version` だけを出所にし、ビルドオプション経由でコアの `kiln.version` に渡す
@@ -75,15 +74,15 @@ const nch = try dec.decodeFrame(frame_bytes, &pcm); // pcm: [2][1152]f32。扱�
 
 ### 2.2 CLI
 
-2026-11-11 に外した([`draft.md`](draft.md) §2.9)。CLI が使っていた入力の形式の判定(`kiln.detect`)はコアに残っている。今はコアのテストからしか呼ばず、wasm には export していない(Loop Points で中身から形式を判定するときに、wasm/main.zig と kiln.js につなぐ)。拡張子は見ない。WAV は先頭のバイト列(RIFF / RF64 / RIFX と WAVE)、FLAC は先頭(ID3v2 タグがあればその後)の `fLaC` か Ogg FLAC の印、Ogg は先頭の `OggS`、m4a は先頭の `ftyp` ボックス、aac は先頭(ID3v2 タグがあればその後)に ADTS のフレームが続くことで判定し、それ以外は MP3 の解析に任せる(先頭にゴミがある MP3 も受け付ける)。ADTS は MP3 と同期ワードが似ているので、MP3 の解析より先に見る
+2026-11-11 に外した([`draft.md`](draft.md) §2.9)。CLI が使っていた入力の形式の判定(`kiln.detect`)はコアに残っている。今はコアのテストからしか呼ばず、wasm には export していない(Loop Points で中身から形式を判定するときに、wasm/main.zig と kiln.ts につなぐ)。拡張子は見ない。WAV は先頭のバイト列(RIFF / RF64 / RIFX と WAVE)、FLAC は先頭(ID3v2 タグがあればその後)の `fLaC` か Ogg FLAC の印、Ogg は先頭の `OggS`、m4a は先頭の `ftyp` ボックス、aac は先頭(ID3v2 タグがあればその後)に ADTS のフレームが続くことで判定し、それ以外は MP3 の解析に任せる(先頭にゴミがある MP3 も受け付ける)。ADTS は MP3 と同期ワードが似ているので、MP3 の解析より先に見る
 
 ### 2.3 wasm と JS
 
-- JS に返すエラーの名前は、wasm/main.zig の `KilnError`(エラーの集合)に限る。`fail` はこの集合しか受け付けないので、export が新しいエラーを返しうるようになるとコンパイルが通らなくなる。kiln.d.ts の `KilnErrorCode` も同じ一覧にする(この同期は手作業。両方の定義の横に、もう一方を指すコメントがある)
+- JS に返すエラーの名前は、wasm/main.zig の `KilnError`(エラーの集合)に限る。`fail` はこの集合しか受け付けないので、export が新しいエラーを返しうるようになるとコンパイルが通らなくなる。kiln.ts の `KilnErrorCode` も同じ一覧にする(この同期は手作業。両方の定義の横に、もう一方を指すコメントがある)
 - `InternalError` は kiln の不具合(起きるはずのない食い違い。たとえば MP3 → WAV で書いた長さが WAV のヘッダと違う)のときに返す。止めずにエラーとして返すので、wasm のインスタンスはそのまま使い続けられる
-- 型定義(kiln.d.ts)は ES の標準の型だけを使い、DOM / WebWorker の型(`BufferSource`、`URL`、`WebAssembly` など)に頼らない。入力は `ArrayBufferLike | ArrayBufferView`(kiln.js がバイト列として読むものすべて)、出力は `Uint8Array<ArrayBuffer>` / `Float32Array<ArrayBuffer>`(そのまま `Blob` などに渡せる)。`wav.encode` は `AudioBuffer` を構造で受け(Worker の型ライブラリにも通る)、`Float32Array[]` を渡すときは `sampleRate` が必須
-- `load(source)` の `source` は wasm のバイト列だけで、省けない。URL からは読まない(fetch しない)。Loop Points は CSP の `connect-src 'none'` で fetch を止め、wasm をチャンクに埋め込んでバイト列で渡すため。kiln.js に `new URL('./kiln.wasm', import.meta.url)` を書くと、Vite や webpack 5 はそれをアセットの参照とみなし、使わない kiln.wasm をビルド結果に出力する(soundkitchen/kiln#11)ので、その書き方も残さない。バイト列でない値(省いたとき、URL、`Response`、`Blob` など)は `TypeError` で reject する(`load` は async なので、投げるのではなく reject した Promise を返す)
-- kiln.d.ts か kiln.js の API を変えたら、Loop Points のリポジトリ直下で `npm run kiln:test` を実行する。TypeScript の tsc で `wasm/types/tsconfig.dom.json` の型検査を通し(誤った使い方が型エラーになることも `@ts-expect-error` で確かめている)、`wasm/test/` の Node のテストで kiln.js の実行時の振る舞い(`load` の引数の検査、バイト列での読み込みなど)を確かめる。Loop Points の `tsc` は `skipLibCheck` で .d.ts を検査しないので、kiln.d.ts の誤りはここで見つける
+- 型は kiln.ts の中に書き、実装と同じファイルで確かめる(2026-11-11 までは kiln.js と型定義の kiln.d.ts に分けていた。[`draft.md`](draft.md) §2.9)。入力は `ArrayBufferLike | ArrayBufferView`(バイト列として読むものすべて)、出力は `Uint8Array<ArrayBuffer>` / `Float32Array<ArrayBuffer>`(そのまま `Blob` などに渡せる)。`wav.encode` は `AudioBuffer` を構造(`AudioBufferLike`)で受け、`Float32Array[]` を渡すときは `sampleRate` が必須。wasm の export 関数の型は kiln.ts の `Exports` に手で写す(wasm/main.zig の export を変えたら合わせる)。引数の数や並びがずれても tsc は気づかず、wasm は足りない引数を 0 として黙って動くので、`wasm/test/convert.test.mjs` で mp3 / wav / flac の各経路を実際に呼んで確かめる
+- `load(source)` の `source` は wasm のバイト列だけで、省けない。URL からは読まない(fetch しない)。Loop Points は CSP の `connect-src 'none'` で fetch を止め、wasm をチャンクに埋め込んでバイト列で渡すため。kiln.ts に `new URL('./kiln.wasm', import.meta.url)` を書くと、Vite や webpack 5 はそれをアセットの参照とみなし、使わない kiln.wasm をビルド結果に出力する(soundkitchen/kiln#11)ので、その書き方も残さない。バイト列でない値(省いたとき、URL、`Response`、`Blob` など)は `TypeError` で reject する(`load` は async なので、投げるのではなく reject した Promise を返す)
+- kiln.ts を変えたら、Loop Points のリポジトリ直下で `npm run kiln:test` を実行する。`kiln/wasm/tsconfig.json` で型を確かめ(Loop Points の `tsconfig.json` の include にも kiln/wasm があるので、`npm run build` でも確かめる)、`wasm/test/` の Node のテストで実行時の振る舞いを確かめる。Node は kiln.ts を型を消すだけで実行するので、型を消すだけで動く書き方にする(`enum`、`namespace`、コンストラクタの引数のプロパティは使わない。`erasableSyntaxOnly` で確かめる)。`wasm/test/types.ts` は、誤った使い方(`start` と `startSample` の同時指定、未知の `format`、`sampleRate` のない `Float32Array[]` など)が型エラーになることを `@ts-expect-error` で確かめる。kiln.ts の型を意図して緩めるときは、ここも直す
 - export 関数は成功なら true を返し、結果(出力のバイト列や数値)をモジュール内の変数に置く。JS 側は `kiln_output_ptr` / `kiln_output_len` / `kiln_value(i)` で読み出し、失敗時は `kiln_error_ptr` / `kiln_error_len` でエラー名を読む
 - JS ラッパーは `load()` が返すオブジェクトに `mp3.probe(bytes)` / `mp3.trim(bytes, { start, end })`(秒)/ `{ startSample, endSample }`(サンプル数)を持つ。失敗時はコアのエラー名を `code` に持つ `KilnError` を投げる
 - 入力は `ArrayBuffer` / `SharedArrayBuffer` / TypedArray / `DataView`(型定義の `BytesInput`)。TypedArray と `DataView` は、要素の値ではなく下のバイト列として読む

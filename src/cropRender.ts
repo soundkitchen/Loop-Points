@@ -3,7 +3,7 @@
 //   mp3 → WAV: kiln でデコードして 16-bit で書く (元のサンプルレートのまま)
 //   WAV → WAV: 元の形式のままバイト列を切り出す
 //   ほかの形式 → WAV: ブラウザでデコードし、kiln で 16-bit で書く (元のレートが分かればそのレート)
-import { KilnError, load, type Kiln, type Mp3Info, type WavInfo } from '../kiln/wasm/kiln.js';
+import { KilnError, load, type Kiln, type Mp3Info, type WavInfo } from '../kiln/wasm/kiln';
 // CSP の connect-src 'none' では fetch で wasm を読めない (data: URL も止まる) ので、チャンクに埋め込んでバイト列で渡す
 import kilnWasm from '../kiln/zig-out/kiln.wasm?url&inline';
 import { OUT_FORMATS, extFormat, type OutFormat } from './cropFormat';

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// ogg / m4a / aac の probe の実行時テスト。wasm/kiln.js、zig build でできた zig-out/kiln.wasm、testdata/ を読む。
+// ogg / m4a / aac の probe の実行時テスト。wasm/kiln.ts、zig build でできた zig-out/kiln.wasm、testdata/ を読む。
 // Loop Points のリポジトリ直下の `npm run kiln:test` で動く(kiln/ で `zig build && node --test 'wasm/test/*.test.mjs'` でもよい)
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
-const { load, KilnError } = await import(path.join(root, 'wasm/kiln.js'));
+const { load, KilnError } = await import(path.join(root, 'wasm/kiln.ts'));
 const kiln = await load(await readFile(path.join(root, 'zig-out/kiln.wasm')));
 const data = (name) => readFile(path.join(root, 'testdata', name));
 
