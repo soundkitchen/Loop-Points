@@ -1,11 +1,11 @@
-// 音源の一部を、指定の形式のファイルにする。kiln (vendor/kiln) を使い、main からはクロップモードに切り替えたときに読み込む
+// 音源の一部を、指定の形式のファイルにする。kiln (kiln/) を使い、main からはクロップモードに切り替えたときに読み込む
 //   mp3 → mp3: 再エンコードせずにサンプル単位で切り出す
 //   mp3 → WAV: kiln でデコードして 16-bit で書く (元のサンプルレートのまま)
 //   WAV → WAV: 元の形式のままバイト列を切り出す
 //   ほかの形式 → WAV: ブラウザでデコードし、kiln で 16-bit で書く (元のレートが分かればそのレート)
-import { KilnError, load, type Kiln, type Mp3Info, type WavInfo } from '../vendor/kiln/kiln.js';
+import { KilnError, load, type Kiln, type Mp3Info, type WavInfo } from '../kiln/wasm/kiln.js';
 // CSP の connect-src 'none' では fetch で wasm を読めない (data: URL も止まる) ので、チャンクに埋め込んでバイト列で渡す
-import kilnWasm from '../vendor/kiln/kiln.wasm?url&inline';
+import kilnWasm from '../kiln/zig-out/wasm/kiln.wasm?url&inline';
 import { OUT_FORMATS, extFormat, type OutFormat } from './cropFormat';
 import { sampleRateOf, startsWith } from './sampleRate';
 
