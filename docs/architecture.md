@@ -22,6 +22,7 @@
 | `wasm/kiln.js` | JS ラッパー(ES module。`load()` で wasm を読み込む) | `zig-out/wasm/kiln.js` |
 | `wasm/kiln.d.ts` | JS ラッパーの TypeScript の型定義(TypeScript 5.7 以降) | `zig-out/wasm/kiln.d.ts` |
 | `wasm/types/` | kiln.d.ts の型検査用のファイル(DOM / WebWorker / ES だけの 3 通り)。配布物には含めない | — |
+| `wasm/test/` | kiln.js の実行時テスト(Node の `node:test`)。`zig-out/wasm/` を読む。配布物には含めない | — |
 | `LICENSE` | MIT の全文。wasm の配布物にも置く | `zig-out/wasm/LICENSE` |
 | `THIRD_PARTY_NOTICES.md` | 外部から取り込んだコードや数表の出所とライセンス(方針は [`draft.md`](draft.md) §2.5) | — |
 | `cli/time.zig` | CLI の時刻指定(`1.5` / `1:02.5` / `66150s`)の解析 | — |
@@ -98,8 +99,9 @@ kiln trim <input> <output> [--start TIME] [--end TIME | --duration TIME]
 - JS に返すエラーの名前は、wasm/main.zig の `KilnError`(エラーの集合)に限る。`fail` はこの集合しか受け付けないので、export が新しいエラーを返しうるようになるとコンパイルが通らなくなる。kiln.d.ts の `KilnErrorCode` も同じ一覧にする(この同期は手作業。両方の定義の横に、もう一方を指すコメントがある)
 - `InternalError` は kiln の不具合(起きるはずのない食い違い。たとえば MP3 → WAV で書いた長さが WAV のヘッダと違う)のときに返す。止めずにエラーとして返すので、wasm のインスタンスはそのまま使い続けられる。CLI は終了コード 1
 - 型定義(kiln.d.ts)は ES の標準の型だけを使い、DOM / WebWorker の型(`BufferSource`、`URL`、`WebAssembly` など)に頼らない。入力は `ArrayBufferLike | ArrayBufferView`(kiln.js がバイト列として読むものすべて)、出力は `Uint8Array<ArrayBuffer>` / `Float32Array<ArrayBuffer>`(そのまま `Blob` などに渡せる)。`wav.encode` は `AudioBuffer` を構造で受け(Worker の型ライブラリにも通る)、`Float32Array[]` を渡すときは `sampleRate` が必須。`load` の URL は文字列か、`href` を持つもの(`URL` など)
-- `load(source)` の `source`(wasm の URL かバイト列)は省けない。kiln.js に `new URL('./kiln.wasm', import.meta.url)` を書くと、Vite や webpack 5 はそれをアセットの参照とみなし、バイト列で読み込む場合にも使わない kiln.wasm をビルド結果に出力するため(Issue #11)。省くと `TypeError` を投げる
+- `load(source)` の `source`(wasm の URL かバイト列)は省けない。kiln.js に `new URL('./kiln.wasm', import.meta.url)` を書くと、Vite や webpack 5 はそれをアセットの参照とみなし、バイト列で読み込む場合にも使わない kiln.wasm をビルド結果に出力するため(Issue #11)。URL でもバイト列でもない値(省いたとき、`Response`、`Blob` など)は、fetch の前に `TypeError` で reject する(`load` は async なので、投げるのではなく reject した Promise を返す)。URL は呼び出す側のモジュールから見た位置で書く
 - kiln.d.ts か kiln.js の API を変えたら、TypeScript 5.7 以降の tsc で `wasm/types/` の 3 つの設定(`tsconfig.dom.json` / `tsconfig.worker.json` / `tsconfig.es.json`)の型検査を通す(`tsc -p wasm/types/tsconfig.dom.json` など)。誤った使い方が型エラーになることも `@ts-expect-error` で確かめている。zig build は型検査をしない(Node と tsc を前提にしないため)
+- kiln.js の実行時の振る舞い(`load` の引数の検査、URL とバイト列での読み込みなど)は、`wasm/test/` の Node のテストで確かめる。`zig build` の後に `node --test 'wasm/test/*.test.mjs'`(Node 22 以降)。型検査と同じく zig build には含めず、kiln.js を変えたら手で動かす
 - export 関数は成功なら true を返し、結果(出力のバイト列や数値)をモジュール内の変数に置く。JS 側は `kiln_output_ptr` / `kiln_output_len` / `kiln_value(i)` で読み出し、失敗時は `kiln_error_ptr` / `kiln_error_len` でエラー名を読む
 - JS ラッパーは `load()` が返すオブジェクトに `mp3.probe(bytes)` / `mp3.trim(bytes, { start, end })`(秒)/ `{ startSample, endSample }`(サンプル数)を持つ。失敗時はコアのエラー名を `code` に持つ `KilnError` を投げる
 - 入力は `ArrayBuffer` / `SharedArrayBuffer` / TypedArray / `DataView`(型定義の `BytesInput`)。TypedArray と `DataView` は、要素の値ではなく下のバイト列として読む

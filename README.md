@@ -20,6 +20,13 @@ zig build run -- --version
 zig build wasm     # wasm と JS ラッパーだけをビルド
 ```
 
+JS ラッパー(`kiln.js`)を変えたときは、Node 22 以降で実行時のテストを、TypeScript 5.7 以降で型定義の検査を動かします(どちらも `zig build` には含めません)。
+
+```sh
+zig build && node --test 'wasm/test/*.test.mjs'
+npx -p typescript tsc -p wasm/types/tsconfig.dom.json   # worker / es も同じ
+```
+
 ## 使い方
 
 ### CLI
@@ -83,7 +90,7 @@ const { data: flacCut } = kiln.flac.trim(flacBytes, { start: 1.5, end: 10 });   
 
 - 失敗すると `KilnError` を投げます。`code` はエラーの名前(`'NotMp3'` / `'EmptyRange'` など。一覧は `kiln.d.ts` の `KilnErrorCode`)
 - 処理は同期です。何分もある曲のデコードには数百 ms かかるので、メインスレッドを止めたくなければ Worker で動かしてください
-- `load` には wasm の URL(fetch します)かバイト列を必ず渡します。既定の読み込み先は持ちません。`new URL('./kiln.wasm', import.meta.url)` を kiln.js の中に書くと、バイト列で読み込むときにも、Vite などのバンドラが使わない `kiln.wasm` をビルド結果に出力してしまうためです
+- `load` には wasm の URL(fetch します)かバイト列を必ず渡します。URL は、`load` を呼ぶモジュールから見た `kiln.wasm` の位置です(上の例は、呼ぶモジュールと `kiln.js`・`kiln.wasm` が同じ場所にある場合)。省いたときや、`Response`・`Blob` などを渡したときは、`TypeError` で reject します。既定の読み込み先は持ちません。`new URL('./kiln.wasm', import.meta.url)` を kiln.js の中に書くと、バイト列で読み込むときにも、Vite などのバンドラが使わない `kiln.wasm` をビルド結果に出力してしまうためです
 
 **fetch を使わずに読み込む**: CSP で `connect-src` を禁じているときなどは、URL の代わりに wasm のバイト列を渡します。wasm のインスタンス化には、CSP の `script-src` に `'wasm-unsafe-eval'` が要ります。
 
@@ -99,7 +106,7 @@ const kiln = await load(Uint8Array.from(atob(b64), (c) => c.charCodeAt(0)));
 ```js
 // kiln-worker.js(new Worker(new URL('./kiln-worker.js', import.meta.url), { type: 'module' }) で起動)
 import { load, KilnError } from './kiln.js';
-const kiln = load(/* wasm の URL かバイト列 */);
+const kiln = load(new URL('./kiln.wasm', import.meta.url)); // kiln-worker.js から見た位置。バイト列でもよい
 self.onmessage = async ({ data: { bytes, start, end } }) => {
   try {
     const { data } = (await kiln).mp3.trim(bytes, { start, end });
