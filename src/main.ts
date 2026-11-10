@@ -551,6 +551,8 @@ $('export-crop').addEventListener('click', () => void whileWriting('音源を書
   if (named !== written) notes.push(`${handle.name} に ${OUT_FORMATS[written].description} で保存しました。拡張子が ${OUT_FORMATS[written].ext} でないので、開くときに形式を読み違えることがあります`);
   // 長さの情報のない mp3 は、先頭のデコーダの遅延 (529 サンプル) より前を無劣化では切れない
   if (out.start - from / rate >= SHIFT_NOTICE) notes.push(`mp3 の先頭は無劣化では切り出せないので、${formatTime(out.start)} から切り出しました`);
+  // kiln は壊れたフレームを無音で埋めて長さを保つが、ブラウザのデコードは飛ばすことがあるので、波形の位置とずれうる
+  if (out.invalidFrames > 0) notes.push(`壊れていたフレームが ${out.invalidFrames} 個あったので、その部分は無音にして書き出しました。ブラウザは壊れたフレームを飛ばして表示することがあるので、その後ろでは、波形で選んだ位置と書き出した位置がずれていることがあります`);
   if (notes.length > 0) alert(notes.join('\n'));
   await openCropped(new File([out.blob], handle.name, { type: out.blob.type }), sourceLoop, loopStart - out.start, loopEnd - out.start);
 }));
