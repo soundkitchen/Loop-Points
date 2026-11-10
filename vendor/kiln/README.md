@@ -25,5 +25,6 @@
 2. `zig-out/wasm/` の `kiln.wasm`、`kiln.js`、`kiln.d.ts`、`LICENSE` を、このフォルダにコピーする
 3. この README のコミットと sha256 を書き換える
 4. `npm run build` で型チェックを通し、クロップの書き出しを確かめる
+5. `dist/assets/` に `.wasm` のファイルがないことを確かめる。kiln.wasm はクロップのチャンクに埋め込むので、別のファイルとして出るなら、`kiln.js` が既定の読み込み先(`new URL('./kiln.wasm', import.meta.url)` など)を持っている
 
 足りない機能があれば、Loop Points の側で別のライブラリを足さず、kiln に Issue を立てます。
