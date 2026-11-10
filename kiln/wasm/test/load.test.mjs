@@ -53,7 +53,7 @@ test('URL(文字列か、href を持つもの)で読み込める。404 はエラ
   }
 });
 
-test('kiln.js に import.meta.url を基準にした URL を書かない(バンドラが kiln.wasm を出力するため、Issue #11)', async () => {
+test('kiln.js に import.meta.url を基準にした URL を書かない(バンドラが kiln.wasm を出力するため、soundkitchen/kiln#11)', async () => {
   const js = await readFile(path.join(out, 'kiln.js'), 'utf8');
   // Vite や webpack 5 が拾うのは new URL('...', import.meta.url) の形
   assert.doesNotMatch(js, /new\s+URL\s*\([^)]*import\.meta\.url/);

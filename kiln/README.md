@@ -2,16 +2,21 @@
 
 音声を読み込み、クロップして、任意の形式で書き出すための Zig 製ライブラリです。CLI とブラウザ(wasm)の両方で動かすことを目指しています。
 
+Loop Points のクロップの書き出しに使い、Loop Points のリポジトリの `kiln/` で開発しています。もとは [soundkitchen/kiln](https://github.com/soundkitchen/kiln) で開発していて、`1eebfb7` までの履歴を `git subtree` で取り込んであります。そのため、取り込む前のコミットメッセージにある `#番号` は、soundkitchen/kiln の Issue と PR を指します。
+
 最初の到達点は、Google Gemini Lyria が出力する MP3 を、再エンコードせずにサンプル精度でトリムすることです。今のところ、MP3(MPEG-1 Layer III)と WAV(PCM・浮動小数点)を、形式を変えずにサンプル精度で切り出せます。FLAC も FLAC のまま可逆に切り出せます。MP3 と FLAC をデコードして WAV に、WAV と MP3 を FLAC に書き出すこともできます。Ogg(Vorbis / Opus)・m4a(AAC / ALAC)・aac(ADTS)は、今のところサンプルレートや長さを調べる(probe)だけです。
 
-- 表示名は `K!LN`、識別子(リポジトリ名・モジュール名・実行ファイル名)は `kiln` です。
+- 表示名は `K!LN`、識別子(ディレクトリ名・モジュール名・実行ファイル名)は `kiln` です。
 
 ## 必要なもの
 
 - Zig 0.17.1
-  - このリポジトリでは direnv(`.envrc`)で `~/Zig/0.17` を PATH に通します。初回は `direnv allow` を実行してください。
+  - リポジトリ直下の direnv(`.envrc`)で `~/Zig/0.17` を PATH に通します。初回はリポジトリ直下で `direnv allow` を実行してください。
+  - リポジトリ直下の `npm run kiln:build` / `npm run kiln:test`(`scripts/kiln.mjs`)は、PATH に Zig 0.17.1 がなければ公式のアーカイブを `.zig/` に取ってきて使います。`npm run dev` / `npm run build` の前にも wasm をビルドします
 
 ## ビルドとテスト
+
+`kiln/` で実行します。リポジトリ直下の `npm run kiln:test` は、下の Zig のテスト、JS の実行時のテスト、型定義の検査をまとめて実行します。
 
 ```sh
 zig build          # CLI(zig-out/bin/kiln)と wasm(zig-out/wasm/)をビルド

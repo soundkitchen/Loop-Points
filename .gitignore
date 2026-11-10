@@ -5,3 +5,6 @@ dist/
 
 # 動作確認用の音源。公開リポジトリには入れない
 sounds/
+
+# Zig が PATH にないときに scripts/kiln.mjs が取ってくる置き場所
+.zig/

@@ -4,10 +4,14 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
+    "predev": "node scripts/kiln.mjs build",
     "dev": "vite",
+    "prebuild": "node scripts/kiln.mjs build",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
-    "deploy": "npm run build && wrangler deploy"
+    "deploy": "npm run build && wrangler deploy",
+    "kiln:build": "node scripts/kiln.mjs build",
+    "kiln:test": "node scripts/kiln.mjs test"
   },
   "engines": {
     "node": "^24.22.1 || >=26.12.1"

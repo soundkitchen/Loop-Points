@@ -12,10 +12,13 @@ Chrome、Edge などの Chromium 系のブラウザで使えます。JSON を保
 
 Node.js `^24.22.1` または `>=26.12.1` が必要です(それぞれのセキュリティ更新を適用したバージョン以降)。
 
+クロップの書き出しに使う kiln([`kiln/`](kiln/))の wasm のビルドに、Zig 0.17.1 を使います。`npm run dev` と `npm run build` は、先に kiln の wasm をビルドします。PATH に Zig 0.17.1 がなければ、公式のアーカイブを `.zig/` に取ってきて、sha256 を確かめてから使います(初回は数十 MB のダウンロードと、wasm のビルドに時間がかかります)。手で入れた Zig を使うときは、リポジトリ直下の `.envrc`(direnv)で PATH に通せます。
+
 ```sh
 npm install
 npm run dev     # 開発サーバー。表示された URL を開く
 npm run build   # 型チェックのあと、dist/ に静的ファイルを出力する
+npm run kiln:test   # kiln のテスト(Zig のテスト、kiln.js の実行時のテスト、型定義の検査)
 ```
 
 ## 使い方
@@ -58,7 +61,7 @@ npm run build   # 型チェックのあと、dist/ に静的ファイルを出�
 
 波形の上の「クロップ」に切り替えると、音源の前後を切り落として書き出せます。動かす線が「前端」「後端」に変わり、切り落とす部分は暗く表示します。タブの横に、クロップ後の長さ、書き出す形式、「切り出して保存」のボタンが出ます。線のドラッグ、数値の入力、微調整のボタンは、ループポイントと同じです。範囲は音源ごとに保ち、モードを切り替えても消えません。
 
-書き出しには [kiln](https://github.com/soundkitchen/kiln) を使います。クロップモードに切り替えると kiln を読み込んで音源を調べ、調べ終わると書き出せるようになります。形式は音源によって次のようになります。
+書き出しには、このリポジトリの [kiln](kiln/)(Zig 製、wasm)を使います。クロップモードに切り替えると kiln を読み込んで音源を調べ、調べ終わると書き出せるようになります。形式は音源によって次のようになります。
 
 | 音源 | 書き出す形式 | 書き出し方 |
 |---|---|---|
@@ -136,7 +139,7 @@ src.start(0, 0);   // 頭から鳴らすと、イントロを 1 回流してか�
 
 Cloudflare Workers の静的アセットとして `dist/` を配信します。サーバー側の処理はありません。設定は `wrangler.jsonc` にあります。
 
-公開版は、`main` に push するたびに [Workers Builds](https://developers.cloudflare.com/workers/ci-cd/builds/) が自動でデプロイします。ビルドの Node は `.node-version` で指定します。失敗しても公開版は前のバージョンのままで、失敗は Cloudflare のダッシュボードのビルド履歴で確認します。手元で確認したり、手動でデプロイしたりするときは、次のコマンドを使います。
+公開版は、`main` に push するたびに [Workers Builds](https://developers.cloudflare.com/workers/ci-cd/builds/) が自動でデプロイします。ビルドの Node は `.node-version` で指定します。Workers Builds には Zig がないので、ビルドのたびに `npm run build` が Zig を取ってきて kiln の wasm をビルドします。失敗しても公開版は前のバージョンのままで、失敗は Cloudflare のダッシュボードのビルド履歴で確認します。手元で確認したり、手動でデプロイしたりするときは、次のコマンドを使います。
 
 ```sh
 npx wrangler login   # 初回のみ
@@ -156,4 +159,4 @@ npm run deploy       # ビルドして、Cloudflare にデプロイする
 
 [MIT](LICENSE)
 
-クロップの書き出しに使う [kiln](https://github.com/soundkitchen/kiln)(MIT)のビルド済みのファイルを、`vendor/kiln/` に置いています。著作権表示は [vendor/kiln/LICENSE](vendor/kiln/LICENSE)、取り込んだコミットと更新の手順は [vendor/kiln/README.md](vendor/kiln/README.md) にあります。
+クロップの書き出しに使う [kiln](kiln/) も MIT ライセンスです。全文は [kiln/LICENSE](kiln/LICENSE)、kiln に取り込んだ外部のコードや数表は [kiln/THIRD_PARTY_NOTICES.md](kiln/THIRD_PARTY_NOTICES.md) にあります。

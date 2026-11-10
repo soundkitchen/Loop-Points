@@ -14,7 +14,7 @@ export class KilnError extends Error {
 }
 
 // load は既定の読み込み先(kiln.js と同じ場所の kiln.wasm)を持たない。import.meta.url を基準にした URL をここに書くと、
-// バンドラがそれをアセットの参照とみなし、バイト列で読み込む場合にも使わない kiln.wasm をビルド結果に出力するため(Issue #11)。
+// バンドラがそれをアセットの参照とみなし、バイト列で読み込む場合にも使わない kiln.wasm をビルド結果に出力するため(soundkitchen/kiln#11)。
 // このファイルには、コメントや文字列でもその書き方を残さない
 
 /**

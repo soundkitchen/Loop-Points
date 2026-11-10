@@ -77,7 +77,7 @@
 
 ### 2.7 2026-11-10 に決めたこと(wasm の読み込み)
 
-- **`load` の既定の読み込み先**: 持たない。呼ぶ側が wasm の URL かバイト列を必ず渡す(`load(new URL('./kiln.wasm', import.meta.url))` など)。kiln.js に既定の URL を書くと、バイト列で読み込む場合にもバンドラが使わない kiln.wasm を出力するため(Issue #11、Loop Points から)。入口を分ける(バイト列だけを受け取る `kiln-core.js` を足す)案もあったが、ファイルを増やさないほうを選んだ
+- **`load` の既定の読み込み先**: 持たない。呼ぶ側が wasm の URL かバイト列を必ず渡す(`load(new URL('./kiln.wasm', import.meta.url))` など)。kiln.js に既定の URL を書くと、バイト列で読み込む場合にもバンドラが使わない kiln.wasm を出力するため(soundkitchen/kiln#11、Loop Points から)。入口を分ける(バイト列だけを受け取る `kiln-core.js` を足す)案もあったが、ファイルを増やさないほうを選んだ
 
 ### 2.8 2026-11-10 に決めたこと(Ogg / m4a / aac)
 
