@@ -1,4 +1,4 @@
-import { OUT_FORMATS, croppedName, extFormat, formatsFor, type OutFormat } from './cropFormat';
+import { OUT_FORMATS, croppedName, extFormat, formatsFor, sameContent, type OutFormat } from './cropFormat';
 import type { CropSource } from './cropRender';
 import { canWrite, isAbort, pickAudioToSave, pickJsonToOpen, pickJsonToSave, writeContent } from './jsonFile';
 import { parseLoops, serializeLoops, type LoopMap, type LoopPoints } from './loops';
@@ -505,7 +505,9 @@ addEventListener('drop', (e) => {
 
 // 開いている音源で選べる形式を入れる。kiln で調べ終わるまでは拡張子から決め、選べないようにする
 function updateOutFormats() {
-  const formats = cropSource?.formats ?? formatsFor(extFormat(name));
+  // 調べる前の仮の形式。.ogg は中身が Vorbis かもしれないので、元の形式は出さない (Opus と分かってから出す)
+  const ext = extFormat(name);
+  const formats = cropSource?.formats ?? formatsFor(ext === 'ogg' ? null : ext);
   outFormat.replaceChildren(...formats.map((f) => new Option(OUT_FORMATS[f].label, f)));
   outFormat.disabled = formats.length < 2 || !cropSource;
 }
@@ -546,7 +548,9 @@ $('export-crop').addEventListener('click', () => void whileWriting('音源を書
   // 選んだ名前の拡張子の形式で書く。ただし、その形式でループの開始が削れるならセレクトの形式で書く。
   // 書き出しを止めると、保存先を選んだ時点で Chromium が作った空のファイル (既存のファイルなら空にしたもの) が残る
   const named = extFormat(handle.name);
-  const written = named && source.formats.includes(named) && !cropCutsLoop(named) ? named : format;
+  // .opus と .ogg は同じ Ogg Opus なので、どちらの名前でも書ける
+  const writable = (f: OutFormat) => source.formats.some((g) => sameContent(f, g));
+  const written = named && writable(named) && !cropCutsLoop(named) ? named : format;
   const { renderCrop } = await import('./cropRender');
   const out = await renderCrop(source, audio, from, to, written);
   await writeContent(handle, out.blob);

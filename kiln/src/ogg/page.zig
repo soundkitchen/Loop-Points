@@ -165,6 +165,38 @@ pub const PacketReader = struct {
         return null;
     }
 
+    /// パケットの続きを、ページの中で連続している分ずつ返す(セグメントの区切りでは分けない)。パケットの終わりなら null。
+    /// `byte` と混ぜて使わない
+    pub fn slice(r: *PacketReader) ?[]const u8 {
+        while (!r.done) {
+            if (r.seg == r.page.lacing.len) {
+                if (!r.nextPage()) {
+                    r.done = true;
+                    return null;
+                }
+                continue;
+            }
+            // このページの中で、パケットが終わるか、ページが終わるまでのセグメントをまとめる
+            var end_off = r.seg_off;
+            var s = r.seg;
+            while (s < r.page.lacing.len) {
+                const l = r.page.lacing[s];
+                end_off += l;
+                s += 1;
+                if (l < 255) {
+                    r.done = true;
+                    break;
+                }
+            }
+            const out = r.page.body[r.seg_off + r.in_seg .. end_off];
+            r.seg = s;
+            r.seg_off = end_off;
+            r.in_seg = 0;
+            if (out.len > 0) return out;
+        }
+        return null;
+    }
+
     fn nextPage(r: *PacketReader) bool {
         var it: Iterator = .{ .input = r.input, .pos = r.next_pos };
         while (it.next()) |p| {
@@ -289,6 +321,23 @@ test "PacketReader はページをまたいで読む" {
     var r2: PacketReader = .init(input[0..pos], first, 1);
     for (long) |want| try std.testing.expectEqual(want, r2.byte().?);
     try std.testing.expectEqual(null, r2.byte());
+}
+
+test "PacketReader.slice はページの中で連続している分ずつ返す" {
+    var input: [2048]u8 = undefined;
+    var long: [600]u8 = undefined;
+    for (&long, 0..) |*b, i| b.* = @truncate(i);
+    // 1 ページ目: 短いパケット "ab" と、長いパケットの先頭 510 バイト。2 ページ目: その続き(90 バイト)と "cd"
+    var pos = build(&input, 0, -1, 1, 0, &.{ "ab", long[0..510] }, true).len;
+    pos += build(input[pos..], flag_continued, 100, 1, 1, &.{ long[510..], "cd" }, false).len;
+    const first = try read(&input, 0);
+    var r1: PacketReader = .init(input[0..pos], first, 0);
+    try std.testing.expectEqualStrings("ab", r1.slice().?);
+    try std.testing.expectEqual(null, r1.slice());
+    var r2: PacketReader = .init(input[0..pos], first, 1);
+    try std.testing.expectEqualSlices(u8, long[0..510], r2.slice().?);
+    try std.testing.expectEqualSlices(u8, long[510..], r2.slice().?);
+    try std.testing.expectEqual(null, r2.slice());
 }
 
 test "PacketReader は間のページが欠けていたら止まる" {

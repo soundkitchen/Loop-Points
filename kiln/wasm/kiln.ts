@@ -265,6 +265,12 @@ export interface AacInfo {
 
 export interface Ogg {
   probe(input: BytesInput): OggInfo;
+  /**
+   * 再エンコードせずにサンプル単位で切り出す。結果は Ogg のバイト列。今は Opus だけ(Vorbis は `UnsupportedFormat`)。
+   * 区間の前の 80ms と一緒にパケットをそのままコピーし、pre-skip と最後のページのグラニュール位置で前後の余分を捨てさせる。
+   * 読めないページや欠けたページがあるものは `InvalidOgg`
+   */
+  trim(input: BytesInput, options?: RangeOptions): RangeResult & { data: Uint8Array<ArrayBuffer> };
 }
 
 export interface M4a {
@@ -341,6 +347,7 @@ interface Exports {
   kiln_flac_trim: RangeExport;
   kiln_flac_encode(ptr: Ptr, channels: number, frames: number, sampleRate: number, bits: number, compression: number, dither: number): number;
   kiln_ogg_probe: ProbeExport;
+  kiln_ogg_trim: RangeExport;
   kiln_m4a_probe: ProbeExport;
   kiln_aac_probe: ProbeExport;
 }
@@ -726,6 +733,10 @@ export async function load(source: WasmBytes): Promise<Kiln> {
           invalidPages: Number(e.kiln_value(6)),
         };
       });
+    },
+
+    trim(input, options = {}) {
+      return trimWith(e.kiln_ogg_probe, e.kiln_ogg_trim, input, options);
     },
   };
 

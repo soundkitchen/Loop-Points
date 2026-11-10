@@ -380,6 +380,19 @@ export fn kiln_ogg_probe(ptr: [*]const u8, len: usize) bool {
     return true;
 }
 
+/// Ogg(今は Opus だけ)を、再エンコードせずに切り出す。start / end は再生位置のサンプル数(Opus は 48kHz)。
+/// 成功すると出力を kiln_output_* に、kiln_value に 0: start、1: end、2: サンプルレートを置く
+export fn kiln_ogg_trim(ptr: [*]const u8, len: usize, start: u64, end: u64, has_end: bool) bool {
+    kiln_output_free();
+    const t = kiln.ogg.trimAlloc(gpa, ptr[0..len], .{
+        .start = start,
+        .end = if (has_end) end else null,
+    }) catch |err| return fail(err);
+    output = t.data;
+    setValues(.{ t.start, t.end, t.sample_rate, 0, 0 });
+    return true;
+}
+
 /// m4a(AAC / ALAC)を解析する。成功すると AAC の AudioSpecificConfig を kiln_output_* に(ALAC は空)、
 /// kiln_value に 0: サンプルレート、1: チャンネル数、2: サンプル数、3: コーデック(0: AAC、1: ALAC)、
 /// 4: オブジェクトタイプ、5: SBR、6: PS(どちらも 0: なし、1: あり、2: 不明)、7: 先頭の遅延、

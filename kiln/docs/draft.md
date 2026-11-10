@@ -92,6 +92,12 @@ Loop Points のクロップの書き出しを受け持つ、Zig 製のライブ�
 - **残したもの**: 音を扱う API はすべて残す。FLAC への変換やデコードは、Loop Points の #16 の書き出しの方針で使う
 - **JS 側の包み**: 使うのが Loop Points(TypeScript)だけなので、`kiln.js` と型定義の `kiln.d.ts` を 1 つの `kiln.ts` にまとめた。型は Loop Points と同じ tsc で確かめ、手作業で合わせていた型定義と、その型検査(`wasm/types/`)をなくした。誤った使い方が型エラーになることの検査だけは、型をうっかり緩めないよう `wasm/test/types.ts` に残した。Node のテストが kiln.ts を型を消して読むので、`kiln/wasm/tsconfig.json` で型を消すだけで動く書き方(`erasableSyntaxOnly`)を確かめる。mp3 / wav / flac の各経路の実行時のテスト(`wasm/test/convert.test.mjs`)を足した
 
+### 2.10 2026-11-11 に決めたこと(Opus の切り出し)
+
+- **進め方**: 元の形式のままの切り出しを、Opus → Vorbis → m4a の順に、形式ごとに 1 つの PR(kiln の切り出しと Loop Points への組み込みをまとめる)で足す(Loop Points の #16)。各 PR で、作る前に Chromium が前後の余分を捨てる指定を守るかを確かめる。書き出したファイルは Chromium と ffmpeg で確かめ、ゲームエンジンでは手で確かめる
+- **Opus の方式**: パケットをコピーし、区間の前に 80ms 残す。前後の余分は pre-skip と最後のページのグラニュール位置で捨てさせる。Chromium(`decodeAudioData`)と ffmpeg で、長さと位置が区間どおりになることを確かめた([`ogg.md`](ogg.md) §6)
+- **扱わない入力**: 読めないページや欠けたページがあるものは切り出さない(`InvalidOgg`)
+
 ## 3. まだ決めていないこと
 
 書き出せる形式とその順番、エンコーダを kiln に持たせるか(Ogg Vorbis、mp3)、wasm を形式ごとに分けるかなどは、Loop Points の #16 で扱う。
