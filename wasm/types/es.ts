@@ -18,5 +18,16 @@ export async function usage(wasm: Uint8Array<ArrayBuffer>, bytes: Uint8Array): P
   k.flac.trim(bytes, { compression: 5 });
   // @ts-expect-error Float32Array[] のときは sampleRate が要る
   k.flac.encode([new Float32Array(2)]);
-  return k.wav.encode([new Float32Array(2)], { sampleRate: 8000 }).length + k.mp3.probe(bytes).samples + f.channels.length + w.length + bits + fe.length + wf.length + mf + ft.length;
+  const o = k.ogg.probe(bytes);
+  const codec: 'vorbis' | 'opus' = o.codec;
+  const rate: number | null = o.inputSampleRate;
+  const m = k.m4a.probe(bytes);
+  const sbr: boolean | null = m.sbr;
+  const asc: Uint8Array<ArrayBuffer> = m.audioSpecificConfig;
+  const a = k.aac.probe(bytes);
+  const none: null = a.sbr;
+  // @ts-expect-error aac の profile に HE-AAC はない(ヘッダに書けない)
+  const he: typeof a.profile = 'he';
+  return k.wav.encode([new Float32Array(2)], { sampleRate: 8000 }).length + k.mp3.probe(bytes).samples + f.channels.length + w.length + bits + fe.length + wf.length + mf + ft.length +
+    codec.length + (rate ?? 0) + Number(sbr) + asc.length + Number(none) + he.length + m.samples + a.frames + o.preSkip;
 }

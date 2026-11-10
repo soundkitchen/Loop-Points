@@ -10,6 +10,7 @@ const usage =
     \\  kiln trim <input> <output> [--start TIME] [--end TIME | --duration TIME]
     \\            [--format FORMAT] [--sample-format SAMPLE] [--bits N]
     \\            [--compression N] [--dither DITHER]
+    \\  kiln info <input>
     \\  kiln --version
     \\  kiln --help
     \\
@@ -20,6 +21,9 @@ const usage =
     \\          FLAC to WAV, and WAV or MP3 to FLAC.
     \\          <input> / <output> may be "-" for stdin / stdout.
     \\          The input format is detected from its contents.
+    \\  info    Show the format, sample rate, channels and length of an MP3, WAV,
+    \\          FLAC, Ogg (Vorbis / Opus), M4A (AAC / ALAC) or AAC (ADTS) file.
+    \\          Cutting Ogg, M4A and AAC files is not supported yet.
     \\
     \\Options:
     \\  --format FORMAT         output format: mp3, wav or flac (default: same as the input)
@@ -74,6 +78,9 @@ pub fn main(init: std.process.Init) !u8 {
     if (args.len >= 2 and std.mem.eql(u8, args[1], "trim")) {
         return trim(init, args[2..], stdout, stderr);
     }
+    if (args.len >= 2 and std.mem.eql(u8, args[1], "info")) {
+        return infoCommand(init, args[2..], stdout, stderr);
+    }
 
     try stderr.writeAll(usage);
     return 2;
@@ -85,7 +92,7 @@ const TrimArgs = struct {
     start: ?time.Time = null,
     end: ?time.Time = null,
     duration: ?time.Time = null,
-    format: ?kiln.Format = null,
+    format: ?TrimFormat = null,
     sample_format: ?kiln.pcm.Format = null,
     bits: ?u8 = null,
     compression: ?u8 = null,
@@ -151,10 +158,11 @@ fn parseTrimArgs(args: []const [:0]const u8, stderr: *Io.Writer) !?TrimArgs {
                 try stderr.print("error: {s} needs a value\n", .{arg});
                 return null;
             }
-            r.format = std.meta.stringToEnum(kiln.Format, args[i]) orelse {
+            r.format = std.meta.stringToEnum(TrimFormat, args[i]);
+            if (r.format == null) {
                 try stderr.print("error: unknown format '{s}' (mp3, wav or flac)\n", .{args[i]});
                 return null;
-            };
+            }
         } else if (slot) |s| {
             i += 1;
             if (i == args.len) {
@@ -204,15 +212,19 @@ fn trim(init: std.process.Init, args: []const [:0]const u8, stdout: *Io.Writer, 
     };
     defer gpa.free(input);
 
-    const in_format = kiln.detect(input) orelse {
+    const detected = kiln.detect(input) orelse {
         try stderr.print("error: {s}: unknown format (not an MP3, WAV or FLAC file)\n", .{a.input});
+        return 1;
+    };
+    const in_format = TrimFormat.of(detected) orelse {
+        try stderr.print("error: {s}: cutting {s} files is not supported yet (try 'kiln info')\n", .{ a.input, detected.name() });
         return 1;
     };
     const out_format = a.format orelse in_format;
     // 変換できるのは MP3 / FLAC → WAV と WAV / MP3 → FLAC(MP3 のエンコーダはない)
     const convert = out_format != in_format;
     if (convert and out_format == .mp3) {
-        try stderr.print("error: converting {s} to {s} is not supported\n", .{ in_format.name(), out_format.name() });
+        try stderr.print("error: converting {s} to {s} is not supported\n", .{ detected.name(), out_format.format().name() });
         return 1;
     }
     if (!convert and a.dither != null) {
@@ -231,7 +243,7 @@ fn trim(init: std.process.Init, args: []const [:0]const u8, stdout: *Io.Writer, 
     var flac_index: ?kiln.flac.Index = null;
     defer if (flac_index) |*ix| ix.deinit(gpa);
     const info = probe(gpa, in_format, input, &flac_index) catch |err| {
-        try stderr.print("error: {s}: {s}\n", .{ a.input, describe(in_format, err) });
+        try stderr.print("error: {s}: {s}\n", .{ a.input, describe(detected, err) });
         return 1;
     };
 
@@ -267,6 +279,7 @@ fn trim(init: std.process.Init, args: []const [:0]const u8, stdout: *Io.Writer, 
                     .dither = a.dither orelse .tpdf,
                 },
             },
+            // MP3 のエンコーダはない(上で弾いている)
             .mp3 => unreachable,
         },
         .gpa = gpa,
@@ -278,7 +291,7 @@ fn trim(init: std.process.Init, args: []const [:0]const u8, stdout: *Io.Writer, 
             return 1;
         },
         else => {
-            try stderr.print("error: cannot write '{s}': {s}\n", .{ a.output, describe(in_format, err) });
+            try stderr.print("error: cannot write '{s}': {s}\n", .{ a.output, describe(detected, err) });
             return 1;
         },
     };
@@ -301,6 +314,111 @@ fn trim(init: std.process.Init, args: []const [:0]const u8, stdout: *Io.Writer, 
     return 0;
 }
 
+fn infoCommand(init: std.process.Init, args: []const [:0]const u8, stdout: *Io.Writer, stderr: *Io.Writer) !u8 {
+    if (args.len != 1 or (args[0].len > 1 and args[0][0] == '-')) {
+        try stderr.writeAll("error: info needs exactly one <input>\n\n" ++ usage);
+        return 2;
+    }
+    const path = args[0];
+    const input = readInput(init.io, init.gpa, path) catch |err| {
+        try stderr.print("error: cannot read '{s}': {t}\n", .{ path, err });
+        return 1;
+    };
+    defer init.gpa.free(input);
+    const format = kiln.detect(input) orelse {
+        try stderr.print("error: {s}: unknown format (not an MP3, WAV, FLAC, Ogg, M4A or AAC file)\n", .{path});
+        return 1;
+    };
+    writeInfo(format, input, stdout) catch |err| switch (err) {
+        error.WriteFailed => return err,
+        else => {
+            try stderr.print("error: {s}: {s}\n", .{ path, describe(format, err) });
+            return 1;
+        },
+    };
+    try stdout.flush();
+    return 0;
+}
+
+/// 解析した情報を 1 行ずつ「名前: 値」で書く
+fn writeInfo(format: kiln.Format, input: []const u8, w: *Io.Writer) !void {
+    try w.print("format:            {s}\n", .{format.name()});
+    switch (format) {
+        .mp3 => {
+            const i = try kiln.mp3.probe(input);
+            try writeCommon(w, i.sample_rate, i.channels, i.samples);
+            try w.print("frames:            {d}\n", .{i.frames});
+            try w.print("min start:         {d} samples\n", .{i.min_start});
+        },
+        .wav => {
+            const i = try kiln.wav.probe(input);
+            try w.print("sample format:     {t}\n", .{i.format});
+            try writeCommon(w, i.sample_rate, i.channels, i.samples);
+        },
+        .flac => {
+            const i = try kiln.flac.probe(input);
+            try w.print("bits per sample:   {d}\n", .{i.bits_per_sample});
+            try writeCommon(w, i.sample_rate, i.channels, i.samples);
+            try w.print("frames:            {d}\n", .{i.frames});
+        },
+        .ogg => {
+            const i = try kiln.ogg.probe(input);
+            try w.print("codec:             {t}\n", .{i.codec});
+            try writeCommon(w, i.sample_rate, i.channels, i.samples);
+            if (i.codec == .opus) {
+                if (i.input_sample_rate != 0) try w.print("input sample rate: {d} Hz\n", .{i.input_sample_rate});
+                try w.print("pre-skip:          {d} samples\n", .{i.pre_skip});
+            }
+            if (i.invalid_pages > 0) try w.print("invalid pages:     {d}\n", .{i.invalid_pages});
+        },
+        .m4a => {
+            const i = try kiln.m4a.probe(input);
+            switch (i.codec) {
+                .alac => {
+                    try w.writeAll("codec:             alac\n");
+                    try w.print("bits per sample:   {d}\n", .{i.bits_per_sample});
+                },
+                .aac => try w.print("codec:             aac ({s})\n", .{aacProfile(i.object_type, i.sbr, i.ps)}),
+            }
+            try writeCommon(w, i.sample_rate, i.channels, i.samples);
+            try w.print("encoder delay:     {d} samples\n", .{i.encoder_delay});
+            if (i.codec == .aac and (i.sbr == null or i.ps == null)) {
+                try w.writeAll("note:              the file does not say whether it is HE-AAC (SBR / PS);\n" ++
+                    "                   if it is, the decoded sample rate or channels differ\n");
+            }
+        },
+        .aac => {
+            const i = try kiln.aac.probe(input);
+            try w.print("codec:             aac ({s}, MPEG-{d})\n", .{ aacProfile(@as(u8, @backingInt(i.profile)) + 1, false, false), i.mpeg_version });
+            try writeCommon(w, i.sample_rate, i.channels, i.samples);
+            try w.print("frames:            {d}\n", .{i.frames});
+            try w.writeAll("note:              ADTS headers cannot say whether it is HE-AAC (SBR / PS);\n" ++
+                "                   if it is, the decoded sample rate is twice the one above\n" ++
+                "                   (and HE-AAC v2 decodes to 2 channels)\n");
+        },
+    }
+}
+
+fn writeCommon(w: *Io.Writer, sample_rate: u32, channels: u16, samples: u64) !void {
+    try w.print("sample rate:       {d} Hz\n", .{sample_rate});
+    try w.print("channels:          {d}\n", .{channels});
+    const seconds = @as(f64, @floatFromInt(samples)) / @as(f64, @floatFromInt(sample_rate));
+    try w.print("length:            {d} samples ({d:.3} s)\n", .{ samples, seconds });
+}
+
+/// AAC の種類の名前。SBR / PS が分からないときは中心の方式の名前
+fn aacProfile(object_type: u8, sbr: ?bool, ps: ?bool) []const u8 {
+    if (ps == true) return "HE-AAC v2";
+    if (sbr == true) return "HE-AAC";
+    return switch (object_type) {
+        1 => "Main",
+        2 => "LC",
+        3 => "SSR",
+        4 => "LTP",
+        else => "other",
+    };
+}
+
 fn readInput(io: Io, gpa: std.mem.Allocator, path: []const u8) ![]u8 {
     if (std.mem.eql(u8, path, "-")) {
         var buf: [64 * 1024]u8 = undefined;
@@ -320,7 +438,7 @@ const Info = struct {
 };
 
 /// 入力を解析する。FLAC はフレームの一覧を `flac_index` に作る(呼び出し側が解放する)
-fn probe(gpa: std.mem.Allocator, format: kiln.Format, input: []const u8, flac_index: *?kiln.flac.Index) !Info {
+fn probe(gpa: std.mem.Allocator, format: TrimFormat, input: []const u8, flac_index: *?kiln.flac.Index) !Info {
     return switch (format) {
         .mp3 => blk: {
             const i = try kiln.mp3.probe(input);
@@ -338,6 +456,32 @@ fn probe(gpa: std.mem.Allocator, format: kiln.Format, input: []const u8, flac_in
     };
 }
 
+/// trim で読み書きできる形式(`kiln.Format` のうち、切り出しと書き出しに対応しているもの)。
+/// 入力の形式は trim の入口で 1 回だけこれに変換し、以降は型で守る
+const TrimFormat = enum {
+    mp3,
+    wav,
+    flac,
+
+    /// 切り出せない形式(解析だけの Ogg / m4a / aac)なら null
+    fn of(f: kiln.Format) ?TrimFormat {
+        return switch (f) {
+            .mp3 => .mp3,
+            .wav => .wav,
+            .flac => .flac,
+            .ogg, .m4a, .aac => null,
+        };
+    }
+
+    fn format(t: TrimFormat) kiln.Format {
+        return switch (t) {
+            .mp3 => .mp3,
+            .wav => .wav,
+            .flac => .flac,
+        };
+    }
+};
+
 /// 切り出す区間の指定(end が null なら末尾まで)
 const Range = struct { start: u64, end: ?u64 };
 /// 実際に切り出した区間
@@ -350,7 +494,7 @@ const Trimmed = struct {
 
 /// 書き出しの内容
 const Job = struct {
-    format: kiln.Format,
+    format: TrimFormat,
     input: []const u8,
     range: Range,
     /// 形式を変えて書くときの設定(null なら入力と同じ形式で切り出す)
@@ -435,7 +579,7 @@ fn flacOut(job: Job, w: *Io.Writer, seekable: bool) !Written {
 }
 
 /// 区間を切り出して `w` に書き、実際に切り出した区間を返す
-fn trimTo(format: kiln.Format, input: []const u8, range: Range, w: *Io.Writer) !Trimmed {
+fn trimTo(format: TrimFormat, input: []const u8, range: Range, w: *Io.Writer) !Trimmed {
     return switch (format) {
         .mp3 => blk: {
             const r = try kiln.mp3.trim(input, .{ .start = range.start, .end = range.end }, w);
@@ -478,10 +622,18 @@ fn describe(format: kiln.Format, err: anyerror) []const u8 {
         error.NotFlac => "not a FLAC file",
         error.InvalidFlac => "broken FLAC file (missing or invalid STREAMINFO / metadata blocks)",
         error.InvalidWav => "broken WAV file (missing or invalid fmt / data chunk)",
+        error.NotOgg => "not an Ogg file",
+        error.InvalidOgg => "broken Ogg file (missing or invalid Vorbis / Opus headers)",
+        error.NotM4a => "not an M4A (MP4) file",
+        error.InvalidM4a => "broken M4A file (missing or invalid moov / sample tables)",
+        error.NotAac => "not an AAC (ADTS) file",
         error.UnsupportedFormat => switch (format) {
             .mp3 => "unsupported MPEG audio (only MPEG-1 Layer III is supported)",
             .wav => "unsupported WAV (only little-endian RIFF with PCM or IEEE float is supported; RF64, RIFX and compressed encodings are not)",
             .flac => "unsupported FLAC (only native FLAC is supported; Ogg FLAC is not)",
+            .ogg => "unsupported Ogg (only a single Vorbis or Opus stream is supported; Ogg FLAC, Speex and chained or multiplexed streams are not)",
+            .m4a => "unsupported M4A (only AAC and ALAC audio tracks are supported; fragmented MP4 is not)",
+            .aac => "unsupported AAC (ADTS with channel configuration 0 is not supported)",
         },
         error.EmptyRange => "empty range",
         error.TooLarge => "output is too large",
@@ -507,8 +659,8 @@ test parseTrimArgs {
     try std.testing.expectEqual(null, ok.format);
     // "-" は stdin / stdout
     _ = (try parseTrimArgs(&.{ "-", "-" }, &w)).?;
-    try std.testing.expectEqual(kiln.Format.wav, (try parseTrimArgs(&.{ "a", "b", "--format", "wav" }, &w)).?.format.?);
-    try std.testing.expectEqual(kiln.Format.flac, (try parseTrimArgs(&.{ "a", "b", "--format", "flac" }, &w)).?.format.?);
+    try std.testing.expectEqual(TrimFormat.wav, (try parseTrimArgs(&.{ "a", "b", "--format", "wav" }, &w)).?.format.?);
+    try std.testing.expectEqual(TrimFormat.flac, (try parseTrimArgs(&.{ "a", "b", "--format", "flac" }, &w)).?.format.?);
     const fl = (try parseTrimArgs(&.{ "a", "b", "--format", "flac", "--bits", "24", "--compression", "8" }, &w)).?;
     try std.testing.expectEqual(24, fl.bits.?);
     try std.testing.expectEqual(8, fl.compression.?);

@@ -46,7 +46,13 @@ export fn kiln_version_len() usize {
 
 var last_error: []const u8 = "";
 var output: []u8 = &.{};
-var values: [5]u64 = @splat(0);
+var values: [9]u64 = @splat(0);
+
+/// kiln_value で読む数値を置く(足りない分は 0)
+fn setValues(v: anytype) void {
+    values = @splat(0);
+    inline for (v, 0..) |x, i| values[i] = x;
+}
 
 /// JS に返しうるエラー。wasm/kiln.d.ts の KilnErrorCode と同じ一覧にする(足したら kiln.d.ts も直し、
 /// wasm/types/ の型検査を通す。docs/architecture.md §2.3)。
@@ -58,6 +64,11 @@ pub const KilnError = error{
     UnsupportedFormat,
     InvalidWav,
     InvalidFlac,
+    NotOgg,
+    InvalidOgg,
+    NotM4a,
+    InvalidM4a,
+    NotAac,
     EmptyRange,
     TooLarge,
     OutOfMemory,
@@ -106,7 +117,7 @@ export fn kiln_output_free() void {
 /// を置く
 export fn kiln_mp3_probe(ptr: [*]const u8, len: usize) bool {
     const info = kiln.mp3.probe(ptr[0..len]) catch |err| return fail(err);
-    values = .{ info.sample_rate, info.channels, info.samples, info.frames, info.min_start };
+    setValues(.{ info.sample_rate, info.channels, info.samples, info.frames, info.min_start });
     return true;
 }
 
@@ -120,7 +131,7 @@ export fn kiln_mp3_trim(ptr: [*]const u8, len: usize, start: u64, end: u64, has_
         .end = if (has_end) end else null,
     }) catch |err| return fail(err);
     output = t.data;
-    values = .{ t.start, t.end, t.sample_rate, 0, 0 };
+    setValues(.{ t.start, t.end, t.sample_rate, 0, 0 });
     return true;
 }
 
@@ -129,7 +140,7 @@ export fn kiln_mp3_trim(ptr: [*]const u8, len: usize, start: u64, end: u64, has_
 /// を置く
 export fn kiln_wav_probe(ptr: [*]const u8, len: usize) bool {
     const info = kiln.wav.probe(ptr[0..len]) catch |err| return fail(err);
-    values = .{ info.sample_rate, info.channels, @backingInt(info.format), info.samples, 0 };
+    setValues(.{ info.sample_rate, info.channels, @backingInt(info.format), info.samples, 0 });
     return true;
 }
 
@@ -143,7 +154,7 @@ export fn kiln_wav_trim(ptr: [*]const u8, len: usize, start: u64, end: u64, has_
         .end = if (has_end) end else null,
     }) catch |err| return fail(err);
     output = t.data;
-    values = .{ t.start, t.end, t.sample_rate, 0, 0 };
+    setValues(.{ t.start, t.end, t.sample_rate, 0, 0 });
     return true;
 }
 
@@ -213,7 +224,7 @@ export fn kiln_mp3_decode(ptr: [*]const u8, len: usize, start: u64, end: u64, ha
         return fail(err);
     };
     output = std.mem.sliceAsBytes(samples);
-    values = .{ r.start, r.end, r.sample_rate, r.channels, r.invalid_frames };
+    setValues(.{ r.start, r.end, r.sample_rate, r.channels, r.invalid_frames });
     return true;
 }
 
@@ -231,7 +242,7 @@ export fn kiln_mp3_to_wav(ptr: [*]const u8, len: usize, start: u64, end: u64, ha
     }) catch |err| return fail(err);
     output = t.data;
     const r = t.result;
-    values = .{ r.start, r.end, r.sample_rate, r.channels, r.invalid_frames };
+    setValues(.{ r.start, r.end, r.sample_rate, r.channels, r.invalid_frames });
     return true;
 }
 
@@ -240,7 +251,7 @@ export fn kiln_mp3_to_wav(ptr: [*]const u8, len: usize, start: u64, end: u64, ha
 /// を置く
 export fn kiln_flac_probe(ptr: [*]const u8, len: usize) bool {
     const info = kiln.flac.probe(ptr[0..len]) catch |err| return fail(err);
-    values = .{ info.sample_rate, info.channels, info.bits_per_sample, info.samples, info.frames };
+    setValues(.{ info.sample_rate, info.channels, info.bits_per_sample, info.samples, info.frames });
     return true;
 }
 
@@ -249,7 +260,7 @@ export fn kiln_flac_probe(ptr: [*]const u8, len: usize) bool {
 /// 0: サンプルレート、1: チャンネル数、2: ビット深度を置く
 export fn kiln_flac_format(ptr: [*]const u8, len: usize) bool {
     const f = kiln.flac.streamFormat(ptr[0..len]) catch |err| return fail(err);
-    values = .{ f.sample_rate, f.channels, f.bits_per_sample, 0, 0 };
+    setValues(.{ f.sample_rate, f.channels, f.bits_per_sample, 0, 0 });
     return true;
 }
 
@@ -278,7 +289,7 @@ export fn kiln_flac_decode(ptr: [*]const u8, len: usize, start: u64, end: u64, h
         return fail(err);
     };
     output = std.mem.sliceAsBytes(samples);
-    values = .{ r.start, r.end, r.sample_rate, r.channels, r.invalid_frames };
+    setValues(.{ r.start, r.end, r.sample_rate, r.channels, r.invalid_frames });
     return true;
 }
 
@@ -298,7 +309,7 @@ export fn kiln_flac_to_wav(ptr: [*]const u8, len: usize, start: u64, end: u64, h
     }) catch |err| return fail(err);
     output = t.data;
     const r = t.result;
-    values = .{ r.start, r.end, r.sample_rate, r.channels, r.invalid_frames };
+    setValues(.{ r.start, r.end, r.sample_rate, r.channels, r.invalid_frames });
     return true;
 }
 
@@ -333,7 +344,7 @@ export fn kiln_wav_to_flac(ptr: [*]const u8, len: usize, start: u64, end: u64, h
     const o = flacOptions(if (has_bits) bits else null, compression, dither) catch |err| return fail(err);
     const t = kiln.wav.toFlacAlloc(gpa, ptr[0..len], .{ .start = start, .end = if (has_end) end else null }, o) catch |err| return fail(err);
     output = t.data;
-    values = .{ t.start, t.end, t.sample_rate, 0, 0 };
+    setValues(.{ t.start, t.end, t.sample_rate, 0, 0 });
     return true;
 }
 
@@ -345,7 +356,7 @@ export fn kiln_mp3_to_flac(ptr: [*]const u8, len: usize, start: u64, end: u64, h
     const t = kiln.mp3.toFlacAlloc(gpa, ptr[0..len], .{ .start = start, .end = if (has_end) end else null }, o) catch |err| return fail(err);
     output = t.data;
     const r = t.result;
-    values = .{ r.start, r.end, r.sample_rate, r.channels, r.invalid_frames };
+    setValues(.{ r.start, r.end, r.sample_rate, r.channels, r.invalid_frames });
     return true;
 }
 
@@ -356,6 +367,39 @@ export fn kiln_flac_trim(ptr: [*]const u8, len: usize, start: u64, end: u64, has
     kiln_output_free();
     const t = kiln.flac.trimAlloc(gpa, ptr[0..len], .{ .start = start, .end = if (has_end) end else null }) catch |err| return fail(err);
     output = t.data;
-    values = .{ t.start, t.end, t.sample_rate, 0, t.invalid_frames };
+    setValues(.{ t.start, t.end, t.sample_rate, 0, t.invalid_frames });
+    return true;
+}
+
+/// Ogg(Vorbis / Opus)を解析する。成功すると kiln_value に
+/// 0: サンプルレート、1: チャンネル数、2: サンプル数、3: コーデック(0: Vorbis、1: Opus)、
+/// 4: エンコード前のサンプルレート(Opus。0 は不明)、5: pre-skip、6: 飛ばしたページの数を置く
+export fn kiln_ogg_probe(ptr: [*]const u8, len: usize) bool {
+    const i = kiln.ogg.probe(ptr[0..len]) catch |err| return fail(err);
+    setValues(.{ i.sample_rate, i.channels, i.samples, @backingInt(i.codec), i.input_sample_rate, i.pre_skip, i.invalid_pages });
+    return true;
+}
+
+/// m4a(AAC / ALAC)を解析する。成功すると AAC の AudioSpecificConfig を kiln_output_* に(ALAC は空)、
+/// kiln_value に 0: サンプルレート、1: チャンネル数、2: サンプル数、3: コーデック(0: AAC、1: ALAC)、
+/// 4: オブジェクトタイプ、5: SBR、6: PS(どちらも 0: なし、1: あり、2: 不明)、7: 先頭の遅延、
+/// 8: ALAC のビット深度を置く
+export fn kiln_m4a_probe(ptr: [*]const u8, len: usize) bool {
+    kiln_output_free();
+    const i = kiln.m4a.probe(ptr[0..len]) catch |err| return fail(err);
+    output = gpa.dupe(u8, i.audio_specific_config) catch |err| return fail(err);
+    setValues(.{ i.sample_rate, i.channels, i.samples, @backingInt(i.codec), i.object_type, tristate(i.sbr), tristate(i.ps), i.encoder_delay, i.bits_per_sample });
+    return true;
+}
+
+fn tristate(v: ?bool) u64 {
+    return if (v) |b| @intFromBool(b) else 2;
+}
+
+/// aac(ADTS)を解析する。成功すると kiln_value に 0: ヘッダのサンプルレート、1: ヘッダのチャンネル数、
+/// 2: サンプル数、3: フレーム数、4: プロファイル(0: Main、1: LC、2: SSR、3: LTP)、5: MPEG の版(2 か 4)を置く
+export fn kiln_aac_probe(ptr: [*]const u8, len: usize) bool {
+    const i = kiln.aac.probe(ptr[0..len]) catch |err| return fail(err);
+    setValues(.{ i.sample_rate, i.channels, i.samples, i.frames, @backingInt(i.profile), i.mpeg_version });
     return true;
 }

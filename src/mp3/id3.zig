@@ -17,7 +17,7 @@ pub fn skipTags(data: []const u8) usize {
     return pos;
 }
 
-fn syncsafeDecode(b: [4]u8) u28 {
+pub fn syncsafeDecode(b: [4]u8) u28 {
     var v: u28 = 0;
     for (b) |x| v = (v << 7) | (x & 0x7F);
     return v;

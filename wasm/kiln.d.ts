@@ -5,10 +5,13 @@
 
 /**
  * kiln のコアが返すエラーの名前。wasm/main.zig の `KilnError` と同じ一覧にする(足したら両方を直す)。
- * - `NotMp3` / `NotWav` / `NotFlac`: その形式のファイルではない
- * - `UnsupportedFormat`: 扱えない種類(MPEG-2 の MP3、RF64 や圧縮形式の WAV、Ogg FLAC など)
+ * - `NotMp3` / `NotWav` / `NotFlac` / `NotOgg` / `NotM4a` / `NotAac`: その形式のファイルではない
+ * - `UnsupportedFormat`: 扱えない種類(MPEG-2 の MP3、RF64 や圧縮形式の WAV、Ogg FLAC、Speex、
+ *   連結・多重化した Ogg、AAC / ALAC 以外の MP4、断片化した MP4 など)
  * - `InvalidWav`: WAV が壊れている(`fmt ` / `data` チャンクがない、値が不正)
  * - `InvalidFlac`: FLAC が壊れている(STREAMINFO がない・先頭にない、メタデータブロックの長さが不正など)
+ * - `InvalidOgg`: Ogg が壊れている(Vorbis / Opus のヘッダがない・不正など)
+ * - `InvalidM4a`: m4a が壊れている(`moov` がない、ボックスの長さやサンプルの表が不正など)
  * - `EmptyRange`: 範囲を丸めた結果、区間が空になった
  * - `TooLarge`: 出力が大きすぎる(WAV は 4GiB まで)
  * - `OutOfMemory`: メモリが足りない
@@ -22,6 +25,11 @@ export type KilnErrorCode =
   | 'UnsupportedFormat'
   | 'InvalidWav'
   | 'InvalidFlac'
+  | 'NotOgg'
+  | 'InvalidOgg'
+  | 'NotM4a'
+  | 'InvalidM4a'
+  | 'NotAac'
   | 'EmptyRange'
   | 'TooLarge'
   | 'OutOfMemory'
@@ -188,12 +196,94 @@ export interface Flac {
   encode(source: Float32Array[], options: FlacFormatOptions & { sampleRate: number }): Uint8Array<ArrayBuffer>;
 }
 
+export interface OggInfo {
+  codec: 'vorbis' | 'opus';
+  /** デコード結果のサンプルレート(Opus は常に 48000) */
+  sampleRate: number;
+  /** Opus のエンコード前の音源のサンプルレート。書かれていないとき、Vorbis のときは null */
+  inputSampleRate: number | null;
+  channels: number;
+  /** 再生される長さ(サンプル数)。Opus の pre-skip と、最初と最後のページの切り詰めを除いたもの */
+  samples: number;
+  /** 秒 */
+  duration: number;
+  /** Opus の pre-skip(48kHz のサンプル数。Vorbis は 0) */
+  preSkip: number;
+  /** 読めずに飛ばしたページ(CRC が合わない、途切れた、欠けた)の数 */
+  invalidPages: number;
+}
+
+/** AAC の種類。`he` は HE-AAC(SBR)、`hev2` は HE-AAC v2(SBR と PS)、`other` はそれ以外のオブジェクトタイプ */
+export type AacProfile = 'main' | 'lc' | 'ssr' | 'ltp' | 'he' | 'hev2' | 'other';
+
+export interface M4aInfo {
+  codec: 'aac' | 'alac';
+  /** AAC の種類。SBR / PS が分からないときは中心の方式の名前。ALAC は null */
+  profile: AacProfile | null;
+  /** AAC の中心の方式のオブジェクトタイプ(2 は LC。SBR / PS の 5 / 29 は含めない)。ALAC は 0 */
+  objectType: number;
+  /** SBR があるか。ファイルから分からなければ null(そのときは sampleRate が実際の半分のことがある) */
+  sbr: boolean | null;
+  /** PS があるか。ファイルから分からなければ null(そのときは channels が実際と違うことがある) */
+  ps: boolean | null;
+  /** デコード結果のサンプルレート(HE-AAC は SBR の後) */
+  sampleRate: number;
+  /** デコード結果のチャンネル数(HE-AAC v2 は PS の後の 2) */
+  channels: number;
+  /** ALAC のビット深度。AAC は null */
+  bitsPerSample: number | null;
+  /** 再生される長さ(サンプル数)。先頭の遅延と末尾の詰め物を除いたもの(編集リストか iTunSMPB から) */
+  samples: number;
+  /** 秒 */
+  duration: number;
+  /** 先頭で捨てる遅延(サンプル数) */
+  encoderDelay: number;
+  /** AAC の AudioSpecificConfig(WebCodecs の AudioDecoder の `description` に使える)。ALAC は空 */
+  audioSpecificConfig: Uint8Array<ArrayBuffer>;
+}
+
+export interface AacInfo {
+  /** ADTS のヘッダに書けるのは AAC-LC などの中心の方式だけ */
+  profile: 'main' | 'lc' | 'ssr' | 'ltp';
+  /** ヘッダの MPEG の版(2 か 4) */
+  mpegVersion: number;
+  /**
+   * 常に null(ADTS のヘッダには SBR / PS を書けない)。HE-AAC なら、デコード結果のレートは sampleRate の 2 倍、
+   * v2 なら 2 チャンネルになる。確かめるには WebCodecs の AudioDecoder に最初のフレームを渡す
+   */
+  sbr: null;
+  /** ヘッダのサンプルレート */
+  sampleRate: number;
+  /** ヘッダのチャンネル数 */
+  channels: number;
+  frames: number;
+  /** 長さ(ヘッダのサンプルレートのサンプル数。フレームあたり 1024)。先頭の遅延も含む */
+  samples: number;
+  /** 秒 */
+  duration: number;
+}
+
+export interface Ogg {
+  probe(input: BytesInput): OggInfo;
+}
+
+export interface M4a {
+  probe(input: BytesInput): M4aInfo;
+}
+
+export interface Aac {
+  probe(input: BytesInput): AacInfo;
+}
+
 export interface Kiln {
   /** ライブラリのバージョン */
   readonly version: string;
   readonly mp3: Mp3;
   readonly wav: Wav;
   readonly flac: Flac;
+  readonly ogg: Ogg;
+  readonly m4a: M4a;
+  readonly aac: Aac;
   /** 生の export 関数(低レベル API。WebAssembly.Exports) */
   readonly exports: Record<string, unknown>;
 }
