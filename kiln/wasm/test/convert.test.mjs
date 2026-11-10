@@ -1,12 +1,11 @@
 // SPDX-License-Identifier: MIT
-// mp3 / wav / flac の切り出し・デコード・書き出しの実行時テスト。wasm/kiln.ts、zig build でできた zig-out/kiln.wasm、testdata/ を読む。
+// mp3 / wav / flac の切り出し・デコード・書き出しと、ogg(Opus)の切り出しの実行時テスト。wasm/kiln.ts、zig build でできた zig-out/kiln.wasm、testdata/ を読む。
 // kiln.ts の Exports(wasm の export 関数の型)は wasm/main.zig を手で写したものなので、引数の数や並びがずれると
 // wasm は足りない引数を 0 として黙って動く。各経路を実際に呼び、結果を probe で確かめて、そのずれに気づけるようにする。
 // Loop Points のリポジトリ直下の `npm run kiln:test` で動く
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
-import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 
@@ -82,5 +81,6 @@ test('ogg.trim(Opus)', async () => {
   const s = kiln.ogg.trim(opus, { start: 0.25, end: 10 });
   assert.deepEqual([s.startSample, s.endSample, kiln.ogg.probe(s.data).samples], [12000, 24000, 12000]);
   // Vorbis はまだ切り出せない
-  assert.throws(() => kiln.ogg.trim(readFileSync(path.join(root, 'testdata/vorbis-stereo.ogg'))), (e) => e.code === 'UnsupportedFormat');
+  const vorbis = await data('vorbis-stereo.ogg');
+  assert.throws(() => kiln.ogg.trim(vorbis), (e) => e.code === 'UnsupportedFormat');
 });

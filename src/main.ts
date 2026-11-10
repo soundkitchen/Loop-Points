@@ -505,7 +505,9 @@ addEventListener('drop', (e) => {
 
 // 開いている音源で選べる形式を入れる。kiln で調べ終わるまでは拡張子から決め、選べないようにする
 function updateOutFormats() {
-  const formats = cropSource?.formats ?? formatsFor(extFormat(name));
+  // 調べる前の仮の形式。.ogg は中身が Vorbis かもしれないので、元の形式は出さない (Opus と分かってから出す)
+  const ext = extFormat(name);
+  const formats = cropSource?.formats ?? formatsFor(ext === 'ogg' ? null : ext);
   outFormat.replaceChildren(...formats.map((f) => new Option(OUT_FORMATS[f].label, f)));
   outFormat.disabled = formats.length < 2 || !cropSource;
 }
