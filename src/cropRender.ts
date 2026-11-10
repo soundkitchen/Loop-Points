@@ -8,7 +8,7 @@
 import { KilnError, load, type FlacInfo, type Kiln, type KilnErrorCode, type Mp3Info, type WavInfo } from '../kiln/wasm/kiln';
 // CSP の connect-src 'none' では fetch で wasm を読めない (data: URL も止まる) ので、チャンクに埋め込んでバイト列で渡す
 import kilnWasm from '../kiln/zig-out/kiln.wasm?url&inline';
-import { OUT_FORMATS, extFormat, type OutFormat } from './cropFormat';
+import { OUT_FORMATS, extFormat, formatsFor, type OutFormat } from './cropFormat';
 import { sampleRateOf, startsWith } from './sampleRate';
 
 const WAV_SAMPLE_FORMAT = 'i16';
@@ -53,18 +53,23 @@ export interface CropSource {
   wav: WavInfo | null;
   mp3: Mp3Info | null;
   flac: FlacInfo | null;
+  // ブラウザでデコードした長さと kiln が数えた長さが違う (壊れたフレームをブラウザが飛ばしたなど)。
+  // 波形の位置と書き出す位置がずれるので、書き出さない
+  lengthMismatch: boolean;
 }
 
-export async function inspect(file: File): Promise<CropSource> {
+export async function inspect(file: File, decoded: AudioBuffer): Promise<CropSource> {
   const k = await loadKiln();
   const bytes = new Uint8Array(await file.arrayBuffer());
   // 中身で判定する。mp3 はフレームの同期を探すので、ほかの形式を読み違えないよう拡張子が .mp3 のものに限る
   const wav = startsWith(bytes, 0, 'RIFF') ? probe(() => k.wav.probe(bytes)) : null;
   const mp3 = !wav && extFormat(file.name) === 'mp3' ? probe(() => k.mp3.probe(bytes)) : null;
-  // FLAC は先頭の印 (fLaC) で分かる。ID3v2 タグが前に付いたものもあるので、拡張子が .flac なら印がなくても調べる
-  const flac = !wav && !mp3 && (startsWith(bytes, 0, 'fLaC') || extFormat(file.name) === 'flac') ? probe(() => k.flac.probe(bytes)) : null;
-  const formats: OutFormat[] = mp3 ? ['mp3', 'wav'] : flac ? ['flac', 'wav'] : ['wav'];
-  return { file, formats, mp3Start: mp3 ? mp3.minStart / mp3.sampleRate : 0, bytes, wav, mp3, flac };
+  // FLAC は拡張子によらず調べる。flac.probe は ID3v2 タグを飛ばし、FLAC でなければフレームを読まずに NotFlac を返す。
+  // FLAC ならすべてのフレームを走査するので、大きなファイルでは少し時間がかかる
+  const flac = !wav && !mp3 ? probe(() => k.flac.probe(bytes)) : null;
+  // ブラウザは decoded を AudioContext のレートに変換しているので、そのレートのサンプル数で比べる (変換の丸めの分は許す)
+  const lengthMismatch = flac !== null && Math.abs(decoded.length - (flac.samples * decoded.sampleRate) / flac.sampleRate) > 2;
+  return { file, formats: formatsFor(mp3 ? 'mp3' : flac ? 'flac' : null), mp3Start: mp3 ? mp3.minStart / mp3.sampleRate : 0, bytes, wav, mp3, flac, lengthMismatch };
 }
 
 export interface Rendered {

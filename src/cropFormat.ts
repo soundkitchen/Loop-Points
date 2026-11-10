@@ -13,12 +13,10 @@ export function extFormat(fileName: string): OutFormat | null {
   return (Object.keys(OUT_FORMATS) as OutFormat[]).find((f) => OUT_FORMATS[f].ext === ext) ?? null;
 }
 
-// 音源から書き出せる形式。先頭が初期値。mp3 は mp3 と WAV、FLAC は FLAC と WAV、それ以外は WAV だけ。
-// 拡張子から決める仮のもので、クロップモードで kiln が中身を調べたら、その結果 (CropSource の formats) に置き換える
-export function formatsFor(fileName: string): OutFormat[] {
-  const ext = extFormat(fileName);
-  return ext === 'mp3' || ext === 'flac' ? [ext, 'wav'] : ['wav'];
-}
+// 音源から書き出せる形式。先頭が初期値。native は元の形式のまま切り出せる形式 (mp3 か FLAC) で、
+// その形式と WAV を選べる。それ以外 (null や WAV) は WAV だけ。
+// kiln が中身を調べる前は拡張子から、調べた後は kiln の結果から native を決める (cropRender.ts の inspect)
+export const formatsFor = (native: OutFormat | null): OutFormat[] => (native === 'mp3' || native === 'flac' ? [native, 'wav'] : ['wav']);
 
 export function croppedName(fileName: string, format: OutFormat): string {
   return `${fileName.replace(/\.[^.]+$/, '')}-cropped${OUT_FORMATS[format].ext}`;

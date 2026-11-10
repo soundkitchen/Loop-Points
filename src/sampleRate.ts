@@ -18,7 +18,8 @@ function oggRate(d: Uint8Array): number | null {
 
 function headerRate(d: Uint8Array): number | null {
   if (startsWith(d, 0, 'OggS')) return oggRate(d);
-  if (startsWith(d, 0, 'fLaC') && d.length >= 21) return (d[18] << 12) | (d[19] << 4) | (d[20] >> 4);   // STREAMINFO の 20 ビット
+  // 最初のメタデータブロックが STREAMINFO (種類 0) のときだけ読む。ほかのブロックなら 18〜20 バイト目は関係のない値
+  if (startsWith(d, 0, 'fLaC') && d.length >= 21 && (d[4] & 0x7f) === 0) return (d[18] << 12) | (d[19] << 4) | (d[20] >> 4);   // STREAMINFO の 20 ビット
   return null;
 }
 
