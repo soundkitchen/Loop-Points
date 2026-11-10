@@ -1,4 +1,4 @@
-import { OUT_FORMATS, croppedName, extFormat, formatsFor, type OutFormat } from './cropFormat';
+import { OUT_FORMATS, croppedName, extFormat, formatsFor, sameContent, type OutFormat } from './cropFormat';
 import type { CropSource } from './cropRender';
 import { canWrite, isAbort, pickAudioToSave, pickJsonToOpen, pickJsonToSave, writeContent } from './jsonFile';
 import { parseLoops, serializeLoops, type LoopMap, type LoopPoints } from './loops';
@@ -546,7 +546,9 @@ $('export-crop').addEventListener('click', () => void whileWriting('音源を書
   // 選んだ名前の拡張子の形式で書く。ただし、その形式でループの開始が削れるならセレクトの形式で書く。
   // 書き出しを止めると、保存先を選んだ時点で Chromium が作った空のファイル (既存のファイルなら空にしたもの) が残る
   const named = extFormat(handle.name);
-  const written = named && source.formats.includes(named) && !cropCutsLoop(named) ? named : format;
+  // .opus と .ogg は同じ Ogg Opus なので、どちらの名前でも書ける
+  const writable = (f: OutFormat) => source.formats.some((g) => sameContent(f, g));
+  const written = named && writable(named) && !cropCutsLoop(named) ? named : format;
   const { renderCrop } = await import('./cropRender');
   const out = await renderCrop(source, audio, from, to, written);
   await writeContent(handle, out.blob);
