@@ -21,7 +21,7 @@ ADTS のヘッダのプロファイルには、中心の方式(AAC-LC など)し
 
 見分けるには、最初のフレームの音声データをスペクトルまで読み(AAC デコーダの前半)、その後ろの SBR / PS の印を探す必要がある。kiln はそれをしない(2026-11-10 の決定。[`draft.md`](draft.md) §2.8)。代わりに:
 
-- `probe` はヘッダの値を返し、JS の `aac.probe` は `sbr: null`(分からない)を返す。CLI の `kiln info` は注意書きを出す
+- `probe` はヘッダの値を返し、JS の `aac.probe` は `sbr: null`(分からない)を返す
 - ブラウザでは、WebCodecs の `AudioDecoder` に最初の数フレームを渡すと、実際のレートとチャンネル数が分かる。Chrome 157 で、afconvert の HE-AAC / HE-AAC v2 の ADTS を `codec: 'mp4a.40.2'` とヘッダの値で設定してフレームをそのまま渡すと、最初の出力が 44.1kHz・2 チャンネル(フレームあたり 2048 サンプル)になった。`decodeAudioData` は AudioContext のレートに変換するので、元のレートは分からない
 
 ## 4. 検証

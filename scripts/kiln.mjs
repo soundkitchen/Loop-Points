@@ -139,9 +139,8 @@ if (command === 'build') {
 } else if (command === 'test') {
   run(await findZig(), ['build', 'test'], kilnDir);
   run(process.execPath, ['--test', 'wasm/test/*.test.mjs'], kilnDir);
-  for (const env of ['dom', 'worker', 'es']) {
-    run(process.execPath, [path.join(root, 'node_modules/typescript/bin/tsc'), '-p', `wasm/types/tsconfig.${env}.json`], kilnDir);
-  }
+  // kiln.d.ts の型の検査。画面側の tsc は skipLibCheck で .d.ts を検査しないので、ここで確かめる
+  run(process.execPath, [path.join(root, 'node_modules/typescript/bin/tsc'), '-p', 'wasm/types/tsconfig.dom.json'], kilnDir);
 } else if (command === 'check-dist') {
   checkDist();
 } else {

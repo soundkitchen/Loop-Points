@@ -105,7 +105,7 @@ Lyria の MP3 で検証した手順。実装ではこれを一般化している
 
 ## 5. 実装での一般化(2026-11-09)
 
-§4 は Lyria の MP3(タグなし、CBR 192kbps、ステレオ)で検証した手順。`kiln trim`(`src/mp3/`)では、Lyria 以外の MPEG-1 Layer III も扱えるよう、次のように一般化した。
+§4 は Lyria の MP3(タグなし、CBR 192kbps、ステレオ)で検証した手順。kiln のトリム(`src/mp3/`)では、Lyria 以外の MPEG-1 Layer III も扱えるよう、次のように一般化した。
 
 ### 5.1 入力
 

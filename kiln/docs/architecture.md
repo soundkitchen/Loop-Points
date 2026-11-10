@@ -5,8 +5,8 @@
 ## 1. 構成
 
 - **コア**: I/O を持たない Zig のライブラリ。ファイルや OS には触れず、アロケータとバイト列/サンプル列、`std.Io.Reader` / `std.Io.Writer` だけを扱う。
-- **CLI**: コアの薄いラッパー。ファイルの読み書きと引数処理だけを担う。
-- **wasm**: `wasm32-freestanding` 向けの薄いラッパー。自前の export 関数(alloc / free / 各処理)に、薄い JS ラッパーを被せる。
+- **wasm**: `wasm32-freestanding` 向けの薄いラッパー。自前の export 関数(alloc / free / 各処理)に、薄い JS ラッパーを被せる。Loop Points は JS ラッパーをソースから直接 import し、wasm をバイト列で渡す。
+- 当初は CLI もコアの薄いラッパーとして作ったが、2026-11-11 に外した([`draft.md`](draft.md) §2.9)。
 
 ### 1.1 ディレクトリとビルド
 
@@ -20,21 +20,19 @@
 | `src/m4a.zig`, `src/m4a/` | m4a(MP4 コンテナの AAC / ALAC)の解析(`kiln.m4a`)。`box`(ボックスの読み取り)/ `asc`(AudioSpecificConfig)に分ける(設計は [`m4a.md`](m4a.md)) | — |
 | `src/aac.zig` | aac(ADTS)の解析(`kiln.aac`。設計は [`aac.md`](aac.md)) | — |
 | `src/flac.zig`, `src/flac/` | FLAC の解析・復号・書き出し(`kiln.flac`)。`bits`(ビットの読み書き)/ `frame`(フレームヘッダ)/ `metadata`(`fLaC` とメタデータブロック)/ `stream`(フレームの区切り)/ `decoder`(サブフレームの復号)/ `encoder`(エンコーダ)/ `lpc`(線形予測の分析)/ `trim`(FLAC → FLAC の切り出し)に分ける(設計は [`flac.md`](flac.md)) | — |
-| `cli/main.zig` | CLI | `zig-out/bin/kiln` |
 | `wasm/main.zig` | wasm の export 関数 | `zig-out/wasm/kiln.wasm` |
-| `wasm/kiln.js` | JS ラッパー(ES module。`load()` で wasm を読み込む) | `zig-out/wasm/kiln.js` |
-| `wasm/kiln.d.ts` | JS ラッパーの TypeScript の型定義(TypeScript 5.7 以降) | `zig-out/wasm/kiln.d.ts` |
-| `wasm/types/` | kiln.d.ts の型検査用のファイル(DOM / WebWorker / ES だけの 3 通り)。配布物には含めない | — |
-| `wasm/test/` | kiln.js の実行時テスト(Node の `node:test`)。`zig-out/wasm/` を読む。配布物には含めない | — |
-| `LICENSE` | MIT の全文。wasm の配布物にも置く | `zig-out/wasm/LICENSE` |
+| `wasm/kiln.js` | JS ラッパー(ES module。`load()` で wasm を読み込む)。Loop Points はこのファイルを直接 import する | — |
+| `wasm/kiln.d.ts` | JS ラッパーの TypeScript の型定義(TypeScript 5.7 以降) | — |
+| `wasm/types/` | kiln.d.ts の型検査用のファイル(ブラウザのメインスレッド、lib: DOM) | — |
+| `wasm/test/` | kiln.js の実行時テスト(Node の `node:test`)。`wasm/kiln.js` と `zig-out/wasm/kiln.wasm` を読む | — |
+| `LICENSE` | MIT の全文 | — |
 | `THIRD_PARTY_NOTICES.md` | 外部から取り込んだコードや数表の出所とライセンス(方針は [`draft.md`](draft.md) §2.5) | — |
-| `cli/time.zig` | CLI の時刻指定(`1.5` / `1:02.5` / `66150s`)の解析 | — |
 | `testdata/` | テスト用の音声(MP3、WAV、FLAC、Ogg、m4a、aac)と、それを `@embedFile` するモジュール(`testdata.zig`)。作り方は `testdata/README.md` | — |
 
-- `zig build` は CLI と wasm の両方をビルドする。wasm は `-Dtarget` に関係なく常に `wasm32-freestanding` 向けで、最適化モードが debug のときは small でビルドする
-- `zig build test` はコアと CLI のテストを実行し、wasm のビルドが通ることも確かめる(wasm はネイティブで実行できないため)
-- コアのテストは、`testdata` モジュールを import できるテスト専用のモジュール(ルートは同じ `src/root.zig`)で実行する。ライブラリとしての `kiln` モジュールには `testdata` を含めない。`src/` の各ファイルはトップレベルに `const testdata = @import("testdata");` を置き、`test` ブロックからだけ参照する(Zig はトップレベルの宣言を参照されたときにだけ解析するため、テスト以外のビルドでは import が解決されない)
-- ライブラリ・wasm・テストの各ビルドで使うコアのモジュールは、`build.zig` の `kilnModuleOptions` で同じ定義から作る。テスト用のモジュールは、それに `testdata` の import を足したもの
+- `zig build`(`zig build wasm` と同じ)は wasm をビルドする。wasm は `-Dtarget` に関係なく常に `wasm32-freestanding` 向けで、最適化モードが debug のときは small でビルドする
+- `zig build test` はコアのテストを実行し、wasm のビルドが通ることも確かめる(wasm はネイティブで実行できないため)。Loop Points のリポジトリ直下の `npm run kiln:test` は、これに加えて kiln.js の実行時のテストと kiln.d.ts の型検査を実行する
+- コアのテストは、`testdata` モジュールを import できるテスト専用のモジュール(ルートは同じ `src/root.zig`)で実行する。wasm に入れる `kiln` モジュールには `testdata` を含めない。`src/` の各ファイルはトップレベルに `const testdata = @import("testdata");` を置き、`test` ブロックからだけ参照する(Zig はトップレベルの宣言を参照されたときにだけ解析するため、テスト以外のビルドでは import が解決されない)
+- wasm とテストの各ビルドで使うコアのモジュールは、`build.zig` の `kilnModuleOptions` で同じ定義から作る。テスト用のモジュールは、それに `testdata` の import を足したもの
 - バージョンは `build.zig.zon` の `.version` だけを出所にし、ビルドオプション経由でコアの `kiln.version` に渡す
 
 ## 2. コア API の方針
@@ -56,8 +54,8 @@ const r = try kiln.mp3.trim(input, .{ .start = 66150, .end = 441000 }, writer); 
 const t = try kiln.mp3.trimAlloc(gpa, input, .{ .start = 66150 }); // t.data / t.start / t.end / t.sample_rate
 ```
 
-- 位置はタイムライン上のサンプル位置([`lyria-mp3.md`](lyria-mp3.md) §5.1)。秒からの変換は CLI と JS 側で行う
-- 範囲外の指定はコアが丸め、実際に切り出した区間を返す。丸めたことを利用者に伝えるのは呼び出し側(CLI は stderr に警告を出す)
+- 位置はタイムライン上のサンプル位置([`lyria-mp3.md`](lyria-mp3.md) §5.1)。秒からの変換は JS 側で行う
+- 範囲外の指定はコアが丸め、実際に切り出した区間を返す。丸めたことを利用者に伝えるのは呼び出し側
 - `trim` は入力のスライスをそのまま `Writer` に書くため、アロケータを使わない
 
 ```zig
@@ -77,37 +75,15 @@ const nch = try dec.decodeFrame(frame_bytes, &pcm); // pcm: [2][1152]f32。扱�
 
 ### 2.2 CLI
 
-```sh
-kiln trim <input> <output> [--start TIME] [--end TIME | --duration TIME]
-          [--format FORMAT] [--sample-format SAMPLE] [--bits N]
-          [--compression N] [--dither DITHER]
-kiln info <input>
-```
-
-- `<input>` / `<output>` は `-` で stdin / stdout
-- 入力の形式は、コアの `kiln.detect` が判定する。拡張子は見ない。WAV は先頭のバイト列(RIFF / RF64 / RIFX と WAVE)、FLAC は先頭(ID3v2 タグがあればその後)の `fLaC` か Ogg FLAC の印、Ogg は先頭の `OggS`、m4a は先頭の `ftyp` ボックス、aac は先頭(ID3v2 タグがあればその後)に ADTS のフレームが続くことで判定し、それ以外は MP3 の解析に任せる(先頭にゴミがある MP3 も受け付ける)。ADTS は MP3 と同期ワードが似ているので、MP3 の解析より先に見る
-- `trim` が扱えるのは MP3 / WAV / FLAC。Ogg / m4a / aac は「まだ切り出せない」というエラー(終了コード 1)
-- `info` は、形式・コーデック・サンプルレート・チャンネル数・長さ(サンプル数と秒)と、形式ごとの情報(MP3 のフレーム数と指定できる先頭の最小値、WAV のサンプル形式、FLAC のビット深度とフレーム数、Opus の元のレートと pre-skip、m4a の遅延、aac のフレーム数)を「名前: 値」の行で stdout に書く。m4a で SBR / PS が分からないときと、aac では、HE-AAC ならレートやチャンネル数が違うことを注意書きする
-- `--format mp3|wav|flac` で出力の形式を指定する。省くと入力と同じ形式。変換できるのは MP3 / FLAC → WAV と WAV / MP3 → FLAC で、ほかの組み合わせ(MP3 への変換)はエラー(終了コード 1)。FLAC → FLAC は切り出し(`kiln.flac.trim`。境目のフレームだけ作り直す。[`flac.md`](flac.md) §7)
-- WAV に変換するときだけ `--sample-format u8|i16|i24|i32|f32|f64` を使う。形式の既定は、MP3 は `i16`、FLAC はビット深度を保つ形式([`flac.md`](flac.md) §4)
-- WAV / MP3 を FLAC に変換するときだけ `--bits 4〜32`(既定は、整数の WAV なら元のビット深度、それ以外は 16)と `--compression 0〜8`(既定は 5。flac コマンドの -0〜-8 と同じ。[`flac.md`](flac.md) §6)を使う
-- `--dither tpdf|none`(既定は `tpdf`)は変換するときだけ使う。オプションを使わない組み合わせで指定すると引数の誤り(終了コード 2)
-- FLAC の入力は、フレームの一覧(`kiln.flac.Index`)を 1 回だけ作り、長さを求めるのと、切り出し・WAV への変換(`Index.trim` / `Index.toWav`)で使い回す(区切りを探す走査を繰り返さない)
-- FLAC は STREAMINFO を最後に書き戻す。ファイルへはフレームを流して書き(`kiln.wav.toFlac` / `kiln.mp3.toFlac` / `kiln.flac.Index.trim`)、閉じる前に先頭の STREAMINFO を位置を指定して書き戻す(`File.writePositionalAll`。出力全体をメモリにためない)。stdout へは書き戻せないので、メモリ上で書き戻してから書く
-- MP3 → WAV / FLAC では、タグなしの入力でも先頭を 529 に切り上げない(`kiln.mp3.decode` と同じ)。MP3 / FLAC → WAV、MP3 → FLAC、FLAC → FLAC で復号できなかったフレームがあれば、その数を stderr に警告する(終了コードは 0。FLAC → FLAC では無音として作り直したフレームの数)
-- TIME は秒(`1.5`)、分:秒 / 時:分:秒(`1:02.5`)、サンプル数(`66150s`)。秒は浮動小数点を使わずに解析し、切り捨てでサンプル位置にする
-- `--duration` は、切り上げた後の実際の開始位置から数える(タグなしの入力で `--start` を省いても、出力の長さは指定どおり)
-- 出力ファイルは一時ファイルに書き、最後まで書けたときだけ置き換える(`Dir.createFileAtomic`)。失敗したときは、既存の出力ファイルは元のまま残る。置き換えはリネームなので、出力先がシンボリックリンクならリンク自体が置き換わる
-- 終了コード: 0 = 成功、1 = 処理の失敗(入力の形式が分からない・扱えない、区間が空など)、2 = 引数の誤り
+2026-11-11 に外した([`draft.md`](draft.md) §2.9)。CLI が使っていた入力の形式の判定(`kiln.detect`)はコアに残っている。拡張子は見ない。WAV は先頭のバイト列(RIFF / RF64 / RIFX と WAVE)、FLAC は先頭(ID3v2 タグがあればその後)の `fLaC` か Ogg FLAC の印、Ogg は先頭の `OggS`、m4a は先頭の `ftyp` ボックス、aac は先頭(ID3v2 タグがあればその後)に ADTS のフレームが続くことで判定し、それ以外は MP3 の解析に任せる(先頭にゴミがある MP3 も受け付ける)。ADTS は MP3 と同期ワードが似ているので、MP3 の解析より先に見る
 
 ### 2.3 wasm と JS
 
 - JS に返すエラーの名前は、wasm/main.zig の `KilnError`(エラーの集合)に限る。`fail` はこの集合しか受け付けないので、export が新しいエラーを返しうるようになるとコンパイルが通らなくなる。kiln.d.ts の `KilnErrorCode` も同じ一覧にする(この同期は手作業。両方の定義の横に、もう一方を指すコメントがある)
-- `InternalError` は kiln の不具合(起きるはずのない食い違い。たとえば MP3 → WAV で書いた長さが WAV のヘッダと違う)のときに返す。止めずにエラーとして返すので、wasm のインスタンスはそのまま使い続けられる。CLI は終了コード 1
-- 型定義(kiln.d.ts)は ES の標準の型だけを使い、DOM / WebWorker の型(`BufferSource`、`URL`、`WebAssembly` など)に頼らない。入力は `ArrayBufferLike | ArrayBufferView`(kiln.js がバイト列として読むものすべて)、出力は `Uint8Array<ArrayBuffer>` / `Float32Array<ArrayBuffer>`(そのまま `Blob` などに渡せる)。`wav.encode` は `AudioBuffer` を構造で受け(Worker の型ライブラリにも通る)、`Float32Array[]` を渡すときは `sampleRate` が必須。`load` の URL は文字列か、`href` を持つもの(`URL` など)
-- `load(source)` の `source`(wasm の URL かバイト列)は省けない。kiln.js に `new URL('./kiln.wasm', import.meta.url)` を書くと、Vite や webpack 5 はそれをアセットの参照とみなし、バイト列で読み込む場合にも使わない kiln.wasm をビルド結果に出力するため(soundkitchen/kiln#11)。URL でもバイト列でもない値(省いたとき、`Response`、`Blob` など)は、fetch の前に `TypeError` で reject する(`load` は async なので、投げるのではなく reject した Promise を返す)。URL は呼び出す側のモジュールから見た位置で書く
-- kiln.d.ts か kiln.js の API を変えたら、TypeScript 5.7 以降の tsc で `wasm/types/` の 3 つの設定(`tsconfig.dom.json` / `tsconfig.worker.json` / `tsconfig.es.json`)の型検査を通す(`tsc -p wasm/types/tsconfig.dom.json` など)。誤った使い方が型エラーになることも `@ts-expect-error` で確かめている。zig build は型検査をしない(Node と tsc を前提にしないため)
-- kiln.js の実行時の振る舞い(`load` の引数の検査、URL とバイト列での読み込みなど)は、`wasm/test/` の Node のテストで確かめる。`zig build` の後に `node --test 'wasm/test/*.test.mjs'`(Node 22 以降)。型検査と同じく zig build には含めず、kiln.js を変えたら手で動かす
+- `InternalError` は kiln の不具合(起きるはずのない食い違い。たとえば MP3 → WAV で書いた長さが WAV のヘッダと違う)のときに返す。止めずにエラーとして返すので、wasm のインスタンスはそのまま使い続けられる
+- 型定義(kiln.d.ts)は ES の標準の型だけを使い、DOM / WebWorker の型(`BufferSource`、`URL`、`WebAssembly` など)に頼らない。入力は `ArrayBufferLike | ArrayBufferView`(kiln.js がバイト列として読むものすべて)、出力は `Uint8Array<ArrayBuffer>` / `Float32Array<ArrayBuffer>`(そのまま `Blob` などに渡せる)。`wav.encode` は `AudioBuffer` を構造で受け(Worker の型ライブラリにも通る)、`Float32Array[]` を渡すときは `sampleRate` が必須
+- `load(source)` の `source` は wasm のバイト列だけで、省けない。URL からは読まない(fetch しない)。Loop Points は CSP の `connect-src 'none'` で fetch を止め、wasm をチャンクに埋め込んでバイト列で渡すため。kiln.js に `new URL('./kiln.wasm', import.meta.url)` を書くと、Vite や webpack 5 はそれをアセットの参照とみなし、使わない kiln.wasm をビルド結果に出力する(soundkitchen/kiln#11)ので、その書き方も残さない。バイト列でない値(省いたとき、URL、`Response`、`Blob` など)は `TypeError` で reject する(`load` は async なので、投げるのではなく reject した Promise を返す)
+- kiln.d.ts か kiln.js の API を変えたら、Loop Points のリポジトリ直下で `npm run kiln:test` を実行する。TypeScript の tsc で `wasm/types/tsconfig.dom.json` の型検査を通し(誤った使い方が型エラーになることも `@ts-expect-error` で確かめている)、`wasm/test/` の Node のテストで kiln.js の実行時の振る舞い(`load` の引数の検査、バイト列での読み込みなど)を確かめる。Loop Points の `tsc` は `skipLibCheck` で .d.ts を検査しないので、kiln.d.ts の誤りはここで見つける
 - export 関数は成功なら true を返し、結果(出力のバイト列や数値)をモジュール内の変数に置く。JS 側は `kiln_output_ptr` / `kiln_output_len` / `kiln_value(i)` で読み出し、失敗時は `kiln_error_ptr` / `kiln_error_len` でエラー名を読む
 - JS ラッパーは `load()` が返すオブジェクトに `mp3.probe(bytes)` / `mp3.trim(bytes, { start, end })`(秒)/ `{ startSample, endSample }`(サンプル数)を持つ。失敗時はコアのエラー名を `code` に持つ `KilnError` を投げる
 - 入力は `ArrayBuffer` / `SharedArrayBuffer` / TypedArray / `DataView`(型定義の `BytesInput`)。TypedArray と `DataView` は、要素の値ではなく下のバイト列として読む
@@ -238,7 +214,7 @@ const a = try kiln.aac.probe(input);  // profile, mpeg_version, sample_rate, cha
 
 試作(16bit WAV を `*Io.Writer` に書くコア)を、テスト・CLI・`wasm32-freestanding` の 3 通りで動かして確認した。
 
-- `main` は `pub fn main(init: std.process.Init) !void` の形(終了コードを返すなら `!u8`。K!LN の CLI は `!u8`)。`init` に `gpa` / `arena` / `io` / 引数 / 環境変数が入る。
+- `main` は `pub fn main(init: std.process.Init) !void` の形(終了コードを返すなら `!u8`)。`init` に `gpa` / `arena` / `io` / 引数 / 環境変数が入る。
 - `std.Io.Reader` / `std.Io.Writer` はバッファを内部に持つ具体型(vtable 方式)。`Reader.fixed` / `Writer.fixed` / `Writer.Allocating` は OS なしで動き、wasm でもそのまま使える。
 - ファイルは `std.Io.Dir.cwd().readFileAlloc(io, path, gpa, limit)` で一括読み込み、`file.writer(io, &buf).interface` を `*Io.Writer` として書き出せる。
 - wasm では `std.heap.wasm_allocator` が使える。試作の wasm は ReleaseSmall で約 3KB。

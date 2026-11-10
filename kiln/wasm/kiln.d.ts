@@ -288,16 +288,12 @@ export interface Kiln {
   readonly exports: Record<string, unknown>;
 }
 
-/** wasm の URL。文字列か、URL のように `href` を持つもの(fetch する) */
-export type WasmUrl = string | { readonly href: string };
-
 /** wasm のバイト列(WebAssembly.instantiate に渡せるもの) */
 export type WasmBytes = ArrayBuffer | ArrayBufferView<ArrayBuffer>;
 
 /**
  * kiln.wasm を読み込んで初期化する。
- * @param source wasm の URL(fetch する)、またはバイト列。省けない。URL は、呼び出す側のモジュールから見た
- *   kiln.wasm の位置で書く(呼び出す側と同じ場所に置いたなら `new URL('./kiln.wasm', import.meta.url)`)。
- *   URL でもバイト列でもない値(Response、Blob など)を渡すと、TypeError で reject する
+ * @param source wasm のバイト列。URL からは読まない(fetch しない)。バイト列でない値(URL、Response、Blob など)を渡すと、
+ *   TypeError で reject する
  */
-export function load(source: WasmUrl | WasmBytes): Promise<Kiln>;
+export function load(source: WasmBytes): Promise<Kiln>;

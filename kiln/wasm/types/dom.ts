@@ -4,7 +4,6 @@ import { load, KilnError, type KilnErrorCode, type Kiln } from '../kiln.js';
 
 export async function usage(bytes: Uint8Array, wasm: ArrayBuffer, buf: AudioBuffer) {
   const k: Kiln = await load(wasm);
-  await load(new URL('./kiln.wasm', import.meta.url));
   const info = k.mp3.probe(bytes);
   const t = k.mp3.trim(bytes, { start: 1.5, end: info.duration });
   const d = k.mp3.decode(bytes, { startSample: 100n, endSample: 2000 });
@@ -31,6 +30,8 @@ export async function usage(bytes: Uint8Array, wasm: ArrayBuffer, buf: AudioBuff
 
 // 誤った使い方は型エラーになる
 export function misuse(k: Kiln, bytes: Uint8Array) {
+  // @ts-expect-error URL からは読まない(バイト列だけ)
+  load(new URL('https://example.com/kiln.wasm'));
   // @ts-expect-error start と startSample は同時に指定できない
   k.mp3.trim(bytes, { start: 1, startSample: 2 });
   // @ts-expect-error 未知のサンプル形式
