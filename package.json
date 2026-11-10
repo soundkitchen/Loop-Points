@@ -4,10 +4,11 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
-    "predev": "node scripts/kiln.mjs build",
+    "predev": "npm run kiln:build",
     "dev": "vite",
-    "prebuild": "node scripts/kiln.mjs build",
+    "prebuild": "npm run kiln:build",
     "build": "tsc --noEmit && vite build",
+    "postbuild": "node scripts/kiln.mjs check-dist",
     "preview": "vite preview",
     "deploy": "npm run build && wrangler deploy",
     "kiln:build": "node scripts/kiln.mjs build",

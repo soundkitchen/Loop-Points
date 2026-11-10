@@ -12,7 +12,7 @@ Chrome、Edge などの Chromium 系のブラウザで使えます。JSON を保
 
 Node.js `^24.22.1` または `>=26.12.1` が必要です(それぞれのセキュリティ更新を適用したバージョン以降)。
 
-クロップの書き出しに使う kiln([`kiln/`](kiln/))の wasm のビルドに、Zig 0.17.1 を使います。`npm run dev` と `npm run build` は、先に kiln の wasm をビルドします。PATH に Zig 0.17.1 がなければ、公式のアーカイブを `.zig/` に取ってきて、sha256 を確かめてから使います(初回は数十 MB のダウンロードと、wasm のビルドに時間がかかります)。手で入れた Zig を使うときは、リポジトリ直下の `.envrc`(direnv)で PATH に通せます。
+クロップの書き出しに使う kiln([`kiln/`](kiln/))の wasm のビルドに、Zig 0.17.1 を使います。`npm run dev` と `npm run build` は、先に kiln の wasm をビルドします。PATH に Zig 0.17.1 がなければ、公式のアーカイブを Zig のコミュニティのミラー(最後は ziglang.org)から `.zig/` に取ってきて、sha256 を確かめてから使います(初回は数十 MB のダウンロードと、wasm のビルドに時間がかかります)。手で入れた Zig を使うときは、リポジトリ直下の `.envrc`(direnv)で PATH に通せます。
 
 ```sh
 npm install
@@ -20,6 +20,9 @@ npm run dev     # 開発サーバー。表示された URL を開く
 npm run build   # 型チェックのあと、dist/ に静的ファイルを出力する
 npm run kiln:test   # kiln のテスト(Zig のテスト、kiln.js の実行時のテスト、型定義の検査)
 ```
+
+- 開発サーバーが wasm をビルドするのは起動するときだけです。動かしたまま `kiln/` の Zig のソースを直したときは、`npm run kiln:build` でビルドし直してから、ブラウザを再読み込みしてください
+- `npm run build` の最後に、`dist/` に `.wasm` のファイルが出ていないことを確かめます。kiln.wasm はクロップのチャンクに埋め込むもので、別のファイルとして出ると、CSP(`connect-src 'none'`)で読み込めず、クロップの書き出しが壊れるためです
 
 ## 使い方
 
