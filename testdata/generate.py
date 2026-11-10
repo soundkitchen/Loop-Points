@@ -11,7 +11,11 @@ WAV: 同じような合成音(0.25 秒)を、形式やチャンクの並びを�
 FLAC: WAV と同じ合成音を、flac(参照実装のコマンド)でエンコードする。flac のバージョンが
 変わると出力のバイト列も変わるため、作り直したら testdata/README.md の flac のバージョンも更新すること。
 
-使い方: python3 testdata/generate.py [mp3|wav|flac](省くとすべて。mp3 は lame、flac は flac が PATH にあること)
+Ogg / m4a / aac: MP3 と同じ合成音(0.5 秒)を、opusenc / oggenc / ffmpeg / afconvert でエンコードする。
+afconvert は macOS にしかない。ツールのバージョンは testdata/README.md に書く。
+
+使い方: python3 testdata/generate.py [mp3|wav|flac|ogg|m4a|aac](省くとすべて。mp3 は lame、flac は flac、
+ogg は opusenc・oggenc・ffmpeg、m4a と aac は ffmpeg・afconvert が PATH にあること)
 """
 import math
 import os
@@ -39,8 +43,8 @@ def synth(rate, channels, seconds=2.0):
     return bytes(out)
 
 
-def wav(path, rate, channels):
-    pcm = synth(rate, channels)
+def wav(path, rate, channels, seconds=2.0):
+    pcm = synth(rate, channels, seconds)
     with open(path, 'wb') as f:
         f.write(b'RIFF' + struct.pack('<I', 36 + len(pcm)) + b'WAVE')
         f.write(b'fmt ' + struct.pack('<IHHIIHH', 16, 1, channels, rate,
@@ -215,6 +219,51 @@ def main_mp3():
             print(name, len(data))
 
 
+# ffmpeg の出力を再現できるようにする(エンコーダ名などのメタデータを書かない)
+FFMPEG = ['ffmpeg', '-hide_banner', '-loglevel', 'error', '-y', '-i', '{in}', '-map_metadata', '-1',
+          '-fflags', '+bitexact', '-flags:a', '+bitexact']
+
+# (ファイル名, サンプルレート, チャンネル数, 秒, コマンド)。コマンドの {in} / {out} は入力と出力のパス
+ENCODED_CASES = {
+    'ogg': [
+        # opusenc は元のレート(44.1kHz)を ID ヘッダに書く。pre-skip は 312
+        ('opus-stereo.opus', 44100, 2, 0.5, ['opusenc', '--quiet', '--bitrate', '32', '{in}', '{out}']),
+        # ffmpeg(libopus)のモノラル 48kHz
+        ('opus-mono-ffmpeg.opus', 48000, 1, 0.5, FFMPEG + ['-c:a', 'libopus', '-b:a', '24k', '{out}']),
+        ('vorbis-stereo.ogg', 44100, 2, 0.5, ['oggenc', '-Q', '-q', '0', '{in}', '-o', '{out}']),
+        ('vorbis-mono22k.ogg', 22050, 1, 0.5, ['oggenc', '-Q', '-q', '2', '{in}', '-o', '{out}']),
+    ],
+    'm4a': [
+        # ffmpeg は先頭の遅延(1024)を編集リスト(elst)に書く
+        ('aac-lc-ffmpeg.m4a', 44100, 2, 0.5, FFMPEG + ['-c:a', 'aac', '-b:a', '64k', '{out}']),
+        # afconvert は編集リストを書かず、iTunSMPB に遅延(2112)と長さを書く
+        ('aac-lc-afconvert.m4a', 44100, 2, 0.5, ['afconvert', '-f', 'm4af', '-d', 'aac', '{in}', '{out}']),
+        ('aac-he-afconvert.m4a', 44100, 2, 0.5, ['afconvert', '-f', 'm4af', '-d', 'aach', '-b', '48000', '{in}', '{out}']),
+        ('aac-hev2-afconvert.m4a', 44100, 2, 0.5, ['afconvert', '-f', 'm4af', '-d', 'aacp', '-b', '32000', '{in}', '{out}']),
+        ('alac-afconvert.m4a', 44100, 2, 0.25, ['afconvert', '-f', 'm4af', '-d', 'alac', '{in}', '{out}']),
+    ],
+    'aac': [
+        ('lc-ffmpeg.aac', 44100, 2, 0.5, FFMPEG + ['-c:a', 'aac', '-b:a', '64k', '-f', 'adts', '{out}']),
+        ('lc-afconvert.aac', 44100, 2, 0.5, ['afconvert', '-f', 'adts', '-d', 'aac', '{in}', '{out}']),
+        # ADTS のヘッダには SBR を書けないので、ヘッダは 22.05kHz の AAC-LC に見える
+        ('he-afconvert.aac', 44100, 2, 0.5, ['afconvert', '-f', 'adts', '-d', 'aach', '-b', '48000', '{in}', '{out}']),
+    ],
+}
+
+
+def main_encoded(kind):
+    with tempfile.TemporaryDirectory() as tmp:
+        for name, rate, channels, seconds, cmd in ENCODED_CASES[kind]:
+            src = os.path.join(tmp, 'in.wav')
+            enc = os.path.join(tmp, 'out' + os.path.splitext(name)[1])
+            wav(src, rate, channels, seconds)
+            subprocess.run([a.replace('{in}', src).replace('{out}', enc) for a in cmd], check=True)
+            data = open(enc, 'rb').read()
+            with open(os.path.join(HERE, name), 'wb') as f:
+                f.write(data)
+            print(name, len(data))
+
+
 if __name__ == '__main__':
     which = sys.argv[1] if len(sys.argv) > 1 else 'all'
     if which in ('all', 'mp3'):
@@ -223,3 +272,6 @@ if __name__ == '__main__':
         main_wav()
     if which in ('all', 'flac'):
         main_flac()
+    for kind in ENCODED_CASES:
+        if which in ('all', kind):
+            main_encoded(kind)

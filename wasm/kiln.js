@@ -462,6 +462,105 @@ export async function load(source) {
     },
   };
 
+  /** wasm の 3 値(0: なし、1: あり、2: 不明)を boolean か null にする */
+  const tristate = (v) => (v === 2n ? null : v === 1n);
+  /** AAC のオブジェクトタイプ(1〜4)の名前 */
+  const AAC_PROFILES = { 1: 'main', 2: 'lc', 3: 'ssr', 4: 'ltp' };
+
+  const ogg = {
+    /**
+     * Ogg(Vorbis / Opus)を解析する。
+     * @param {ArrayBufferLike | ArrayBufferView} input Ogg ファイル全体
+     * @returns {{ codec: 'vorbis' | 'opus', sampleRate: number, inputSampleRate: number | null, channels: number,
+     *             samples: number, duration: number, preSkip: number, invalidPages: number }}
+     *   sampleRate はデコード結果のレート(Opus は常に 48000)、inputSampleRate は Opus のエンコード前のレート
+     *   (書かれていなければ、または Vorbis なら null)。samples は先頭と末尾の切り詰めを除いた長さ
+     */
+    probe(input) {
+      return withInput(input, (ptr, len) => {
+        check(e.kiln_ogg_probe(ptr, len));
+        const sampleRate = Number(e.kiln_value(0));
+        const samples = Number(e.kiln_value(2));
+        const inputSampleRate = Number(e.kiln_value(4));
+        return {
+          codec: e.kiln_value(3) === 1n ? 'opus' : 'vorbis',
+          sampleRate,
+          inputSampleRate: inputSampleRate === 0 ? null : inputSampleRate,
+          channels: Number(e.kiln_value(1)),
+          samples,
+          duration: samples / sampleRate,
+          preSkip: Number(e.kiln_value(5)),
+          invalidPages: Number(e.kiln_value(6)),
+        };
+      });
+    },
+  };
+
+  const m4a = {
+    /**
+     * m4a(MP4 コンテナの AAC / ALAC)を解析する。
+     * @param {ArrayBufferLike | ArrayBufferView} input m4a ファイル全体
+     * @returns {{ codec: 'aac' | 'alac', profile: string | null, objectType: number, sbr: boolean | null,
+     *             ps: boolean | null, sampleRate: number, channels: number, bitsPerSample: number | null,
+     *             samples: number, duration: number, encoderDelay: number, audioSpecificConfig: Uint8Array }}
+     *   sampleRate / channels はデコード結果のもの(HE-AAC は SBR、v2 は PS の後)。sbr / ps が null のときは
+     *   ファイルから分からず、実際のレートやチャンネル数が違うことがある
+     */
+    probe(input) {
+      return withInput(input, (ptr, len) => {
+        check(e.kiln_m4a_probe(ptr, len));
+        const audioSpecificConfig = takeOutput();
+        const sampleRate = Number(e.kiln_value(0));
+        const samples = Number(e.kiln_value(2));
+        const alac = e.kiln_value(3) === 1n;
+        const objectType = Number(e.kiln_value(4));
+        const sbr = tristate(e.kiln_value(5));
+        const ps = tristate(e.kiln_value(6));
+        return {
+          codec: alac ? 'alac' : 'aac',
+          profile: alac ? null : ps === true ? 'hev2' : sbr === true ? 'he' : (AAC_PROFILES[objectType] ?? 'other'),
+          objectType,
+          sbr,
+          ps,
+          sampleRate,
+          channels: Number(e.kiln_value(1)),
+          bitsPerSample: alac ? Number(e.kiln_value(8)) : null,
+          samples,
+          duration: samples / sampleRate,
+          encoderDelay: Number(e.kiln_value(7)),
+          audioSpecificConfig,
+        };
+      });
+    },
+  };
+
+  const aac = {
+    /**
+     * aac(ADTS)を解析する。ADTS のヘッダには HE-AAC(SBR / PS)を書けないので、sbr は常に null。
+     * HE-AAC なら、デコード結果のレートは sampleRate の 2 倍(v2 なら 2 チャンネル)になる
+     * @param {ArrayBufferLike | ArrayBufferView} input aac ファイル全体
+     * @returns {{ profile: 'main' | 'lc' | 'ssr' | 'ltp', mpegVersion: number, sbr: null, sampleRate: number,
+     *             channels: number, frames: number, samples: number, duration: number }}
+     */
+    probe(input) {
+      return withInput(input, (ptr, len) => {
+        check(e.kiln_aac_probe(ptr, len));
+        const sampleRate = Number(e.kiln_value(0));
+        const samples = Number(e.kiln_value(2));
+        return {
+          profile: AAC_PROFILES[Number(e.kiln_value(4)) + 1],
+          mpegVersion: Number(e.kiln_value(5)),
+          sbr: null,
+          sampleRate,
+          channels: Number(e.kiln_value(1)),
+          frames: Number(e.kiln_value(3)),
+          samples,
+          duration: samples / sampleRate,
+        };
+      });
+    },
+  };
+
   return {
     /** ライブラリのバージョン */
     version: decoder.decode(bytesAt(e.kiln_version_ptr(), e.kiln_version_len())),
@@ -471,6 +570,12 @@ export async function load(source) {
     wav,
     /** FLAC の解析、切り出し、デコード、書き出し */
     flac,
+    /** Ogg(Vorbis / Opus)の解析 */
+    ogg,
+    /** m4a(AAC / ALAC)の解析 */
+    m4a,
+    /** aac(ADTS)の解析 */
+    aac,
     /** 生の export 関数(低レベル API) */
     exports: e,
   };
