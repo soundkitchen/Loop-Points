@@ -1,6 +1,6 @@
 # Ogg(Vorbis / Opus)
 
-Ogg の読み込み(`src/ogg.zig`、`src/ogg/` の `page` / `vorbis` / `opus`)と、Opus の無劣化の切り出し(`src/ogg/trim.zig`。§6)の設計と検証の記録。Vorbis の切り出しは後の PR で足す。決定事項は [`draft.md`](draft.md) §2.8。
+Ogg の読み込み(`src/ogg.zig`、`src/ogg/` の `page` / `vorbis` / `opus`)と、Opus の無劣化の切り出し(`src/ogg/trim.zig`。§6)の設計と検証の記録。Vorbis の切り出しは後の PR で足す。決定事項は [`draft.md`](draft.md) §2.8(解析)と §2.10(Opus の切り出し)。
 
 ## 1. 扱う範囲と出所
 
