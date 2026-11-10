@@ -62,8 +62,10 @@ pub fn probe(input: []const u8) ParseError!Info {
         } else if (b.is("udta")) {
             udta = b;
         } else if (b.is("trak") and track == null) {
-            const hdlr = try box.findPath(b.body, &.{ "mdia", "hdlr" }) orelse continue;
-            if (std.mem.eql(u8, (try slice(hdlr.body, 8, 4)), "soun")) track = b;
+            // 読めないトラック(ボックスの長さが壊れているなど)は飛ばし、後ろの音声トラックを探す
+            const hdlr = (box.findPath(b.body, &.{ "mdia", "hdlr" }) catch null) orelse continue;
+            const kind = slice(hdlr.body, 8, 4) catch continue;
+            if (std.mem.eql(u8, kind, "soun")) track = b;
         }
     }
     const trak = track orelse return error.UnsupportedFormat;
@@ -89,7 +91,7 @@ pub fn probe(input: []const u8) ParseError!Info {
         length = e.length;
     } else if (try iTunSMPB(udta, trak)) |s| {
         // 長さが書かれ、メディアに収まるときだけ使う
-        if (s.samples > 0 and s.delay + s.samples <= media) {
+        if (s.fits(media)) {
             delay = s.delay;
             length = s.samples;
         }
@@ -255,8 +257,9 @@ fn mediaDuration(stbl: []const u8) ParseError!u64 {
     for (0..n) |i| {
         const c = try box.int(u32, stts.body, 8 + i * 8);
         const delta = try box.int(u32, stts.body, 12 + i * 8);
-        count += c;
-        total += @as(u64, c) * delta;
+        // 32 ビットの積は u64 に収まるが、合計はあふれうる
+        count = std.math.add(u64, count, c) catch return error.InvalidM4a;
+        total = std.math.add(u64, total, @as(u64, c) * delta) catch return error.InvalidM4a;
     }
     if (try box.Iterator.find(stbl, "stsz")) |stsz| {
         if (try box.int(u32, stsz.body, 8) != count) return error.InvalidM4a;
@@ -290,13 +293,21 @@ fn editList(elst: []const u8, movie_ts: u32, media_ts: u32, media: u64) ParseErr
             if (!seen_media) r.delay = t;
             seen_media = true;
         }
-        r.length += d;
+        r.length = std.math.add(u64, r.length, d) catch return error.InvalidM4a;
     }
     if (!seen_media) return .{ .delay = 0, .length = media };
     return r;
 }
 
-const Smpb = struct { delay: u64, samples: u64 };
+const Smpb = struct {
+    delay: u64,
+    samples: u64,
+
+    /// 長さが書かれ、遅延と長さがメディアに収まるか(細工した値でも足し算があふれないように比べる)
+    fn fits(s: Smpb, media: u64) bool {
+        return s.samples > 0 and s.delay <= media and s.samples <= media - s.delay;
+    }
+};
 
 /// iTunes の `iTunSMPB`(moov か trak の udta / meta / ilst / `----`)の遅延と長さ
 fn iTunSMPB(moov_udta: ?box.Box, trak: box.Box) ParseError!?Smpb {
@@ -402,6 +413,24 @@ test "probe: エラー" {
     const at = std.mem.indexOf(u8, buf, "stts").? - 4;
     std.mem.writeInt(u32, buf[at..][0..4], 0xFFFF, .big);
     try std.testing.expectError(error.InvalidM4a, probe(buf));
+}
+
+test "mediaDuration と editList: 合計があふれれば InvalidM4a" {
+    // stts の 2 項目(count = delta = 0xFFFFFFFF)の積の合計は u64 を超える
+    const stts = "\x00\x00\x00\x20stts" ++ "\x00\x00\x00\x00" ++ "\x00\x00\x00\x02" ++ @as([16]u8, @splat(0xFF));
+    try std.testing.expectError(error.InvalidM4a, mediaDuration(stts));
+    // 版 1 の編集 2 つ(長さ 2^63、開始 0)
+    const edit = "\x80\x00\x00\x00\x00\x00\x00\x00" ++ @as([8]u8, @splat(0)) ++ "\x00\x01\x00\x00";
+    const elst = "\x01\x00\x00\x00" ++ "\x00\x00\x00\x02" ++ edit ++ edit;
+    try std.testing.expectError(error.InvalidM4a, editList(elst, 1, 1, 0));
+}
+
+test "Smpb.fits: 細工した値でもあふれない" {
+    try std.testing.expect((Smpb{ .delay = 2112, .samples = 22050 }).fits(2112 + 22050));
+    try std.testing.expect(!(Smpb{ .delay = 2112, .samples = 22050 }).fits(2112 + 22049));
+    try std.testing.expect(!(Smpb{ .delay = std.math.maxInt(u64), .samples = 2 }).fits(1000));
+    try std.testing.expect(!(Smpb{ .delay = 1, .samples = std.math.maxInt(u64) }).fits(1000));
+    try std.testing.expect(!(Smpb{ .delay = 0, .samples = 0 }).fits(1000));
 }
 
 test rescale {

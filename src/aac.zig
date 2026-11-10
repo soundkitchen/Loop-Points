@@ -81,6 +81,43 @@ fn isTag(d: []const u8) bool {
     return std.mem.startsWith(u8, d, "TAG") or std.mem.startsWith(u8, d, "APETAGEX") or std.mem.startsWith(u8, d, "ID3");
 }
 
+/// 入力の末尾に付いたタグ(ID3v1、APEv2、フッタのある ID3v2)を取り除いた、音声の終わりの位置
+fn audioEnd(input: []const u8, start: usize) usize {
+    var end = input.len;
+    while (end > start) {
+        const d = input[start..end];
+        if (d.len >= 128 and std.mem.startsWith(u8, d[d.len - 128 ..], "TAG")) {
+            end -= 128;
+        } else if (d.len >= 32 and std.mem.startsWith(u8, d[d.len - 32 ..], "APETAGEX")) {
+            // APEv2 のフッタ: 大きさ(フッタを含み、ヘッダを含まない)と、ヘッダがあるかのフラグ(31 ビット目)
+            const f = d[d.len - 32 ..];
+            const size = std.mem.readInt(u32, f[12..16], .little);
+            const total = @as(u64, size) + @as(u64, if (f[23] & 0x80 != 0) 32 else 0);
+            if (size < 32 or total > d.len) break;
+            end -= @intCast(total);
+        } else if (d.len >= 10 and std.mem.startsWith(u8, d[d.len - 10 ..], "3DI")) {
+            // ID3v2.4 のフッタ: ヘッダ・中身・フッタの全体を取り除く
+            const total = 20 + @as(usize, id3.syncsafeDecode(d[d.len - 4 ..][0..4].*));
+            if (total > d.len) break;
+            end -= total;
+        } else break;
+    }
+    return end;
+}
+
+/// フレームの中(ヘッダの後ろ)にタグの始まり(ID3v2 のヘッダか APEv2 のヘッダ)があるか。
+/// 途切れたフレームの長さの欄が、後ろに付いたタグの中で終わっているのを見分ける
+fn containsTag(d: []const u8) bool {
+    if (std.mem.indexOf(u8, d, "APETAGEX") != null) return true;
+    var from: usize = 0;
+    while (std.mem.indexOfPos(u8, d, from, "ID3")) |i| : (from = i + 1) {
+        const h = d[i..];
+        if (h.len >= 10 and h[3] >= 2 and h[3] <= 4 and h[4] != 0xFF and
+            h[6] & 0x80 == 0 and h[7] & 0x80 == 0 and h[8] & 0x80 == 0 and h[9] & 0x80 == 0) return true;
+    }
+    return false;
+}
+
 /// 先頭(ID3v2 タグがあればその後)が ADTS のフレームで、次のフレームも続くか(`kiln.detect` に使う)
 pub fn hasSignature(input: []const u8) bool {
     return frameAt(input, id3.skipTags(input), null, true) != null;
@@ -91,20 +128,26 @@ pub fn hasSignature(input: []const u8) bool {
 pub fn probe(input: []const u8) ParseError!Info {
     var pos = id3.skipTags(input);
     const first = frameAt(input, pos, null, true) orelse return error.NotAac;
+    // 末尾のタグを除いた範囲だけを読む(途切れた最後のフレームが、タグの中まで続いて見えないように)
+    const audio = input[0..@max(pos, audioEnd(input, pos))];
     if (first.channel_config == 0) return error.UnsupportedFormat;
     var frames: u64 = 0;
     var samples: u64 = 0;
-    while (pos < input.len) {
-        if (frameAt(input, pos, first, false)) |h| {
+    while (pos < audio.len) {
+        if (frameAt(audio, pos, first, false)) |h| {
+            // 次のフレームが続かず、中にタグの始まりがあれば、途切れたフレームの後ろにタグが付いている
+            const end = pos + h.len;
+            const next_ok = end == audio.len or if (Header.parse(audio[end..])) |n| n.sameStream(h) else false;
+            if (!next_ok and containsTag(audio[pos + 7 .. end])) break;
             frames += 1;
             samples += @as(u64, h.blocks) * 1024;
             pos += h.len;
             continue;
         }
-        if (isTag(input[pos..])) break;
+        if (isTag(audio[pos..])) break;
         // ゴミか途切れたフレーム: 次の同期ワードを探す
         pos += 1;
-        while (pos < input.len and !(input[pos] == 0xFF and frameAt(input, pos, first, true) != null)) pos += 1;
+        while (pos < audio.len and !(audio[pos] == 0xFF and frameAt(audio, pos, first, true) != null)) pos += 1;
     }
     return .{
         .profile = first.profile,
@@ -151,6 +194,17 @@ test "probe: ゴミと途切れたフレーム" {
     try std.testing.expectEqual(base.frames, (try probe(buf)).frames);
     try std.testing.expect(hasSignature(buf));
     try std.testing.expectError(error.NotAac, probe("junk"));
+
+    // 途切れた最後のフレームの長さの欄が、末尾のタグの中で終わっていても数えない
+    const cut = src[0 .. first_len - 50];
+    const ape_footer = "APETAGEX" ++ "\xD0\x07\x00\x00" ++ "\x40\x00\x00\x00" ++ "\x00\x00\x00\x00" ++ "\x00\x00\x00\x00" ++ @as([8]u8, @splat(0));
+    const ape = @as([32]u8, @splat('a')) ++ ape_footer;
+    const id3v2 = "ID3\x03\x00\x00\x00\x00\x00\x40" ++ @as([64]u8, @splat(0));
+    for ([_][]const u8{ id3v1, ape, id3v2 }) |tail| {
+        const t = try std.mem.concat(gpa, u8, &.{ src, cut, tail });
+        defer gpa.free(t);
+        try std.testing.expectEqual(base.frames, (try probe(t)).frames);
+    }
     try std.testing.expectError(error.NotAac, probe(testdata.cbr128_lame));
     try std.testing.expect(!hasSignature(testdata.cbr128_lame));
 }

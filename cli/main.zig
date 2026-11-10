@@ -92,7 +92,7 @@ const TrimArgs = struct {
     start: ?time.Time = null,
     end: ?time.Time = null,
     duration: ?time.Time = null,
-    format: ?kiln.Format = null,
+    format: ?TrimFormat = null,
     sample_format: ?kiln.pcm.Format = null,
     bits: ?u8 = null,
     compression: ?u8 = null,
@@ -158,8 +158,8 @@ fn parseTrimArgs(args: []const [:0]const u8, stderr: *Io.Writer) !?TrimArgs {
                 try stderr.print("error: {s} needs a value\n", .{arg});
                 return null;
             }
-            r.format = std.meta.stringToEnum(kiln.Format, args[i]);
-            if (r.format == null or !writable(r.format.?)) {
+            r.format = std.meta.stringToEnum(TrimFormat, args[i]);
+            if (r.format == null) {
                 try stderr.print("error: unknown format '{s}' (mp3, wav or flac)\n", .{args[i]});
                 return null;
             }
@@ -212,19 +212,19 @@ fn trim(init: std.process.Init, args: []const [:0]const u8, stdout: *Io.Writer, 
     };
     defer gpa.free(input);
 
-    const in_format = kiln.detect(input) orelse {
+    const detected = kiln.detect(input) orelse {
         try stderr.print("error: {s}: unknown format (not an MP3, WAV or FLAC file)\n", .{a.input});
         return 1;
     };
-    if (!writable(in_format)) {
-        try stderr.print("error: {s}: cutting {s} files is not supported yet (try 'kiln info')\n", .{ a.input, in_format.name() });
+    const in_format = TrimFormat.of(detected) orelse {
+        try stderr.print("error: {s}: cutting {s} files is not supported yet (try 'kiln info')\n", .{ a.input, detected.name() });
         return 1;
-    }
+    };
     const out_format = a.format orelse in_format;
     // 変換できるのは MP3 / FLAC → WAV と WAV / MP3 → FLAC(MP3 のエンコーダはない)
     const convert = out_format != in_format;
     if (convert and out_format == .mp3) {
-        try stderr.print("error: converting {s} to {s} is not supported\n", .{ in_format.name(), out_format.name() });
+        try stderr.print("error: converting {s} to {s} is not supported\n", .{ detected.name(), out_format.format().name() });
         return 1;
     }
     if (!convert and a.dither != null) {
@@ -243,7 +243,7 @@ fn trim(init: std.process.Init, args: []const [:0]const u8, stdout: *Io.Writer, 
     var flac_index: ?kiln.flac.Index = null;
     defer if (flac_index) |*ix| ix.deinit(gpa);
     const info = probe(gpa, in_format, input, &flac_index) catch |err| {
-        try stderr.print("error: {s}: {s}\n", .{ a.input, describe(in_format, err) });
+        try stderr.print("error: {s}: {s}\n", .{ a.input, describe(detected, err) });
         return 1;
     };
 
@@ -279,8 +279,8 @@ fn trim(init: std.process.Init, args: []const [:0]const u8, stdout: *Io.Writer, 
                     .dither = a.dither orelse .tpdf,
                 },
             },
-            // MP3 のエンコーダはなく、Ogg / m4a / aac は --format に渡せない
-            .mp3, .ogg, .m4a, .aac => unreachable,
+            // MP3 のエンコーダはない(上で弾いている)
+            .mp3 => unreachable,
         },
         .gpa = gpa,
         .flac_index = if (flac_index) |*ix| ix else null,
@@ -291,7 +291,7 @@ fn trim(init: std.process.Init, args: []const [:0]const u8, stdout: *Io.Writer, 
             return 1;
         },
         else => {
-            try stderr.print("error: cannot write '{s}': {s}\n", .{ a.output, describe(in_format, err) });
+            try stderr.print("error: cannot write '{s}': {s}\n", .{ a.output, describe(detected, err) });
             return 1;
         },
     };
@@ -438,7 +438,7 @@ const Info = struct {
 };
 
 /// 入力を解析する。FLAC はフレームの一覧を `flac_index` に作る(呼び出し側が解放する)
-fn probe(gpa: std.mem.Allocator, format: kiln.Format, input: []const u8, flac_index: *?kiln.flac.Index) !Info {
+fn probe(gpa: std.mem.Allocator, format: TrimFormat, input: []const u8, flac_index: *?kiln.flac.Index) !Info {
     return switch (format) {
         .mp3 => blk: {
             const i = try kiln.mp3.probe(input);
@@ -453,18 +453,34 @@ fn probe(gpa: std.mem.Allocator, format: kiln.Format, input: []const u8, flac_in
             const i = flac_index.*.?.info();
             break :blk .{ .sample_rate = i.sample_rate, .samples = i.samples, .min_start = 0 };
         },
-        // trim は書き出せる形式だけを受け付ける
-        .ogg, .m4a, .aac => unreachable,
     };
 }
 
-/// 切り出し(と書き出し)に対応している形式か
-fn writable(f: kiln.Format) bool {
-    return switch (f) {
-        .mp3, .wav, .flac => true,
-        .ogg, .m4a, .aac => false,
-    };
-}
+/// trim で読み書きできる形式(`kiln.Format` のうち、切り出しと書き出しに対応しているもの)。
+/// 入力の形式は trim の入口で 1 回だけこれに変換し、以降は型で守る
+const TrimFormat = enum {
+    mp3,
+    wav,
+    flac,
+
+    /// 切り出せない形式(解析だけの Ogg / m4a / aac)なら null
+    fn of(f: kiln.Format) ?TrimFormat {
+        return switch (f) {
+            .mp3 => .mp3,
+            .wav => .wav,
+            .flac => .flac,
+            .ogg, .m4a, .aac => null,
+        };
+    }
+
+    fn format(t: TrimFormat) kiln.Format {
+        return switch (t) {
+            .mp3 => .mp3,
+            .wav => .wav,
+            .flac => .flac,
+        };
+    }
+};
 
 /// 切り出す区間の指定(end が null なら末尾まで)
 const Range = struct { start: u64, end: ?u64 };
@@ -478,7 +494,7 @@ const Trimmed = struct {
 
 /// 書き出しの内容
 const Job = struct {
-    format: kiln.Format,
+    format: TrimFormat,
     input: []const u8,
     range: Range,
     /// 形式を変えて書くときの設定(null なら入力と同じ形式で切り出す)
@@ -523,7 +539,7 @@ fn run(job: Job, w: *Io.Writer, seekable: bool) !Written {
                 const r = try job.flac_index.?.toWav(job.gpa, .{ .start = start, .end = end }, .{ .format = o.format, .dither = o.dither }, w);
                 break :blk .{ .start = r.start, .end = r.end, .invalid_frames = r.invalid_frames };
             },
-            .wav, .ogg, .m4a, .aac => unreachable,
+            .wav => unreachable,
         } },
         .flac => return flacOut(job, w, seekable),
     }
@@ -552,7 +568,6 @@ fn flacOut(job: Job, w: *Io.Writer, seekable: bool) !Written {
             const r = try job.flac_index.?.trim(job.gpa, .{ .start = start, .end = end }, out);
             break :blk .{ .trimmed = .{ .start = r.start, .end = r.end, .invalid_frames = r.invalid_frames }, .patch = r.patch };
         },
-        .ogg, .m4a, .aac => unreachable,
     };
     if (!seekable) {
         const data = try kiln.flac.takePatched(&mem, written.patch.?);
@@ -564,7 +579,7 @@ fn flacOut(job: Job, w: *Io.Writer, seekable: bool) !Written {
 }
 
 /// 区間を切り出して `w` に書き、実際に切り出した区間を返す
-fn trimTo(format: kiln.Format, input: []const u8, range: Range, w: *Io.Writer) !Trimmed {
+fn trimTo(format: TrimFormat, input: []const u8, range: Range, w: *Io.Writer) !Trimmed {
     return switch (format) {
         .mp3 => blk: {
             const r = try kiln.mp3.trim(input, .{ .start = range.start, .end = range.end }, w);
@@ -575,7 +590,7 @@ fn trimTo(format: kiln.Format, input: []const u8, range: Range, w: *Io.Writer) !
             break :blk .{ .start = r.start, .end = r.end };
         },
         // FLAC → FLAC は run が flacOut で書く
-        .flac, .ogg, .m4a, .aac => unreachable,
+        .flac => unreachable,
     };
 }
 
@@ -644,8 +659,8 @@ test parseTrimArgs {
     try std.testing.expectEqual(null, ok.format);
     // "-" は stdin / stdout
     _ = (try parseTrimArgs(&.{ "-", "-" }, &w)).?;
-    try std.testing.expectEqual(kiln.Format.wav, (try parseTrimArgs(&.{ "a", "b", "--format", "wav" }, &w)).?.format.?);
-    try std.testing.expectEqual(kiln.Format.flac, (try parseTrimArgs(&.{ "a", "b", "--format", "flac" }, &w)).?.format.?);
+    try std.testing.expectEqual(TrimFormat.wav, (try parseTrimArgs(&.{ "a", "b", "--format", "wav" }, &w)).?.format.?);
+    try std.testing.expectEqual(TrimFormat.flac, (try parseTrimArgs(&.{ "a", "b", "--format", "flac" }, &w)).?.format.?);
     const fl = (try parseTrimArgs(&.{ "a", "b", "--format", "flac", "--bits", "24", "--compression", "8" }, &w)).?;
     try std.testing.expectEqual(24, fl.bits.?);
     try std.testing.expectEqual(8, fl.compression.?);

@@ -6,7 +6,8 @@ const std = @import("std");
 
 pub const Error = error{ InvalidM4a, UnsupportedFormat };
 
-pub const rates = [_]u32{ 96000, 88200, 64000, 48000, 44100, 32000, 24000, 22050, 16000, 12000, 11025, 8000, 7350 };
+/// サンプルレートの番号の表(ADTS のヘッダと同じ)
+pub const rates = @import("../aac.zig").rates;
 
 pub const Config = struct {
     /// 中心の符号化方式のオブジェクトタイプ(1: Main、2: LC、3: SSR、4: LTP など。SBR / PS の 5 / 29 は含めない)
@@ -49,7 +50,10 @@ const Bits = struct {
 
     fn sampleRate(b: *Bits) Error!u32 {
         const i = try b.read(4);
-        if (i == 15) return b.read(24);
+        if (i == 15) {
+            const rate = try b.read(24);
+            return if (rate == 0) error.InvalidM4a else rate;
+        }
         if (i >= rates.len) return error.InvalidM4a;
         return rates[i];
     }
@@ -201,4 +205,6 @@ test "扱えない・壊れた設定" {
     try std.testing.expectError(error.InvalidM4a, parse("\x12"));
     // サンプルレートの番号 13 は予約
     try std.testing.expectError(error.InvalidM4a, parse("\x16\x90"));
+    // エスケープ(番号 15)の後の 24 ビットのサンプルレートが 0
+    try std.testing.expectError(error.InvalidM4a, parse("\x17\x80\x00\x00\x10"));
 }

@@ -117,7 +117,7 @@ fn findCapture(input: []const u8, from: usize) ?usize {
 }
 
 /// 1 つのパケットのバイトを、ページをまたいで順に読む。同じ serial の正しいページだけをたどり、
-/// 途中のページが欠けていたら(次のページが続きでない)パケットの終わりとみなす
+/// 途中のページが欠けていたら(次のページが続きでないか、ページ番号が飛んでいる)パケットの終わりとみなす
 pub const PacketReader = struct {
     input: []const u8,
     page: Page,
@@ -169,7 +169,8 @@ pub const PacketReader = struct {
         var it: Iterator = .{ .input = r.input, .pos = r.next_pos };
         while (it.next()) |p| {
             if (p.serial != r.page.serial) continue;
-            if (!p.continued()) return false;
+            // 続きのページでないか、ページ番号が飛んでいれば(間のページが欠けている)パケットの終わり
+            if (!p.continued() or p.sequence != r.page.sequence +% 1) return false;
             r.page = p;
             r.seg = 0;
             r.in_seg = 0;
@@ -288,6 +289,18 @@ test "PacketReader はページをまたいで読む" {
     var r2: PacketReader = .init(input[0..pos], first, 1);
     for (long) |want| try std.testing.expectEqual(want, r2.byte().?);
     try std.testing.expectEqual(null, r2.byte());
+}
+
+test "PacketReader は間のページが欠けていたら止まる" {
+    var input: [2048]u8 = undefined;
+    var long: [600]u8 = undefined;
+    for (&long, 0..) |*b, i| b.* = @truncate(i);
+    // 3 ページにまたがるパケットの、2 ページ目(ページ番号 1)が欠けている
+    var pos = build(&input, 0, -1, 1, 0, &.{long[0..255]}, true).len;
+    pos += build(input[pos..], flag_continued, 100, 1, 2, &.{long[510..]}, false).len;
+    var r: PacketReader = .init(input[0..pos], try read(&input, 0), 0);
+    for (long[0..255]) |want| try std.testing.expectEqual(want, r.byte().?);
+    try std.testing.expectEqual(null, r.byte());
 }
 
 test BitReader {
