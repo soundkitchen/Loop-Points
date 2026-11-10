@@ -75,7 +75,7 @@ const nch = try dec.decodeFrame(frame_bytes, &pcm); // pcm: [2][1152]f32。扱�
 
 ### 2.2 CLI
 
-2026-11-11 に外した([`draft.md`](draft.md) §2.9)。CLI が使っていた入力の形式の判定(`kiln.detect`)はコアに残っている。拡張子は見ない。WAV は先頭のバイト列(RIFF / RF64 / RIFX と WAVE)、FLAC は先頭(ID3v2 タグがあればその後)の `fLaC` か Ogg FLAC の印、Ogg は先頭の `OggS`、m4a は先頭の `ftyp` ボックス、aac は先頭(ID3v2 タグがあればその後)に ADTS のフレームが続くことで判定し、それ以外は MP3 の解析に任せる(先頭にゴミがある MP3 も受け付ける)。ADTS は MP3 と同期ワードが似ているので、MP3 の解析より先に見る
+2026-11-11 に外した([`draft.md`](draft.md) §2.9)。CLI が使っていた入力の形式の判定(`kiln.detect`)はコアに残っている。今はコアのテストからしか呼ばず、wasm には export していない(Loop Points で中身から形式を判定するときに、wasm/main.zig と kiln.js につなぐ)。拡張子は見ない。WAV は先頭のバイト列(RIFF / RF64 / RIFX と WAVE)、FLAC は先頭(ID3v2 タグがあればその後)の `fLaC` か Ogg FLAC の印、Ogg は先頭の `OggS`、m4a は先頭の `ftyp` ボックス、aac は先頭(ID3v2 タグがあればその後)に ADTS のフレームが続くことで判定し、それ以外は MP3 の解析に任せる(先頭にゴミがある MP3 も受け付ける)。ADTS は MP3 と同期ワードが似ているので、MP3 の解析より先に見る
 
 ### 2.3 wasm と JS
 
