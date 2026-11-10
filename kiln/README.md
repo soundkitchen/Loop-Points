@@ -20,7 +20,7 @@ Loop Points のリポジトリ直下で実行します。
 
 ```sh
 npm run kiln:build   # zig-out/kiln.wasm をビルドする(npm run dev / build の前にも動く)
-npm run kiln:test    # Zig のテスト、kiln.js の実行時のテスト、kiln.d.ts の型検査
+npm run kiln:test    # Zig のテスト、kiln.ts の実行時のテスト、型の検査(Loop Points と同じ tsc)
 ```
 
 `kiln/` で Zig を直接使うこともできます。
@@ -32,10 +32,10 @@ zig build test       # コアのテスト(wasm のビルドも含む)
 
 ## Loop Points からの使い方
 
-Loop Points は `wasm/kiln.js` をソースから直接 import し、`zig-out/kiln.wasm` を Vite の `?url&inline` でチャンクに埋め込んで、バイト列で `load` に渡します(`src/cropRender.ts`)。CSP の `connect-src 'none'` で fetch を止めているので、`load` は URL を受け取らず、バイト列だけを受け取ります。wasm を動かすには、CSP の `script-src` に `'wasm-unsafe-eval'` が要ります。
+Loop Points は JS 側の包みの `wasm/kiln.ts`(TypeScript)をソースから直接 import し、`zig-out/kiln.wasm` を Vite の `?url&inline` でチャンクに埋め込んで、バイト列で `load` に渡します(`src/cropRender.ts`)。CSP の `connect-src 'none'` で fetch を止めているので、`load` は URL を受け取らず、バイト列だけを受け取ります。wasm を動かすには、CSP の `script-src` に `'wasm-unsafe-eval'` が要ります。
 
 ```js
-import { load, KilnError } from '../kiln/wasm/kiln.js';
+import { load, KilnError } from '../kiln/wasm/kiln';
 
 const kiln = await load(wasmBytes);                         // Uint8Array か ArrayBuffer
 const bytes = new Uint8Array(await file.arrayBuffer());
@@ -50,17 +50,17 @@ const pcmFlac = kiln.flac.encode(audioBuffer, { compression: 8 });
 const oggInfo = kiln.ogg.probe(oggBytes);                   // Opus のサンプルレートは 48000。元のレートは inputSampleRate
 ```
 
-- 失敗すると `KilnError` を投げます。`code` はエラーの名前(`'NotMp3'` / `'EmptyRange'` など。一覧は `kiln.d.ts` の `KilnErrorCode`)
+- 失敗すると `KilnError` を投げます。`code` はエラーの名前(`'NotMp3'` / `'EmptyRange'` など。一覧は `kiln.ts` の `KilnErrorCode`)
 - 切り出しは範囲外の指定を丸め、実際に切り出した区間(`start` / `end` など)を返します。MP3 → MP3 の無劣化の切り出しでは、LAME タグのない MP3 の先頭 529 サンプルより前からは切り出せません(`probe` の `minStart`)
 - 処理は同期です。何分もある曲のデコードには数百 ms かかります
-- API の全体は `wasm/kiln.d.ts`、細部は [`docs/architecture.md`](docs/architecture.md) §2.3 にあります
+- API の全体と型は `wasm/kiln.ts`、細部は [`docs/architecture.md`](docs/architecture.md) §2.3 にあります
 
 ## ディレクトリ構成
 
 | パス | 内容 |
 |---|---|
 | `src/` | コア。I/O を持たず、アロケータとバイト列/サンプル列、`std.Io.Reader` / `std.Io.Writer` だけを扱う |
-| `wasm/` | wasm 向けの export 関数(`main.zig`)、JS ラッパー(`kiln.js`)とその型定義(`kiln.d.ts`)、型検査(`types/`)と実行時のテスト(`test/`) |
+| `wasm/` | wasm 向けの export 関数(`main.zig`)、JS 側の包み(`kiln.ts`。型つき)と、その実行時のテスト(`test/`) |
 | `testdata/` | テスト用の音声(lame で作った短い MP3、Python で書いた短い WAV、flac で作った短い FLAC、opusenc・oggenc・ffmpeg・afconvert で作った短い Ogg・m4a・aac)。作り方は [`testdata/README.md`](testdata/README.md) |
 | `docs/` | 設計と検証の記録。仕様として扱う |
 

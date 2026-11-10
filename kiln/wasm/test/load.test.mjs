@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// kiln.js の load の実行時テスト。wasm/kiln.js と、zig build でできた zig-out/kiln.wasm を読む。
+// kiln.ts の load の実行時テスト。wasm/kiln.ts と、zig build でできた zig-out/kiln.wasm を読む。
 // Loop Points のリポジトリ直下の `npm run kiln:test` で動く(kiln/ で `zig build && node --test 'wasm/test/*.test.mjs'` でもよい)
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
-const { load } = await import(path.join(root, 'wasm/kiln.js'));
+const { load } = await import(path.join(root, 'wasm/kiln.ts'));
 const wasm = await readFile(path.join(root, 'zig-out/kiln.wasm'));
 const flac = await readFile(path.join(root, 'testdata/s16-stereo.flac'));
 
@@ -30,8 +30,8 @@ test('バイト列で読み込める(Buffer、ArrayBuffer、先頭がずれた T
   }
 });
 
-test('kiln.js に import.meta.url を基準にした URL を書かない(バンドラが kiln.wasm を出力するため、soundkitchen/kiln#11)', async () => {
-  const js = await readFile(path.join(root, 'wasm/kiln.js'), 'utf8');
+test('kiln.ts に import.meta.url を基準にした URL を書かない(バンドラが kiln.wasm を出力するため、soundkitchen/kiln#11)', async () => {
+  const js = await readFile(path.join(root, 'wasm/kiln.ts'), 'utf8');
   // Vite や webpack 5 が拾うのは new URL('...', import.meta.url) の形
   assert.doesNotMatch(js, /new\s+URL\s*\([^)]*import\.meta\.url/);
 });

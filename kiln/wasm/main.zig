@@ -54,8 +54,8 @@ fn setValues(v: anytype) void {
     inline for (v, 0..) |x, i| values[i] = x;
 }
 
-/// JS に返しうるエラー。wasm/kiln.d.ts の KilnErrorCode と同じ一覧にする(足したら kiln.d.ts も直し、
-/// wasm/types/ の型検査を通す。docs/architecture.md §2.3)。
+/// JS に返しうるエラー。wasm/kiln.ts の KilnErrorCode と同じ一覧にする(足したら kiln.ts も直す。
+/// docs/architecture.md §2.3)。
 /// fail はこの集合しか受け付けないので、export が新しいエラーを返しうるようになるとコンパイルが通らなくなる
 pub const KilnError = error{
     NotMp3,
