@@ -41,6 +41,7 @@ test('m4a.probe', async () => {
   assert.equal(lc.encoderDelay, 1024);
   assert.equal(lc.bitsPerSample, null);
   assert.deepEqual([...lc.audioSpecificConfig], [0x12, 0x10, 0x56, 0xe5, 0x00]);
+  assert.equal(lc.trimmable, true);
   const v2 = kiln.m4a.probe(await data('aac-hev2-afconvert.m4a'));
   assert.equal(v2.profile, 'hev2');
   assert.equal(v2.objectType, 2);
@@ -53,6 +54,7 @@ test('m4a.probe', async () => {
   assert.equal(alac.profile, null);
   assert.equal(alac.bitsPerSample, 16);
   assert.equal(alac.audioSpecificConfig.length, 0);
+  assert.equal(alac.trimmable, false);
 });
 
 test('aac.probe', async () => {

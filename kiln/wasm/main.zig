@@ -46,7 +46,7 @@ export fn kiln_version_len() usize {
 
 var last_error: []const u8 = "";
 var output: []u8 = &.{};
-var values: [9]u64 = @splat(0);
+var values: [10]u64 = @splat(0);
 
 /// kiln_value で読む数値を置く(足りない分は 0)
 fn setValues(v: anytype) void {
@@ -398,12 +398,25 @@ export fn kiln_ogg_trim(ptr: [*]const u8, len: usize, start: u64, end: u64, has_
 /// m4a(AAC / ALAC)を解析する。成功すると AAC の AudioSpecificConfig を kiln_output_* に(ALAC は空)、
 /// kiln_value に 0: サンプルレート、1: チャンネル数、2: サンプル数、3: コーデック(0: AAC、1: ALAC)、
 /// 4: オブジェクトタイプ、5: SBR、6: PS(どちらも 0: なし、1: あり、2: 不明)、7: 先頭の遅延、
-/// 8: ALAC のビット深度を置く
+/// 8: ALAC のビット深度、9: 切り出せるか(0: いいえ、1: はい)を置く
 export fn kiln_m4a_probe(ptr: [*]const u8, len: usize) bool {
     kiln_output_free();
     const i = kiln.m4a.probe(ptr[0..len]) catch |err| return fail(err);
     output = gpa.dupe(u8, i.audio_specific_config) catch |err| return fail(err);
-    setValues(.{ i.sample_rate, i.channels, i.samples, @backingInt(i.codec), i.object_type, tristate(i.sbr), tristate(i.ps), i.encoder_delay, i.bits_per_sample });
+    setValues(.{ i.sample_rate, i.channels, i.samples, @backingInt(i.codec), i.object_type, tristate(i.sbr), tristate(i.ps), i.encoder_delay, i.bits_per_sample, @intFromBool(i.trimmable) });
+    return true;
+}
+
+/// m4a(AAC)を、再エンコードせずにサンプル単位で切り出す。start / end は再生位置のサンプル数(デコード結果のレート)。
+/// 成功すると出力を kiln_output_* に、kiln_value に 0: start、1: end、2: サンプルレートを置く
+export fn kiln_m4a_trim(ptr: [*]const u8, len: usize, start: u64, end: u64, has_end: bool) bool {
+    kiln_output_free();
+    const t = kiln.m4a.trimAlloc(gpa, ptr[0..len], .{
+        .start = start,
+        .end = if (has_end) end else null,
+    }) catch |err| return fail(err);
+    output = t.data;
+    setValues(.{ t.start, t.end, t.sample_rate, 0, 0 });
     return true;
 }
 

@@ -1,11 +1,13 @@
 // SPDX-License-Identifier: MIT
-//! m4a(MP4 コンテナの AAC / ALAC)の解析(設計は docs/m4a.md)。
+//! m4a(MP4 コンテナの AAC / ALAC)の解析と、AAC の無劣化の切り出し(設計は docs/m4a.md)。
 //!
 //! 最初の音声トラックを見る。長さは、編集リスト(elst)か iTunes の `iTunSMPB` で先頭の遅延と末尾の詰め物を
-//! 除いたもの。音声データ(mdat)は読まない。
+//! 除いたもの。解析では音声データ(mdat)は読まない。
 const std = @import("std");
+const Io = std.Io;
 const box = @import("m4a/box.zig");
 const asc = @import("m4a/asc.zig");
+const trim_impl = @import("m4a/trim.zig");
 
 pub const ParseError = error{
     /// 先頭が MP4 の `ftyp` ボックスではない
@@ -38,6 +40,8 @@ pub const Info = struct {
     encoder_delay: u64,
     /// AAC の AudioSpecificConfig(入力の一部。WebCodecs の `description` などに使える)。ALAC は空
     audio_specific_config: []const u8,
+    /// `trim` で切り出せるか(docs/m4a.md §5.2 の「扱わない入力」でないか)
+    trimmable: bool,
 };
 
 /// 先頭が `ftyp` ボックスか(`kiln.detect` に使う)
@@ -48,7 +52,21 @@ pub fn hasSignature(input: []const u8) bool {
 }
 
 pub fn probe(input: []const u8) ParseError!Info {
+    return (try analyze(input)).info;
+}
+
+/// 解析の結果と、切り出しに使う部品
+const Analysis = struct {
+    info: Info,
+    /// 切り出せるときだけ
+    source: ?trim_impl.Source,
+};
+
+fn analyze(input: []const u8) ParseError!Analysis {
     if (!hasSignature(input)) return error.NotM4a;
+    // 先頭の ftyp(切り出しでそのままコピーする)
+    var top: box.Iterator = .{ .data = input };
+    const ftyp = (try top.next()).?;
     const moov = try findMoov(input);
     var movie_timescale: u32 = 0;
     var track: ?box.Box = null;
@@ -84,11 +102,14 @@ pub fn probe(input: []const u8) ParseError!Info {
     // 先頭の遅延と再生する長さ(タイムスケールの単位)
     var delay: u64 = 0;
     var length: u64 = media;
+    // 編集が 1 つだけ(か編集リストがない)か。切り出せるのはこのときだけ
+    var simple_edit = true;
     if (try box.findPath(trak.body, &.{ "edts", "elst" })) |elst| {
         if (movie_timescale == 0) return error.InvalidM4a;
         const e = try editList(elst.body, movie_timescale, timescale, media);
         delay = e.delay;
         length = e.length;
+        simple_edit = e.simple;
     } else if (try iTunSMPB(udta, trak)) |s| {
         // 長さが書かれ、メディアに収まるときだけ使う
         if (s.fits(media)) {
@@ -98,7 +119,88 @@ pub fn probe(input: []const u8) ParseError!Info {
     }
     info.samples = rescale(length, timescale, info.sample_rate);
     info.encoder_delay = rescale(delay, timescale, info.sample_rate);
-    return info;
+
+    // 切り出せるか: AAC で、SBR の有無が分かり、PS がなく、デコード結果のレートがタイムスケールの整数倍で、
+    // 編集が 1 つだけで、サンプルの説明が 1 つで、サンプルの表が食い違わず、データが入力の中にある。
+    // PS(HE-AAC v2)は、ステレオの情報がときどきしか送られず、途中から復号すると左右が元と違ってしまうので扱わない
+    const scale = info.sample_rate / timescale;
+    const source: ?trim_impl.Source = if (info.codec == .aac and info.sbr != null and info.ps == false and info.samples > 0 and
+        scale > 0 and info.sample_rate % timescale == 0 and simple_edit and
+        try box.int(u32, (try box.Iterator.find(stbl.body, "stsd")).?.body, 4) == 1 and
+        try samplesInInput(input, stbl.body))
+        .{
+            .input = input,
+            .ftyp = ftyp.raw,
+            .trak = trak.body,
+            .stbl = stbl.body,
+            .udta = udta,
+            .rate = info.sample_rate,
+            .scale = scale,
+            .delay = delay * scale,
+        }
+    else
+        null;
+    info.trimmable = source != null;
+    return .{ .info = info, .source = source };
+}
+
+/// サンプルの表をたどれ、どのサンプルのデータも入力の中にあるか(stz2 は扱わないので false)
+fn samplesInInput(input: []const u8, stbl: []const u8) ParseError!bool {
+    var it = (trim_impl.Samples.init(stbl) catch return false) orelse return false;
+    while (it.next() catch return false) |smp| {
+        if (smp.offset > input.len or smp.size > input.len - smp.offset) return false;
+    }
+    return true;
+}
+
+pub const TrimOptions = struct {
+    /// 切り出す区間の先頭(再生位置のサンプル数。デコード結果のサンプルレート)
+    start: u64 = 0,
+    /// 切り出す区間の終わり(この位置は含まない)。null なら末尾まで
+    end: ?u64 = null,
+};
+
+/// 実際に切り出した区間(範囲外の指定を丸めた後の位置)
+pub const TrimResult = struct {
+    start: u64,
+    end: u64,
+    sample_rate: u32,
+};
+
+pub const TrimError = ParseError || Io.Writer.Error || error{
+    OutOfMemory,
+    /// 丸めた後の区間が空(start >= end)
+    EmptyRange,
+};
+
+/// 区間 `[options.start, options.end)` を、再エンコードせずに切り出して `w` に m4a で書く。末尾は長さで切り詰める。
+/// サンプル単位で区間どおりになる(docs/m4a.md §5)。切り出せないもの(`Info.trimmable` が false。ALAC など)は
+/// UnsupportedFormat。`w.flush()` は呼び出し側が行う
+pub fn trim(gpa: std.mem.Allocator, input: []const u8, options: TrimOptions, w: *Io.Writer) TrimError!TrimResult {
+    const a = try analyze(input);
+    const src = a.source orelse return error.UnsupportedFormat;
+    const end = @min(options.end orelse a.info.samples, a.info.samples);
+    if (options.start >= end) return error.EmptyRange;
+    try trim_impl.trim(gpa, src, options.start, end, w);
+    return .{ .start = options.start, .end = end, .sample_rate = a.info.sample_rate };
+}
+
+pub const Trimmed = struct {
+    data: []u8,
+    start: u64,
+    end: u64,
+    sample_rate: u32,
+};
+
+/// `trim` の一括版。返した `data` は呼び出し側が `gpa` で解放する
+pub fn trimAlloc(gpa: std.mem.Allocator, input: []const u8, options: TrimOptions) (ParseError || error{ OutOfMemory, EmptyRange })!Trimmed {
+    var out: Io.Writer.Allocating = .init(gpa);
+    defer out.deinit();
+    const r = trim(gpa, input, options, &out.writer) catch |err| switch (err) {
+        error.WriteFailed => return error.OutOfMemory,
+        else => |e| return e,
+    };
+    return .{ .data = try out.toOwnedSlice(), .start = r.start, .end = r.end, .sample_rate = r.sample_rate };
 }
 
 /// 最上位のボックスから `moov` を探す。`moof` があれば断片化した MP4。
@@ -161,6 +263,7 @@ fn sampleEntry(stbl: []const u8, timescale: u32) ParseError!Info {
             .samples = 0,
             .encoder_delay = 0,
             .audio_specific_config = &.{},
+            .trimmable = false,
         };
     }
     if (!entry.is("mp4a")) return error.UnsupportedFormat;
@@ -201,6 +304,7 @@ fn sampleEntry(stbl: []const u8, timescale: u32) ParseError!Info {
         .samples = 0,
         .encoder_delay = 0,
         .audio_specific_config = config,
+        .trimmable = false,
     };
 }
 
@@ -269,7 +373,12 @@ fn mediaDuration(stbl: []const u8) ParseError!u64 {
     return total;
 }
 
-const Edit = struct { delay: u64, length: u64 };
+const Edit = struct {
+    delay: u64,
+    length: u64,
+    /// 空でない編集が 1 つだけ
+    simple: bool,
+};
 
 /// 編集リストから、先頭の遅延と再生する長さ(メディアのタイムスケールの単位)を求める。
 /// 空の編集(media_time = -1。無音を挟む)も長さに含める。遅延は最初の空でない編集の開始位置
@@ -278,7 +387,7 @@ fn editList(elst: []const u8, movie_ts: u32, media_ts: u32, media: u64) ParseErr
     const n = try box.int(u32, elst, 4);
     const entry_len: usize = if (v1) 20 else 12;
     if ((elst.len - @min(elst.len, 8)) / entry_len < n) return error.InvalidM4a;
-    var r: Edit = .{ .delay = 0, .length = 0 };
+    var r: Edit = .{ .delay = 0, .length = 0, .simple = n == 1 };
     var seen_media = false;
     for (0..n) |i| {
         const at = 8 + i * entry_len;
@@ -295,7 +404,7 @@ fn editList(elst: []const u8, movie_ts: u32, media_ts: u32, media: u64) ParseErr
         }
         r.length = std.math.add(u64, r.length, d) catch return error.InvalidM4a;
     }
-    if (!seen_media) return .{ .delay = 0, .length = media };
+    if (!seen_media) return .{ .delay = 0, .length = media, .simple = false };
     return r;
 }
 
@@ -351,6 +460,7 @@ fn rescale(v: u64, from: u32, to: u32) u64 {
 test {
     _ = box;
     _ = asc;
+    _ = trim_impl;
 }
 
 const testdata = @import("testdata");
@@ -443,4 +553,127 @@ test parseSmpb {
     try std.testing.expectEqual(2112, s.delay);
     try std.testing.expectEqual(22050, s.samples);
     try std.testing.expectEqual(null, parseSmpb(" 0000 zz"));
+}
+
+/// テスト用: m4a のトラックのサンプル(データのバイト列と長さ)と、タイムスケール
+fn testSamples(gpa: std.mem.Allocator, input: []const u8) !struct { frames: [][]const u8, durations: []u32, timescale: u32 } {
+    const moov = try findMoov(input);
+    const trak = (try box.Iterator.find(moov.body, "trak")).?;
+    const stbl = (try box.findPath(trak.body, &.{ "mdia", "minf", "stbl" })).?;
+    const mdhd = (try box.findPath(trak.body, &.{ "mdia", "mdhd" })).?;
+    var it = (try trim_impl.Samples.init(stbl.body)).?;
+    var frames: std.ArrayList([]const u8) = .empty;
+    errdefer frames.deinit(gpa);
+    var durations: std.ArrayList(u32) = .empty;
+    errdefer durations.deinit(gpa);
+    while (try it.next()) |smp| {
+        try frames.append(gpa, input[@intCast(smp.offset)..][0..smp.size]);
+        try durations.append(gpa, smp.duration);
+    }
+    return .{ .frames = try frames.toOwnedSlice(gpa), .durations = try durations.toOwnedSlice(gpa), .timescale = try box.int(u32, mdhd.body, 12) };
+}
+
+/// テスト用: moov の udta の iTunSMPB
+fn testSmpb(input: []const u8) !?Smpb {
+    const moov = try findMoov(input);
+    const trak = (try box.Iterator.find(moov.body, "trak")).?;
+    return iTunSMPB(try box.Iterator.find(moov.body, "udta"), trak);
+}
+
+test "trim: AAC を区間どおりに切り出す" {
+    const gpa = std.testing.allocator;
+    for ([_][]const u8{ testdata.aac_lc_ffmpeg_m4a, testdata.aac_lc_afconvert_m4a, testdata.aac_he_afconvert_m4a }) |src| {
+        const base = try probe(src);
+        try std.testing.expect(base.trimmable);
+        const in = try testSamples(gpa, src);
+        defer gpa.free(in.frames);
+        defer gpa.free(in.durations);
+        const scale = base.sample_rate / in.timescale;
+        const n = base.samples;
+        for ([_][2]u64{ .{ 0, n }, .{ 5000, 9000 }, .{ 0, 1 }, .{ 1, 2 }, .{ 3000, 3001 }, .{ n - 10, n }, .{ n - 1, n }, .{ 777, n } }) |se| {
+            const t = try trimAlloc(gpa, src, .{ .start = se[0], .end = se[1] });
+            defer gpa.free(t.data);
+            try std.testing.expectEqual(se[0], t.start);
+            try std.testing.expectEqual(se[1], t.end);
+            const got = try probe(t.data);
+            try std.testing.expectEqual(Codec.aac, got.codec);
+            try std.testing.expectEqual(se[1] - se[0], got.samples);
+            try std.testing.expectEqual(base.sample_rate, got.sample_rate);
+            try std.testing.expectEqual(base.channels, got.channels);
+            try std.testing.expectEqual(base.sbr, got.sbr);
+            try std.testing.expectEqual(base.ps, got.ps);
+            try std.testing.expectEqualSlices(u8, base.audio_specific_config, got.audio_specific_config);
+            try std.testing.expect(got.trimmable);
+            // フレームは元のままコピーし、出力のタイムスケールはデコード結果のレート
+            const out = try testSamples(gpa, t.data);
+            defer gpa.free(out.frames);
+            defer gpa.free(out.durations);
+            try std.testing.expectEqual(base.sample_rate, out.timescale);
+            const k = for (0..in.frames.len) |i| {
+                if (std.mem.eql(u8, in.frames[i], out.frames[0])) break i;
+            } else return error.TestUnexpectedResult;
+            // 入力の末尾で後ろのフレームが足りなければ、最後のフレームを繰り返す
+            const copied = @min(out.frames.len, in.frames.len - k);
+            for (out.frames, out.durations, 0..) |o, od, j| {
+                const i = k + @min(j, copied - 1);
+                try std.testing.expectEqualSlices(u8, in.frames[i], o);
+                try std.testing.expectEqual(in.durations[i] * scale, od);
+            }
+            try std.testing.expect(out.frames.len - copied <= 1);
+            // 出力の再生位置 0 は、元の再生位置 start(前に 2 フレーム残す。元の先頭の近くでは足りない分だけ減る)
+            var k_start: u64 = 0;
+            for (in.durations[0..k]) |d| k_start += @as(u64, d) * scale;
+            try std.testing.expectEqual(se[0] + base.encoder_delay, k_start + got.encoder_delay);
+            try std.testing.expect(got.encoder_delay <= 3 * 1024 * scale);
+            // iTunSMPB にも同じ遅延と長さを書く
+            const smpb = (try testSmpb(t.data)).?;
+            try std.testing.expectEqual(got.encoder_delay, smpb.delay);
+            try std.testing.expectEqual(got.samples, smpb.samples);
+        }
+    }
+}
+
+test "trim: iTunSMPB は 1 つだけ書く" {
+    const gpa = std.testing.allocator;
+    // ffmpeg のファイルの ilst は空
+    const t = try trimAlloc(gpa, testdata.aac_lc_ffmpeg_m4a, .{ .start = 100, .end = 200 });
+    defer gpa.free(t.data);
+    try std.testing.expectEqual(1, std.mem.count(u8, t.data, "iTunSMPB"));
+    // afconvert のファイルの iTunSMPB は 1 つにまとめる
+    const a = try trimAlloc(gpa, testdata.aac_lc_afconvert_m4a, .{ .start = 100, .end = 200 });
+    defer gpa.free(a.data);
+    try std.testing.expectEqual(1, std.mem.count(u8, a.data, "iTunSMPB"));
+    try std.testing.expectEqual(100, (try testSmpb(a.data)).?.samples);
+}
+
+test "trim: 範囲外と、扱えない入力" {
+    const gpa = std.testing.allocator;
+    const src = testdata.aac_lc_ffmpeg_m4a;
+    // 末尾は長さで切り詰める
+    const t = try trimAlloc(gpa, src, .{ .start = 20000, .end = 1_000_000 });
+    defer gpa.free(t.data);
+    try std.testing.expectEqual(22050, t.end);
+    try std.testing.expectEqual(2050, (try probe(t.data)).samples);
+    try std.testing.expectError(error.EmptyRange, trimAlloc(gpa, src, .{ .start = 22050 }));
+    try std.testing.expectError(error.EmptyRange, trimAlloc(gpa, src, .{ .start = 5, .end = 5 }));
+    // ALAC と HE-AAC v2 は切り出さない
+    for ([_][]const u8{ testdata.alac_afconvert_m4a, testdata.aac_hev2_afconvert_m4a }) |src2| {
+        try std.testing.expect(!(try probe(src2)).trimmable);
+        try std.testing.expectError(error.UnsupportedFormat, trimAlloc(gpa, src2, .{}));
+    }
+    // データが途中で切れているもの(ffmpeg のファイルは moov が最後なので、afconvert のファイルで試す)
+    const cut = testdata.aac_lc_afconvert_m4a[0 .. testdata.aac_lc_afconvert_m4a.len - 10];
+    try std.testing.expect(!(try probe(cut)).trimmable);
+    try std.testing.expectError(error.UnsupportedFormat, trimAlloc(gpa, cut, .{}));
+    try std.testing.expectError(error.NotM4a, trimAlloc(gpa, "RIFF", .{}));
+}
+
+test "editList: 空でない編集が 1 つだけのときが simple" {
+    const one = "\x00\x00\x00\x00" ++ "\x00\x00\x00\x01" ++ "\x00\x00\x03\xe8\x00\x00\x04\x00\x00\x01\x00\x00";
+    try std.testing.expect((try editList(one, 1000, 1000, 5000)).simple);
+    // 先頭に空の編集(無音)を挟むもの
+    const two = "\x00\x00\x00\x00" ++ "\x00\x00\x00\x02" ++ "\x00\x00\x00\x64\xff\xff\xff\xff\x00\x01\x00\x00" ++ "\x00\x00\x03\xe8\x00\x00\x04\x00\x00\x01\x00\x00";
+    const e = try editList(two, 1000, 1000, 5000);
+    try std.testing.expect(!e.simple);
+    try std.testing.expectEqual(1100, e.length);
 }

@@ -1,6 +1,6 @@
 # m4a(MP4 コンテナの AAC / ALAC)
 
-m4a の読み込み(`src/m4a.zig`、`src/m4a/` の `box` / `asc`)の設計と検証の記録。今は解析(`kiln.m4a.probe`)だけで、切り出しは後の PR で足す。決定事項は [`draft.md`](draft.md) §2.8。
+m4a の読み込み(`src/m4a.zig`、`src/m4a/` の `box` / `asc`)と、AAC の無劣化の切り出し(`src/m4a/trim.zig`。§5)の設計と検証の記録。決定事項は [`draft.md`](draft.md) §2.8(解析)、§2.12(切り出し)。
 
 ## 1. 扱う範囲と出所
 
@@ -37,3 +37,34 @@ m4a の読み込み(`src/m4a.zig`、`src/m4a/` の `box` / `asc`)の設計と検
 - テスト用のファイル(`testdata/` の ffmpeg の AAC-LC、afconvert の AAC-LC・HE-AAC・HE-AAC v2・ALAC)で、プロファイル・SBR / PS・サンプルレート・チャンネル数・長さ・遅延が ffprobe と元の長さに一致する(HE-AAC の遅延は、iTunSMPB の 2112 を 44.1kHz に直した 4224)
 - 61 秒の曲を ffmpeg の AAC、afconvert の AAC-LC・HE-AAC・ALAC に変換したもので、長さが元の WAV と同じ 2,699,136 サンプルになる
 - テスト用のファイルを壊したり途中で切ったりした入力で、Debug ビルドが止まらない
+
+## 5. AAC の切り出し(2026-11-11)
+
+`kiln.m4a.trim` / `trimAlloc`(JS は `m4a.trim`)。再生位置(デコード結果のレートのサンプル数)で区間を受け取り、AAC を再エンコードせずにサンプル単位で切り出す。
+
+### 5.1 先に確かめたこと
+
+Python の試作(フレームをコピーし、編集リストを書いたもの)で、44.1kHz ステレオの 10 秒の曲を ffmpeg の AAC-LC、afconvert の AAC-LC・HE-AAC・HE-AAC v2・ALAC にしたものを確かめた。
+
+- Chromium 157 の `decodeAudioData` と ffmpeg 9.0 は、編集リスト(media_time と segment_duration)による前後の切り詰めを守る。iTunSMPB だけを書いたものも守る。編集リストと iTunSMPB の両方を書いても(同じ値なら)区間どおり
+- AAC は、区間の先頭を含むフレームの 1 つ前から復号すれば元と同じ値になる(afconvert の AAC-LC で差 0)。ffmpeg の AAC は PNS(ノイズを乱数で作る)を使うので、どこから復号しても差が出る(最大 0.007 ほど。PNS を切ってエンコードすると差 0)。HE-AAC も SBR のため 1e-3 ほどの差が残り、前に残すフレームを増やしても変わらない
+- 区間の終わりのフレームで出力が終わると、区間の先頭がそのフレームの後ろのほうにあるとき(44.1kHz で、最後のフレームの中に区間が 500 サンプル足らずしかないときなど)、Chromium はデコードに失敗し(`EncodingError`)、ffmpeg は何も出さない。後ろに 1 フレーム足すと直る。入力の末尾で足せるフレームがなければ、最後のフレームを繰り返して足しても直る
+- HE-AAC v2 は、PS(パラメトリックステレオ)の情報がときどきしか送られないので、途中から復号すると左右が元と違う(差 0.2 ほど)。前に 30 フレーム残しても直らない
+- Chromium は ALAC をデコードできない(元のファイルも `EncodingError`)
+
+### 5.2 方式
+
+- **選ぶフレーム**: 区間の先頭を含むフレームの 2 つ前(HE-AAC の SBR のため。AAC-LC は 1 つで足りる)から、区間の終わりより前に始まる最後のフレームの 1 つ後までをそのままコピーする。入力の末尾で後ろのフレームが足りなければ、最後のフレームを繰り返す(再生はされない)
+- **位置**: 再生位置 t は、メディアの先頭(デコード結果の先頭)から数えて t + 先頭の遅延(§3)の位置にある。編集リストの media_time は、最初にコピーしたフレームの先頭から区間の先頭まで、segment_duration は区間の長さ
+- **タイムスケール**: 出力のタイムスケールはデコード結果のサンプルレートにし、サンプルの長さを同じ倍率で直す(afconvert の HE-AAC は中心の 22.05kHz なので 2 倍)。中心のレートのままでは、出力の 1 サンプル単位で区間を書けないため
+- **ボックス**: ftyp(元のまま)、moov、mdat の順に作り直す。moov は mvhd、trak(tkhd、edts / elst、mdia(mdhd(言語は元のまま)、hdlr(元のまま)、minf(smhd と dinf は元のまま、stbl(stsd は元のまま、stts、stsc と stco は 1 チャンク、stsz))))、udta。値が 32 ビットに収まらなければ版 1 のボックス(と co64、mdat の 64 ビットの長さ)にする。sgpd / sbgp(ffmpeg が書く roll の情報)などは書かない
+- **iTunSMPB**: moov の udta / meta / ilst に、遅延(media_time)、末尾の詰め物、長さ(segment_duration)を、出力のタイムスケールの単位で書く。元の udta のほかのタグ(曲名など)は残し、元の iTunSMPB は消す。udta がなければ meta(ハンドラ mdir)と ilst を作る。トラックの udta は書かない
+- **扱わない入力**(`probe` の `trimmable` が false、`trim` は `UnsupportedFormat`): ALAC、HE-AAC v2(§5.1)、SBR / PS の有無が分からないもの(出力のレートが決まらない)、タイムスケールがデコード結果のレートの整数分の 1 でないもの、空の編集や複数の編集のある編集リスト、サンプルの説明が複数あるもの、stz2、サンプルの表が食い違うもの、データが入力の外を指すもの(途中で切れたファイル)
+
+### 5.3 検証
+
+- 10 秒の曲を afconvert の AAC-LC・HE-AAC、ffmpeg の AAC-LC(44.1kHz ステレオ、PNS あり / なし。48kHz モノラル)にし、区間の途中、先頭と末尾の近く、全体、1 サンプル、末尾の 1〜5000 サンプルなど 92 通りを kiln で切り出した
+  - Chromium と ffmpeg で、長さはすべて区間どおり。元のファイルをデコードしたものの区間の部分との差は、afconvert の AAC-LC と PNS なしの ffmpeg で 0、PNS ありの ffmpeg で最大 0.0066、HE-AAC で最大 0.001(§5.1)
+  - kiln の `probe` で、長さが区間どおりで、`trimmable` が true
+- テスト: testdata の AAC-LC 2 本と HE-AAC で、いくつかの区間の長さ、フレームが元のバイト列のままであること(入力の末尾では最後のフレームを繰り返すこと)、出力の位置 0 が元の区間の先頭を指すこと(最初にコピーしたフレームの開始位置と遅延から)、iTunSMPB が編集リストと同じ値であることを確かめる。ほかに、udta のタグを残して iTunSMPB だけを書き直すこと、サンプルの表の読み方、範囲外と扱えない入力(ALAC、HE-AAC v2、途中で切れたもの)
+- **未確認**: Safari と Firefox、Apple のプレイヤー(iTunSMPB を書いたのはこのため)

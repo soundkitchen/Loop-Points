@@ -12,7 +12,8 @@ Loop Points のクロップの書き出しを受け持つ、Zig 製のライブ�
 - MP3 と FLAC をデコードして WAV に、WAV と MP3 を FLAC に書き出す。`AudioBuffer` などの PCM を WAV や FLAC にする
 - Ogg の Opus を Opus のまま、サンプル単位で切り出す(パケットをコピーし、pre-skip とグラニュール位置で前後の余分を捨てさせる)
 - Ogg の Vorbis を Vorbis のまま切り出す(パケットをコピーし、末尾はグラニュール位置でサンプル単位に。先頭はパケットの区切りに寄せる)
-- Ogg(Vorbis / Opus)・m4a(AAC / ALAC)・aac(ADTS)のサンプルレートや長さを調べる(probe)。m4a / aac の切り出しはまだです
+- m4a の AAC を AAC のまま、サンプル単位で切り出す(フレームをコピーし、編集リストと iTunSMPB で前後の余分を捨てさせる。ALAC と HE-AAC v2 は扱わない)
+- Ogg(Vorbis / Opus)・m4a(AAC / ALAC)・aac(ADTS)のサンプルレートや長さを調べる(probe)。aac(ADTS)の切り出しはまだです
 
 ## ビルドとテスト
 
@@ -51,6 +52,7 @@ const pcmWav = kiln.wav.encode(audioBuffer, { format: 'i16' });                 
 const pcmFlac = kiln.flac.encode(audioBuffer, { compression: 8 });
 const oggInfo = kiln.ogg.probe(oggBytes);                   // Opus のサンプルレートは 48000。元のレートは inputSampleRate
 const { data: opusCut } = kiln.ogg.trim(opusBytes, { start: 1.5, end: 10 }); // Opus / Vorbis のまま切り出す(Vorbis の start は区切りに寄せた位置)
+const { data: aacCut } = kiln.m4a.trim(m4aBytes, { start: 1.5, end: 10 });    // AAC のまま切り出す(m4a.probe の trimmable が true のもの)
 ```
 
 - 失敗すると `KilnError` を投げます。`code` はエラーの名前(`'NotMp3'` / `'EmptyRange'` など。一覧は `kiln.ts` の `KilnErrorCode`)
@@ -74,7 +76,7 @@ const { data: opusCut } = kiln.ogg.trim(opusBytes, { start: 1.5, end: 10 }); // 
 - [`docs/lyria-mp3.md`](docs/lyria-mp3.md): Lyria 出力 MP3 の調査と、MP3 の無劣化トリムの方式
 - [`docs/mp3-decoder.md`](docs/mp3-decoder.md): MP3 デコーダの設計と検証
 - [`docs/flac.md`](docs/flac.md): FLAC の設計と検証
-- [`docs/ogg.md`](docs/ogg.md) / [`docs/m4a.md`](docs/m4a.md) / [`docs/aac.md`](docs/aac.md): Ogg・m4a・aac の解析と、Opus・Vorbis の切り出しの設計と検証
+- [`docs/ogg.md`](docs/ogg.md) / [`docs/m4a.md`](docs/m4a.md) / [`docs/aac.md`](docs/aac.md): Ogg・m4a・aac の解析と、Opus・Vorbis・AAC の切り出しの設計と検証
 
 検証の記録には、2026-11-11 に外した CLI(`kiln trim`)を使って確かめたものがあります。
 

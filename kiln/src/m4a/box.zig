@@ -7,6 +7,8 @@ pub const Error = error{InvalidM4a};
 pub const Box = struct {
     kind: [4]u8,
     body: []const u8,
+    /// ヘッダを含むボックス全体(そのままコピーするときに使う)
+    raw: []const u8,
 
     pub fn is(b: Box, kind: *const [4]u8) bool {
         return std.mem.eql(u8, &b.kind, kind);
@@ -36,7 +38,7 @@ pub const Iterator = struct {
         if (size < header or size > rest.len) return error.InvalidM4a;
         const n: usize = @intCast(size);
         it.pos += n;
-        return .{ .kind = rest[4..8].*, .body = rest[header..n] };
+        return .{ .kind = rest[4..8].*, .body = rest[header..n], .raw = rest[0..n] };
     }
 
     /// 種類が `kind` の最初のボックス
@@ -71,6 +73,7 @@ test Iterator {
     const a = (try it.next()).?;
     try std.testing.expect(a.is("abcd"));
     try std.testing.expectEqualStrings("1234", a.body);
+    try std.testing.expectEqualStrings("\x00\x00\x00\x0Cabcd1234", a.raw);
     const b = (try it.next()).?;
     try std.testing.expectEqualStrings("!", b.body);
     const c = (try it.next()).?;
