@@ -73,11 +73,11 @@ export async function inspect(file: File, decoded: AudioBuffer): Promise<CropSou
   // ブラウザは decoded を AudioContext のレートに変換しているので、そのレートのサンプル数で比べる (変換の丸めの分は許す)
   const sameLength = (samples: number, sampleRate: number) => Math.abs(decoded.length - (samples * decoded.sampleRate) / sampleRate) <= 2;
   const lengthMismatch = flac !== null && !sameLength(flac.samples, flac.sampleRate);
-  // Ogg は、読めないページがなく、ブラウザと長さが合うときだけ元の形式のまま切り出す。長さが合わなければ
-  // WAV だけにする (WAV はブラウザのデコードから書くので、波形の位置とずれない)。先頭の切り詰めのある Vorbis は、
-  // ブラウザが切り詰めを守らず長さが合わないので、ここで WAV だけになる (kiln も切り出さない)
+  // Ogg は、kiln が切り出せる (trimmable。読めないページがなく、先頭の切り詰めのある Vorbis でない) うえで、
+  // ブラウザと長さが合うときだけ元の形式のまま切り出す。それ以外は WAV だけにする (WAV はブラウザのデコードから
+  // 書くので、波形の位置とずれない)
   const oggInfo = !wav && !mp3 && !flac ? probe(() => k.ogg.probe(bytes)) : null;
-  const ogg = oggInfo && oggInfo.invalidPages === 0 && sameLength(oggInfo.samples, oggInfo.sampleRate) ? oggInfo : null;
+  const ogg = oggInfo?.trimmable && sameLength(oggInfo.samples, oggInfo.sampleRate) ? oggInfo : null;
   const native: OutFormat | null = mp3 ? 'mp3' : flac ? 'flac' : ogg ? (ogg.codec === 'opus' && extFormat(file.name) === 'opus' ? 'opus' : 'ogg') : null;
   return { file, formats: formatsFor(native), mp3Start: mp3 ? mp3.minStart / mp3.sampleRate : 0, bytes, wav, mp3, flac, ogg, lengthMismatch };
 }

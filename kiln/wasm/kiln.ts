@@ -211,6 +211,11 @@ export interface OggInfo {
   preSkip: number;
   /** 読めずに飛ばしたページ(CRC が合わない、途切れた、欠けた)の数 */
   invalidPages: number;
+  /**
+   * `ogg.trim` で切り出せるか。読めないページや欠けたページがあるものと、先頭の切り詰め(最初のページの
+   * グラニュール位置)のある Vorbis は切り出せない
+   */
+  trimmable: boolean;
 }
 
 /** AAC の種類。`he` は HE-AAC(SBR)、`hev2` は HE-AAC v2(SBR と PS)、`other` はそれ以外のオブジェクトタイプ */
@@ -733,6 +738,7 @@ export async function load(source: WasmBytes): Promise<Kiln> {
           duration: samples / sampleRate,
           preSkip: Number(e.kiln_value(5)),
           invalidPages: Number(e.kiln_value(6)),
+          trimmable: e.kiln_value(7) === 1n,
         };
       });
     },

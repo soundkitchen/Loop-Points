@@ -197,7 +197,8 @@ _ = try ix.trim(gpa, .{ .start = 44100 }, writer);  // フレームの一覧を�
 ### 2.7 Ogg / m4a / aac
 
 ```zig
-const o = try kiln.ogg.probe(input);  // codec(.vorbis / .opus), sample_rate, input_sample_rate, channels, samples, pre_skip, invalid_pages
+const o = try kiln.ogg.probe(input);  // codec(.vorbis / .opus), sample_rate, input_sample_rate, channels, samples, pre_skip, invalid_pages,
+                                      // trimmable(ogg.trim で切り出せるか)
 const m = try kiln.m4a.probe(input);  // codec(.aac / .alac), object_type, sbr, ps, sample_rate, channels, bits_per_sample,
                                       // samples, encoder_delay, audio_specific_config
 const a = try kiln.aac.probe(input);  // profile, mpeg_version, sample_rate, channels, frames, samples(ヘッダの値)
