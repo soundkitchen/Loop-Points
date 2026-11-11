@@ -7,7 +7,7 @@ m4a の読み込み(`src/m4a.zig`、`src/m4a/` の `box` / `asc`)と、AAC の�
 - コンテナは ISO/IEC 14496-12(ISO Base Media File Format)と 14496-14(MP4)、AAC の設定は 14496-3 §1.6.2.1(AudioSpecificConfig)、記述子は 14496-1(ES_Descriptor など)。Apple の `iTunSMPB` と QuickTime のサンプルエントリの版 1 も読む。外部のコードや表は取り込んでいない
 - 先頭が `ftyp` ボックスでなければ `NotM4a`。`moov` がない・ボックスの長さが壊れている・サンプルの表(`stts` と `stsz`)が食い違う・長さの合計(`stts`、編集リスト)が 64 ビットを超える・サンプルレートが 0 などは `InvalidM4a`
 - 最初の音声トラック(`hdlr` が `soun`)を見る。`hdlr` を読めないトラック(ボックスの長さが壊れているなど)は飛ばす。中身は AAC(`mp4a` で、記述子のオブジェクトタイプが MPEG-4 Audio か MPEG-2 AAC)と ALAC(`alac`)だけ。MP3 などの別のコーデック、音声トラックがないもの、断片化した MP4(`mvex` や `moof` がある)、QuickTime のサンプルエントリの版 2 は `UnsupportedFormat`
-- 音声データ(`mdat`)は読まない。最後のボックス(多くは `mdat`)が途切れていても、`moov` を読めていれば構わない
+- 解析(`probe`)では音声データ(`mdat`)は読まない。最後のボックス(多くは `mdat`)が途切れていても、`moov` を読めていれば構わない。切り出し(`trim`)は `mdat` から AAC のフレームをコピーするので、サンプルのデータが入力の外を指す(途中で切れた)ものは `trimmable` が false で、`trim` は `UnsupportedFormat`(§5.2)
 
 ## 2. サンプルレートとチャンネル数
 
