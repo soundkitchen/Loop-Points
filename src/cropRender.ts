@@ -4,6 +4,7 @@
 //   FLAC → FLAC: FLAC のまま切り出す (可逆。区間の先頭と末尾にかかるフレームだけ作り直す)
 //   FLAC → WAV: kiln でデコードし、元のサンプルレートとビット深度のまま書く (可逆)
 //   Ogg Opus → Ogg Opus: パケットをコピーして切り出す (区間の前の 80ms も残し、pre-skip とグラニュール位置で前後を捨てさせる)
+//   Ogg Vorbis → Ogg Vorbis: パケットをコピーして切り出す (先頭はパケットの区切りに寄せ、末尾はグラニュール位置で捨てさせる)
 //   WAV → WAV: 元の形式のままバイト列を切り出す
 //   ほかの形式 → WAV: ブラウザでデコードし、kiln で 16-bit で書く (元のレートが分かればそのレート)
 import { KilnError, load, type FlacInfo, type Kiln, type KilnErrorCode, type Mp3Info, type OggInfo, type WavInfo } from '../kiln/wasm/kiln';
@@ -48,13 +49,13 @@ function probe<T>(read: () => T): T | null {
 // 保存先に元の音源を選ぶと、保存先を選んだ時点で Chromium がそのファイルを空にして、読めなくなるため
 export interface CropSource {
   file: File;
-  formats: OutFormat[];   // 書き出せる形式。先頭が初期値。kiln で無劣化で切れる mp3、FLAC、Ogg Opus だけ、元の形式を選べる
+  formats: OutFormat[];   // 書き出せる形式。先頭が初期値。kiln で無劣化で切れる mp3、FLAC、Ogg だけ、元の形式を選べる
   mp3Start: number;       // mp3 で書き出すときに切り始められる最初の位置 (秒)。長さの情報のない mp3 は 529 サンプル
   bytes: Uint8Array<ArrayBuffer>;
   wav: WavInfo | null;
   mp3: Mp3Info | null;
   flac: FlacInfo | null;
-  ogg: OggInfo | null;    // 元の形式のまま切り出せる Ogg Opus のときだけ
+  ogg: OggInfo | null;    // 元の形式のまま切り出せる Ogg (Opus、Vorbis) のときだけ
   // ブラウザでデコードした長さと kiln が数えた長さが違う (壊れたフレームをブラウザが飛ばしたなど)。
   // 波形の位置と書き出す位置がずれるので、書き出さない
   lengthMismatch: boolean;
@@ -72,17 +73,18 @@ export async function inspect(file: File, decoded: AudioBuffer): Promise<CropSou
   // ブラウザは decoded を AudioContext のレートに変換しているので、そのレートのサンプル数で比べる (変換の丸めの分は許す)
   const sameLength = (samples: number, sampleRate: number) => Math.abs(decoded.length - (samples * decoded.sampleRate) / sampleRate) <= 2;
   const lengthMismatch = flac !== null && !sameLength(flac.samples, flac.sampleRate);
-  // Ogg は Opus で、読めないページがなく、ブラウザと長さが合うときだけ元の形式のまま切り出す。
-  // 長さが合わなければ WAV だけにする (WAV はブラウザのデコードから書くので、波形の位置とずれない)
+  // Ogg は、読めないページがなく、ブラウザと長さが合うときだけ元の形式のまま切り出す。長さが合わなければ
+  // WAV だけにする (WAV はブラウザのデコードから書くので、波形の位置とずれない)。先頭の切り詰めのある Vorbis は、
+  // ブラウザが切り詰めを守らず長さが合わないので、ここで WAV だけになる (kiln も切り出さない)
   const oggInfo = !wav && !mp3 && !flac ? probe(() => k.ogg.probe(bytes)) : null;
-  const ogg = oggInfo?.codec === 'opus' && oggInfo.invalidPages === 0 && sameLength(oggInfo.samples, oggInfo.sampleRate) ? oggInfo : null;
-  const native: OutFormat | null = mp3 ? 'mp3' : flac ? 'flac' : ogg ? (extFormat(file.name) === 'opus' ? 'opus' : 'ogg') : null;
+  const ogg = oggInfo && oggInfo.invalidPages === 0 && sameLength(oggInfo.samples, oggInfo.sampleRate) ? oggInfo : null;
+  const native: OutFormat | null = mp3 ? 'mp3' : flac ? 'flac' : ogg ? (ogg.codec === 'opus' && extFormat(file.name) === 'opus' ? 'opus' : 'ogg') : null;
   return { file, formats: formatsFor(native), mp3Start: mp3 ? mp3.minStart / mp3.sampleRate : 0, bytes, wav, mp3, flac, ogg, lengthMismatch };
 }
 
 export interface Rendered {
   blob: Blob;
-  start: number;           // 実際に切り始めた位置 (元の音源の秒)。無劣化の mp3 では、指定より後ろになることがある
+  start: number;           // 実際に切り始めた位置 (元の音源の秒)。無劣化の mp3 では指定より後ろに、Ogg Vorbis では前になることがある
   invalidFrames: number;   // 壊れていて無音にしたフレームの数 (FLAC の切り出しと、mp3 / FLAC のデコード)
 }
 
@@ -112,7 +114,7 @@ export async function renderCrop(source: CropSource, decoded: AudioBuffer, start
     return { blob: blob(r.data), start: r.start, invalidFrames: r.invalidFrames };
   }
   if (isOgg(format)) {
-    if (!ogg) throw new Error(`${source.file.name} は無劣化で切り出せる Ogg Opus ではありません。WAV で書き出してください`);
+    if (!ogg || (format === 'opus' && ogg.codec !== 'opus')) throw new Error(`${source.file.name} は無劣化で切り出せる ${format === 'opus' ? 'Ogg Opus' : 'Ogg'} ではありません。WAV で書き出してください`);
     const r = k.ogg.trim(bytes, range(ogg.sampleRate, ogg.samples));
     return { blob: blob(r.data), start: r.start, invalidFrames: 0 };
   }
