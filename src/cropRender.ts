@@ -5,9 +5,10 @@
 //   FLAC → WAV: kiln でデコードし、元のサンプルレートとビット深度のまま書く (可逆)
 //   Ogg Opus → Ogg Opus: パケットをコピーして切り出す (区間の前の 80ms も残し、pre-skip とグラニュール位置で前後を捨てさせる)
 //   Ogg Vorbis → Ogg Vorbis: パケットをコピーして切り出す (先頭はパケットの区切りに寄せ、末尾はグラニュール位置で捨てさせる)
+//   m4a (AAC) → m4a: フレームをコピーして切り出す (前の 2 フレームと後ろの 1 フレームも残し、編集リストと iTunSMPB で前後を捨てさせる)
 //   WAV → WAV: 元の形式のままバイト列を切り出す
 //   ほかの形式 → WAV: ブラウザでデコードし、kiln で 16-bit で書く (元のレートが分かればそのレート)
-import { KilnError, load, type FlacInfo, type Kiln, type KilnErrorCode, type Mp3Info, type OggInfo, type WavInfo } from '../kiln/wasm/kiln';
+import { KilnError, load, type FlacInfo, type Kiln, type KilnErrorCode, type M4aInfo, type Mp3Info, type OggInfo, type WavInfo } from '../kiln/wasm/kiln';
 // CSP の connect-src 'none' では fetch で wasm を読めない (data: URL も止まる) ので、チャンクに埋め込んでバイト列で渡す
 import kilnWasm from '../kiln/zig-out/kiln.wasm?url&inline';
 import { OUT_FORMATS, extFormat, formatsFor, isOgg, type OutFormat } from './cropFormat';
@@ -33,7 +34,7 @@ function loadKiln(): Promise<Kiln> {
   return kiln;
 }
 
-const NOT_READABLE = new Set<KilnErrorCode>(['NotMp3', 'NotWav', 'NotFlac', 'NotOgg', 'UnsupportedFormat', 'InvalidWav', 'InvalidFlac', 'InvalidOgg']);
+const NOT_READABLE = new Set<KilnErrorCode>(['NotMp3', 'NotWav', 'NotFlac', 'NotOgg', 'NotM4a', 'UnsupportedFormat', 'InvalidWav', 'InvalidFlac', 'InvalidOgg', 'InvalidM4a']);
 
 // kiln が扱えない入力 (MPEG-2 の mp3、壊れた FLAC など) なら null。それ以外のエラーはそのまま投げる
 function probe<T>(read: () => T): T | null {
@@ -49,13 +50,14 @@ function probe<T>(read: () => T): T | null {
 // 保存先に元の音源を選ぶと、保存先を選んだ時点で Chromium がそのファイルを空にして、読めなくなるため
 export interface CropSource {
   file: File;
-  formats: OutFormat[];   // 書き出せる形式。先頭が初期値。kiln で無劣化で切れる mp3、FLAC、Ogg だけ、元の形式を選べる
+  formats: OutFormat[];   // 書き出せる形式。先頭が初期値。kiln で無劣化で切れる mp3、FLAC、Ogg、m4a だけ、元の形式を選べる
   mp3Start: number;       // mp3 で書き出すときに切り始められる最初の位置 (秒)。長さの情報のない mp3 は 529 サンプル
   bytes: Uint8Array<ArrayBuffer>;
   wav: WavInfo | null;
   mp3: Mp3Info | null;
   flac: FlacInfo | null;
   ogg: OggInfo | null;    // 元の形式のまま切り出せる Ogg (Opus、Vorbis) のときだけ
+  m4a: M4aInfo | null;    // 元の形式のまま切り出せる m4a (AAC) のときだけ
   // ブラウザでデコードした長さと kiln が数えた長さが違う (壊れたフレームをブラウザが飛ばしたなど)。
   // 波形の位置と書き出す位置がずれるので、書き出さない
   lengthMismatch: boolean;
@@ -78,8 +80,11 @@ export async function inspect(file: File, decoded: AudioBuffer): Promise<CropSou
   // 書くので、波形の位置とずれない)
   const oggInfo = !wav && !mp3 && !flac ? probe(() => k.ogg.probe(bytes)) : null;
   const ogg = oggInfo?.trimmable && sameLength(oggInfo.samples, oggInfo.sampleRate) ? oggInfo : null;
-  const native: OutFormat | null = mp3 ? 'mp3' : flac ? 'flac' : ogg ? (ogg.codec === 'opus' && extFormat(file.name) === 'opus' ? 'opus' : 'ogg') : null;
-  return { file, formats: formatsFor(native), mp3Start: mp3 ? mp3.minStart / mp3.sampleRate : 0, bytes, wav, mp3, flac, ogg, lengthMismatch };
+  // m4a も同じ。kiln が切り出せるのは AAC で、ALAC (ブラウザで開けない) と HE-AAC v2 などは WAV だけになる
+  const m4aInfo = !wav && !mp3 && !flac && !oggInfo ? probe(() => k.m4a.probe(bytes)) : null;
+  const m4a = m4aInfo?.trimmable && sameLength(m4aInfo.samples, m4aInfo.sampleRate) ? m4aInfo : null;
+  const native: OutFormat | null = mp3 ? 'mp3' : flac ? 'flac' : ogg ? (ogg.codec === 'opus' && extFormat(file.name) === 'opus' ? 'opus' : 'ogg') : m4a ? 'm4a' : null;
+  return { file, formats: formatsFor(native), mp3Start: mp3 ? mp3.minStart / mp3.sampleRate : 0, bytes, wav, mp3, flac, ogg, m4a, lengthMismatch };
 }
 
 export interface Rendered {
@@ -92,7 +97,7 @@ export interface Rendered {
 // 元のレートで切り、音を変換しないで済むようにする
 export async function renderCrop(source: CropSource, decoded: AudioBuffer, start: number, end: number, format: OutFormat): Promise<Rendered> {
   const k = await loadKiln();
-  const { bytes, wav, mp3, flac, ogg } = source;
+  const { bytes, wav, mp3, flac, ogg, m4a } = source;
   // rate のサンプルに直す。別々に丸めると短い範囲が 0 になるので、最低 1 サンプルは残す
   // 後端が波形の末尾なら、音源の末尾まで。ブラウザがレートを変換すると、波形の長さが丸めで 1 サンプルほど短くなり、
   // 換算すると末尾に届かないため
@@ -116,6 +121,11 @@ export async function renderCrop(source: CropSource, decoded: AudioBuffer, start
   if (isOgg(format)) {
     if (!ogg || (format === 'opus' && ogg.codec !== 'opus')) throw new Error(`${source.file.name} は無劣化で切り出せる ${format === 'opus' ? 'Ogg Opus' : 'Ogg'} ではありません。WAV で書き出してください`);
     const r = k.ogg.trim(bytes, range(ogg.sampleRate, ogg.samples));
+    return { blob: blob(r.data), start: r.start, invalidFrames: 0 };
+  }
+  if (format === 'm4a') {
+    if (!m4a) throw new Error(`${source.file.name} は無劣化で切り出せる m4a ではありません。WAV で書き出してください`);
+    const r = k.m4a.trim(bytes, range(m4a.sampleRate, m4a.samples));
     return { blob: blob(r.data), start: r.start, invalidFrames: 0 };
   }
   if (wav) {
