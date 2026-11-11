@@ -266,9 +266,11 @@ export interface AacInfo {
 export interface Ogg {
   probe(input: BytesInput): OggInfo;
   /**
-   * 再エンコードせずにサンプル単位で切り出す。結果は Ogg のバイト列。今は Opus だけ(Vorbis は `UnsupportedFormat`)。
-   * 区間の前の 80ms と一緒にパケットをそのままコピーし、pre-skip と最後のページのグラニュール位置で前後の余分を捨てさせる。
-   * 読めないページや欠けたページがあるものは `InvalidOgg`
+   * 再エンコードせずに切り出す。結果は Ogg のバイト列。パケットをそのままコピーし、末尾の余分は最後のページの
+   * グラニュール位置で捨てさせる。読めないページや欠けたページがあるものは `InvalidOgg`。
+   * - Opus: サンプル単位。区間の前の 80ms と一緒にコピーし、先頭の余分は pre-skip で捨てさせる
+   * - Vorbis: 末尾はサンプル単位。先頭は、区間の先頭を含むパケットの区切りに寄せる(`start` は指定以下になる。
+   *   44.1kHz の oggenc なら最大 1024 サンプル前)。先頭の切り詰めのあるものは `UnsupportedFormat`
    */
   trim(input: BytesInput, options?: RangeOptions): RangeResult & { data: Uint8Array<ArrayBuffer> };
 }

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-//! Ogg(Vorbis / Opus)の解析と、Opus の無劣化の切り出し(設計は docs/ogg.md)。
+//! Ogg(Vorbis / Opus)の解析と、無劣化の切り出し(設計は docs/ogg.md)。
 //!
 //! 中身が 1 本のストリーム(論理ビットストリーム)だけのファイルを扱う。長さはグラニュール位置から数え、
 //! 先頭と末尾の切り詰め(Opus の pre-skip、最初と最後のページのグラニュール位置)を反映する。
@@ -53,6 +53,8 @@ const Analysis = struct {
     /// 先頭の切り詰めで、pre-skip のほかに捨てる長さ。再生位置 t は、デコード結果の先頭から数えて
     /// t + pre_skip + lead の位置にある
     lead: u64,
+    /// Vorbis の音声パケットの長さを数えるもの(ヘッダから作った、数える前の状態。Opus は null)
+    vorbis: ?vorbis.Counter,
 };
 
 fn analyze(input: []const u8) ParseError!Analysis {
@@ -96,7 +98,7 @@ fn analyze(input: []const u8) ParseError!Analysis {
     // パケットを順にたどり、長さを数える
     var w: stream.Walker = .init(input, first);
     var packets: u64 = 0;
-    var prev_block: ?u16 = null;
+    var counter: ?vorbis.Counter = null;
     // 音声パケットの長さの合計(最初のグラニュール位置が付いたページまで)
     var audio_total: u64 = 0;
     var start_pos: ?i128 = null;
@@ -119,6 +121,7 @@ fn analyze(input: []const u8) ParseError!Analysis {
         defer packets += 1;
         if (packets < header_packets) {
             try headerPacket(input, info.codec, packets, pk, &vorbis_id, &modes);
+            if (info.codec == .vorbis and packets == 2) counter = .{ .id = vorbis_id, .modes = modes };
             continue;
         }
         if (pending) |pp| {
@@ -129,14 +132,7 @@ fn analyze(input: []const u8) ParseError!Analysis {
         }
         const dur: u64 = switch (info.codec) {
             .opus => stream.opusSamples(input, pk),
-            .vorbis => blk: {
-                if (pk.len == 0) break :blk 0;
-                var one: [1]u8 = undefined;
-                _ = readPacket(input, pk.page, pk.seg, &one);
-                const bs = vorbis.blockSize(one[0], vorbis_id, modes) orelse break :blk 0;
-                defer prev_block = bs;
-                break :blk if (prev_block) |prev| prev / 4 + bs / 4 else 0;
-            },
+            .vorbis => counter.?.next(stream.firstByte(input, pk)) orelse 0,
         };
         if (start_pos == null) audio_total += dur;
         pending = pk.end;
@@ -157,7 +153,9 @@ fn analyze(input: []const u8) ParseError!Analysis {
         info.samples = if (n > 0) std.math.cast(u64, n) orelse std.math.maxInt(u64) else 0;
         if (sp < 0 and !first_is_last) lead = std.math.cast(u64, -sp) orelse std.math.maxInt(u64);
     }
-    return .{ .info = info, .lead = lead };
+    // 数える前の状態に戻して返す
+    if (counter) |*c| c.prev = null;
+    return .{ .info = info, .lead = lead, .vorbis = counter };
 }
 
 pub const TrimOptions = struct {
@@ -167,7 +165,7 @@ pub const TrimOptions = struct {
     end: ?u64 = null,
 };
 
-/// 実際に切り出した区間(範囲外の指定を丸めた後の位置)
+/// 実際に切り出した区間(範囲外の指定を丸めた後の位置。Vorbis の `start` は、パケットの区切りに寄せた位置)
 pub const TrimResult = struct {
     start: u64,
     end: u64,
@@ -181,17 +179,27 @@ pub const TrimError = ParseError || Io.Writer.Error || error{
 };
 
 /// 区間 `[options.start, options.end)` を、再エンコードせずに切り出して `w` に Ogg で書く。末尾は長さで切り詰める。
-/// 今は Opus だけ(Vorbis は UnsupportedFormat)。読めないページや欠けたページがあるものは InvalidOgg
-/// (欠けた分の位置が分からないため)。サンプル単位で区間どおりになる(docs/ogg.md §6)。`w.flush()` は呼び出し側が行う
+/// 読めないページや欠けたページがあるものは InvalidOgg(欠けた分の位置が分からないため)。`w.flush()` は呼び出し側が行う。
+/// Opus はサンプル単位で区間どおりになる(docs/ogg.md §6)。Vorbis は、末尾はサンプル単位、先頭は区間の先頭を含む
+/// パケットの区切りに寄せる(`start` 以下。docs/ogg.md §7)。先頭の切り詰めのある Vorbis は UnsupportedFormat
 pub fn trim(gpa: std.mem.Allocator, input: []const u8, options: TrimOptions, w: *Io.Writer) TrimError!TrimResult {
     const a = try analyze(input);
     const info = a.info;
-    if (info.codec != .opus) return error.UnsupportedFormat;
     if (info.invalid_pages != 0) return error.InvalidOgg;
     const end = @min(options.end orelse info.samples, info.samples);
     if (options.start >= end) return error.EmptyRange;
-    try trim_impl.opusTrim(gpa, input, info.pre_skip, a.lead, options.start, end, w);
-    return .{ .start = options.start, .end = end, .sample_rate = info.sample_rate };
+    const start = switch (info.codec) {
+        .opus => blk: {
+            try trim_impl.opusTrim(gpa, input, info.pre_skip, a.lead, options.start, end, w);
+            break :blk options.start;
+        },
+        .vorbis => blk: {
+            // 先頭の切り詰めは、Chromium も ffmpeg も守らない(デコード結果の位置が解析と合わない)ので扱わない
+            if (a.lead != 0) return error.UnsupportedFormat;
+            break :blk try trim_impl.vorbisTrim(gpa, input, a.vorbis.?, info.sample_rate, options.start, end, w);
+        },
+    };
+    return .{ .start = start, .end = end, .sample_rate = info.sample_rate };
 }
 
 pub const Trimmed = struct {
@@ -375,12 +383,13 @@ test "probe: エラー" {
     try std.testing.expectError(error.UnsupportedFormat, probe(p));
 }
 
-/// テスト用: 音声パケット(ヘッダの 2 つを除く)のバイト列を順に集める。返したものは呼び出し側が解放する
+/// テスト用: 音声パケット(Opus はヘッダの 2 つ、Vorbis は 3 つを除く)のバイト列を順に集める。返したものは呼び出し側が解放する
 fn audioPackets(gpa: std.mem.Allocator, input: []const u8) ![][]u8 {
     const packets = try stream.collectAll(gpa, input);
     defer gpa.free(packets);
-    const out = try gpa.alloc([]u8, packets.len - 2);
-    for (packets[2..], out) |pk, *o| {
+    const headers: usize = if ((try probe(input)).codec == .opus) 2 else 3;
+    const out = try gpa.alloc([]u8, packets.len - headers);
+    for (packets[headers..], out) |pk, *o| {
         o.* = try gpa.alloc(u8, pk.len);
         var r: page.PacketReader = .init(input, pk.page, pk.seg);
         for (o.*) |*b| b.* = r.byte().?;
@@ -502,12 +511,86 @@ test "trim: 範囲外と、扱えない入力" {
     try std.testing.expectEqual(24000, t.end);
     try std.testing.expectError(error.EmptyRange, trimAlloc(gpa, testdata.opus_stereo, .{ .start = 24000 }));
     try std.testing.expectError(error.EmptyRange, trimAlloc(gpa, testdata.opus_stereo, .{ .start = 5, .end = 5 }));
-    // Vorbis はまだ切り出せない
-    try std.testing.expectError(error.UnsupportedFormat, trimAlloc(gpa, testdata.vorbis_stereo, .{}));
     // 壊れたページがあるものは切り出さない
     const buf = try gpa.dupe(u8, testdata.opus_stereo);
     defer gpa.free(buf);
     buf[buf.len - 1] ^= 0xFF;
     try std.testing.expectError(error.InvalidOgg, trimAlloc(gpa, buf, .{}));
     try std.testing.expectError(error.NotOgg, trimAlloc(gpa, "RIFF", .{}));
+}
+
+/// テスト用: Vorbis の音声パケットの開始位置(デコード結果の先頭から)
+fn vorbisStarts(gpa: std.mem.Allocator, input: []const u8, packets: []const []const u8) ![]u64 {
+    var c = (try analyze(input)).vorbis.?;
+    const out = try gpa.alloc(u64, packets.len);
+    var pos: u64 = 0;
+    for (packets, out) |p, *o| {
+        o.* = pos;
+        pos += c.next(if (p.len > 0) p[0] else null) orelse 0;
+    }
+    return out;
+}
+
+test "trim: Vorbis は末尾を区間どおりに、先頭をパケットの区切りに寄せて切り出す" {
+    const gpa = std.testing.allocator;
+    for ([_][]const u8{ testdata.vorbis_stereo, testdata.vorbis_mono22k }) |src| {
+        const base = try probe(src);
+        const long = (try analyze(src)).vorbis.?.id.blocksize[1];
+        const src_packets = try audioPackets(gpa, src);
+        defer freePackets(gpa, src_packets);
+        const starts = try vorbisStarts(gpa, src, src_packets);
+        defer gpa.free(starts);
+        const n = base.samples;
+        for ([_][2]u64{ .{ 0, n }, .{ 5000, 9000 }, .{ 0, 1 }, .{ 1, 2 }, .{ 3000, 3001 }, .{ n - 10, n }, .{ n - 1, n }, .{ 777, n } }) |se| {
+            const t = try trimAlloc(gpa, src, .{ .start = se[0], .end = se[1] });
+            defer gpa.free(t.data);
+            try std.testing.expectEqual(se[1], t.end);
+            try std.testing.expectEqual(base.sample_rate, t.sample_rate);
+            // 先頭は、区間の先頭より前の(長いブロックの半分より近い)パケットの区切り
+            try std.testing.expect(t.start <= se[0] and se[0] - t.start < long / 2);
+            const got = try probe(t.data);
+            try std.testing.expectEqual(Codec.vorbis, got.codec);
+            try std.testing.expectEqual(se[1] - t.start, got.samples);
+            try std.testing.expectEqual(base.channels, got.channels);
+            try std.testing.expectEqual(base.sample_rate, got.sample_rate);
+            try std.testing.expectEqual(0, got.invalid_pages);
+            try std.testing.expectEqual(0, (try analyze(t.data)).lead);
+            // パケットは元のままコピーし、2 つ目のパケット(最初に音を出すもの)の開始位置が切り始めの位置
+            const out_packets = try audioPackets(gpa, t.data);
+            defer freePackets(gpa, out_packets);
+            try std.testing.expect(out_packets.len >= 2);
+            const first = for (src_packets, 0..) |p, i| {
+                if (std.mem.eql(u8, p, out_packets[0]) and std.mem.eql(u8, src_packets[i + 1], out_packets[1])) break i;
+            } else unreachable;
+            for (out_packets, src_packets[first..][0..out_packets.len]) |o, sp| try std.testing.expectEqualSlices(u8, sp, o);
+            try std.testing.expectEqual(t.start, starts[first + 1]);
+            // 最初の音声パケットは、それだけでグラニュール位置 0 のページにする
+            var it: page.Iterator = .{ .input = t.data };
+            var audio_page: ?page.Page = null;
+            var i: usize = 0;
+            while (it.next()) |pg| : (i += 1) {
+                if (i == 2) audio_page = pg;
+            }
+            try std.testing.expectEqual(1, audio_page.?.lacing.len - std.mem.count(u8, audio_page.?.lacing, &.{255}));
+            try std.testing.expectEqual(0, audio_page.?.granule);
+        }
+    }
+}
+
+test "trim: Vorbis の先頭の切り詰めは扱わず、途中から切り出したストリームは切り出す" {
+    const gpa = std.testing.allocator;
+    const buf = try gpa.dupe(u8, testdata.vorbis_stereo);
+    defer gpa.free(buf);
+    const n, const g = firstAudioPage(buf);
+    setGranule(buf, n, g - 100);
+    try std.testing.expectError(error.UnsupportedFormat, trimAlloc(gpa, buf, .{}));
+    setGranule(buf, n, g + 1000);
+    const base = try probe(buf);
+    const all = try trimAlloc(gpa, buf, .{});
+    defer gpa.free(all.data);
+    try std.testing.expectEqual(0, all.start);
+    try std.testing.expectEqual(base.samples, (try probe(all.data)).samples);
+    // 壊れたページがあるものは切り出さない
+    buf[buf.len - 1] ^= 0xFF;
+    try std.testing.expectError(error.InvalidOgg, trimAlloc(gpa, buf, .{}));
 }
