@@ -205,7 +205,8 @@ const a = try kiln.aac.probe(input);  // profile, mpeg_version, sample_rate, cha
 // Opus / Vorbis を再エンコードせずに切り出す(位置は再生位置のサンプル数。Opus は 48kHz)。trimAlloc は一括版。
 // Vorbis の r.start は、パケットの区切りに寄せた実際の切り始め(指定以下)
 const r = try kiln.ogg.trim(gpa, input, .{ .start = 48000, .end = 96000 }, writer);  // r.start / r.end / r.sample_rate
-// m4a の AAC を再エンコードせずにサンプル単位で切り出す(位置はデコード結果のレートのサンプル数)
+// m4a の AAC を再エンコードせずに切り出す(位置はデコード結果のレートのサンプル数。HE-AAC は 2 サンプル単位に寄せ、
+// q.start / q.end が実際の区間)
 const q = try kiln.m4a.trim(gpa, input, .{ .start = 44100, .end = 88200 }, writer);
 ```
 

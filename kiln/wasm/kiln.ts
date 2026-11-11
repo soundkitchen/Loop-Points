@@ -247,7 +247,7 @@ export interface M4aInfo {
   audioSpecificConfig: Uint8Array<ArrayBuffer>;
   /**
    * `m4a.trim` で切り出せるか。ALAC、HE-AAC v2(PS。途中から復号すると左右が元と違う)、SBR や PS の有無が
-   * 分からない AAC、タイムスケールがサンプルレートの整数分の 1 でないもの、
+   * 分からない AAC、タイムスケールがサンプルレートの整数分の 1 でないもの、遅延と長さがメディアに収まらない編集リスト、
    * 空の編集や複数の編集のある編集リスト、サンプルの説明が複数あるもの、stz2、データが途中で切れているものは切り出せない
    */
   trimmable: boolean;
@@ -289,7 +289,9 @@ export interface Ogg {
 export interface M4a {
   probe(input: BytesInput): M4aInfo;
   /**
-   * AAC を再エンコードせずにサンプル単位で切り出す。結果は m4a のバイト列。区間を含むフレームを前の 2 フレームと
+   * AAC を再エンコードせずに切り出す。結果は m4a のバイト列。メディアのタイムスケールの単位で区間どおりになる
+   * (AAC-LC はサンプル単位。中心のレートのタイムスケールの HE-AAC は 2 サンプル単位で、`start` は指定以下、`end` は
+   * 指定以上に寄せる)。区間を含むフレームを前の 2 フレームと
    * 後ろの 1 フレーム(入力の末尾で足りなければ最後のフレームを繰り返す)と一緒にコピーし、前後の余分は
    * 編集リスト(elst)と iTunSMPB の両方で捨てさせる。
    * 切り出せないもの(`trimmable` が false)は `UnsupportedFormat`

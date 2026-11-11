@@ -60,6 +60,9 @@ const Analysis = struct {
     info: Info,
     /// 切り出せるときだけ
     source: ?trim_impl.Source,
+    /// デコード結果の 1 サンプルあたりの、メディアのタイムスケールの単位の数の逆数
+    /// (デコード結果のレート / タイムスケール。HE-AAC で中心のレートのタイムスケールなら 2)
+    scale: u32,
 };
 
 fn analyze(input: []const u8) ParseError!Analysis {
@@ -122,10 +125,12 @@ fn analyze(input: []const u8) ParseError!Analysis {
 
     // 切り出せるか: AAC で、SBR の有無が分かり、PS がなく、デコード結果のレートがタイムスケールの整数倍で、
     // 編集が 1 つだけで、サンプルの説明が 1 つで、サンプルの表が食い違わず、データが入力の中にある。
-    // PS(HE-AAC v2)は、ステレオの情報がときどきしか送られず、途中から復号すると左右が元と違ってしまうので扱わない
+    // PS(HE-AAC v2)は、ステレオの情報がときどきしか送られず、途中から復号すると左右が元と違ってしまうので扱わない。
+    // 遅延と長さはメディアに収まること(編集リストの値は細工できるので、足し算があふれないように比べる)
     const scale = info.sample_rate / timescale;
+    const fits = delay <= media and length <= media - delay;
     const source: ?trim_impl.Source = if (info.codec == .aac and info.sbr != null and info.ps == false and info.samples > 0 and
-        scale > 0 and info.sample_rate % timescale == 0 and simple_edit and
+        scale > 0 and info.sample_rate % timescale == 0 and simple_edit and fits and
         try box.int(u32, (try box.Iterator.find(stbl.body, "stsd")).?.body, 4) == 1 and
         try samplesInInput(input, stbl.body))
         .{
@@ -134,14 +139,13 @@ fn analyze(input: []const u8) ParseError!Analysis {
             .trak = trak.body,
             .stbl = stbl.body,
             .udta = udta,
-            .rate = info.sample_rate,
-            .scale = scale,
-            .delay = delay * scale,
+            .timescale = timescale,
+            .delay = delay,
         }
     else
         null;
     info.trimmable = source != null;
-    return .{ .info = info, .source = source };
+    return .{ .info = info, .source = source, .scale = scale };
 }
 
 /// サンプルの表をたどれ、どのサンプルのデータも入力の中にあるか(stz2 は扱わないので false)
@@ -160,7 +164,8 @@ pub const TrimOptions = struct {
     end: ?u64 = null,
 };
 
-/// 実際に切り出した区間(範囲外の指定を丸めた後の位置)
+/// 実際に切り出した区間(範囲外の指定を丸めた後の位置。タイムスケールの 1 単位が 2 サンプルの HE-AAC では、
+/// `start` は指定以下、`end` は指定以上の偶数に寄せる)
 pub const TrimResult = struct {
     start: u64,
     end: u64,
@@ -174,15 +179,19 @@ pub const TrimError = ParseError || Io.Writer.Error || error{
 };
 
 /// 区間 `[options.start, options.end)` を、再エンコードせずに切り出して `w` に m4a で書く。末尾は長さで切り詰める。
-/// サンプル単位で区間どおりになる(docs/m4a.md §5)。切り出せないもの(`Info.trimmable` が false。ALAC など)は
+/// タイムスケールの単位(AAC-LC はサンプル単位、中心のレートのタイムスケールの HE-AAC は 2 サンプル単位)で
+/// 区間どおりになる(docs/m4a.md §5)。切り出せないもの(`Info.trimmable` が false。ALAC など)は
 /// UnsupportedFormat。`w.flush()` は呼び出し側が行う
 pub fn trim(gpa: std.mem.Allocator, input: []const u8, options: TrimOptions, w: *Io.Writer) TrimError!TrimResult {
     const a = try analyze(input);
     const src = a.source orelse return error.UnsupportedFormat;
     const end = @min(options.end orelse a.info.samples, a.info.samples);
     if (options.start >= end) return error.EmptyRange;
-    try trim_impl.trim(gpa, src, options.start, end, w);
-    return .{ .start = options.start, .end = end, .sample_rate = a.info.sample_rate };
+    // タイムスケールの単位に直す(先頭は切り捨て、終わりは切り上げ。長さはタイムスケールの単位の整数倍なので収まる)
+    const s = options.start / a.scale;
+    const e = std.math.divCeil(u64, end, a.scale) catch unreachable;
+    try trim_impl.trim(gpa, src, s, e, w);
+    return .{ .start = s * a.scale, .end = e * a.scale, .sample_rate = a.info.sample_rate };
 }
 
 pub const Trimmed = struct {
@@ -593,22 +602,24 @@ test "trim: AAC を区間どおりに切り出す" {
         for ([_][2]u64{ .{ 0, n }, .{ 5000, 9000 }, .{ 0, 1 }, .{ 1, 2 }, .{ 3000, 3001 }, .{ n - 10, n }, .{ n - 1, n }, .{ 777, n } }) |se| {
             const t = try trimAlloc(gpa, src, .{ .start = se[0], .end = se[1] });
             defer gpa.free(t.data);
-            try std.testing.expectEqual(se[0], t.start);
-            try std.testing.expectEqual(se[1], t.end);
+            // タイムスケールの単位に寄せる(AAC-LC はそのまま、HE-AAC は先頭を切り捨て、終わりを切り上げて偶数に)
+            try std.testing.expectEqual(se[0] - se[0] % scale, t.start);
+            try std.testing.expectEqual(std.math.divCeil(u64, se[1], scale) catch unreachable, t.end / scale);
+            try std.testing.expectEqual(0, t.end % scale);
             const got = try probe(t.data);
             try std.testing.expectEqual(Codec.aac, got.codec);
-            try std.testing.expectEqual(se[1] - se[0], got.samples);
+            try std.testing.expectEqual(t.end - t.start, got.samples);
             try std.testing.expectEqual(base.sample_rate, got.sample_rate);
             try std.testing.expectEqual(base.channels, got.channels);
             try std.testing.expectEqual(base.sbr, got.sbr);
             try std.testing.expectEqual(base.ps, got.ps);
             try std.testing.expectEqualSlices(u8, base.audio_specific_config, got.audio_specific_config);
             try std.testing.expect(got.trimmable);
-            // フレームは元のままコピーし、出力のタイムスケールはデコード結果のレート
+            // フレームは元のままコピーし、タイムスケールも元のまま
             const out = try testSamples(gpa, t.data);
             defer gpa.free(out.frames);
             defer gpa.free(out.durations);
-            try std.testing.expectEqual(base.sample_rate, out.timescale);
+            try std.testing.expectEqual(in.timescale, out.timescale);
             const k = for (0..in.frames.len) |i| {
                 if (std.mem.eql(u8, in.frames[i], out.frames[0])) break i;
             } else return error.TestUnexpectedResult;
@@ -617,18 +628,18 @@ test "trim: AAC を区間どおりに切り出す" {
             for (out.frames, out.durations, 0..) |o, od, j| {
                 const i = k + @min(j, copied - 1);
                 try std.testing.expectEqualSlices(u8, in.frames[i], o);
-                try std.testing.expectEqual(in.durations[i] * scale, od);
+                try std.testing.expectEqual(in.durations[i], od);
             }
             try std.testing.expect(out.frames.len - copied <= 1);
             // 出力の再生位置 0 は、元の再生位置 start(前に 2 フレーム残す。元の先頭の近くでは足りない分だけ減る)
             var k_start: u64 = 0;
             for (in.durations[0..k]) |d| k_start += @as(u64, d) * scale;
-            try std.testing.expectEqual(se[0] + base.encoder_delay, k_start + got.encoder_delay);
+            try std.testing.expectEqual(t.start + base.encoder_delay, k_start + got.encoder_delay);
             try std.testing.expect(got.encoder_delay <= 3 * 1024 * scale);
-            // iTunSMPB にも同じ遅延と長さを書く
+            // iTunSMPB にも同じ遅延と長さを、タイムスケールの単位で書く
             const smpb = (try testSmpb(t.data)).?;
-            try std.testing.expectEqual(got.encoder_delay, smpb.delay);
-            try std.testing.expectEqual(got.samples, smpb.samples);
+            try std.testing.expectEqual(got.encoder_delay, smpb.delay * scale);
+            try std.testing.expectEqual(got.samples, smpb.samples * scale);
         }
     }
 }
@@ -666,6 +677,22 @@ test "trim: 範囲外と、扱えない入力" {
     try std.testing.expect(!(try probe(cut)).trimmable);
     try std.testing.expectError(error.UnsupportedFormat, trimAlloc(gpa, cut, .{}));
     try std.testing.expectError(error.NotM4a, trimAlloc(gpa, "RIFF", .{}));
+}
+
+test "trim: 編集リストの遅延と長さがメディアに収まらないものは切り出さない" {
+    const gpa = std.testing.allocator;
+    const buf = try gpa.dupe(u8, testdata.aac_lc_ffmpeg_m4a);
+    defer gpa.free(buf);
+    // elst の中身: 版と flags(4)、項目の数(4)、長さ(4)、開始位置(4)
+    const at = std.mem.indexOf(u8, buf, "elst").? + 4 + 12;
+    for ([_]u32{ 0x7FFF_FFFF, 23074 - 22050 + 1 }) |media_time| {
+        std.mem.writeInt(u32, buf[at..][0..4], media_time, .big);
+        try std.testing.expect(!(try probe(buf)).trimmable);
+        try std.testing.expectError(error.UnsupportedFormat, trimAlloc(gpa, buf, .{}));
+    }
+    // ちょうど収まるもの(元は 1024)
+    std.mem.writeInt(u32, buf[at..][0..4], 23074 - 22050, .big);
+    try std.testing.expect((try probe(buf)).trimmable);
 }
 
 test "editList: 空でない編集が 1 つだけのときが simple" {

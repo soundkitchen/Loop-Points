@@ -12,7 +12,7 @@ Loop Points のクロップの書き出しを受け持つ、Zig 製のライブ�
 - MP3 と FLAC をデコードして WAV に、WAV と MP3 を FLAC に書き出す。`AudioBuffer` などの PCM を WAV や FLAC にする
 - Ogg の Opus を Opus のまま、サンプル単位で切り出す(パケットをコピーし、pre-skip とグラニュール位置で前後の余分を捨てさせる)
 - Ogg の Vorbis を Vorbis のまま切り出す(パケットをコピーし、末尾はグラニュール位置でサンプル単位に。先頭はパケットの区切りに寄せる)
-- m4a の AAC を AAC のまま、サンプル単位で切り出す(フレームをコピーし、編集リストと iTunSMPB で前後の余分を捨てさせる。ALAC と HE-AAC v2 は扱わない)
+- m4a の AAC を AAC のまま切り出す(フレームをコピーし、編集リストと iTunSMPB で前後の余分を捨てさせる。AAC-LC はサンプル単位、HE-AAC は 2 サンプル単位。ALAC と HE-AAC v2 は扱わない)
 - Ogg(Vorbis / Opus)・m4a(AAC / ALAC)・aac(ADTS)のサンプルレートや長さを調べる(probe)。aac(ADTS)の切り出しはまだです
 
 ## ビルドとテスト

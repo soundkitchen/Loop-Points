@@ -4,13 +4,15 @@
 //! 区間を含む AAC のフレーム(MP4 のサンプル)を、前の 2 フレームと後ろの 1 フレームと一緒にそのままコピーし、
 //! 編集リスト(elst)と iTunes の `iTunSMPB` の両方で前後の余分を捨てさせる。後ろのフレームが入力の末尾で
 //! 足りなければ、最後のフレームをもう一度置く。ボックスは作り直す
-//! (ftyp、サンプルの説明(stsd)、ハンドラ、タグは元のまま)。出力は ftyp、moov、mdat の順。
+//! (ftyp、サンプルの説明(stsd)、ハンドラ、タグ、タイムスケールは元のまま)。出力は ftyp、moov、mdat の順。
+//! タイムスケールを変えないのは、Apple のデコーダが編集リストを読まずに iTunSMPB だけを読み、HE-AAC では
+//! その値を中心のレートの単位で読む一方、ffmpeg はメディアのタイムスケールの単位で読むため(docs/m4a.md §5.1)
 const std = @import("std");
 const Io = std.Io;
 const box = @import("box.zig");
 
 /// 区間の前に残すフレームの数。AAC はフレームの重ね合わせのため、前のフレームから復号しないと元と同じ値にならない
-/// (AAC-LC は 1 つで足りる。HE-AAC の SBR のため 2 つにする)
+/// (AAC-LC は 1 つで足りる。HE-AAC は 1 つだと SBR の差が大きく残るので 2 つにする。それ以上増やしても差はほぼ変わらない)
 pub const preroll_frames = 2;
 /// 区間の後ろに残すフレームの数。区間の終わりのフレームで出力が終わると、短い区間(最後のフレームの中で
 /// 終わる区間の先頭が、そのフレームの後ろのほうにあるとき)で Chromium がデコードに失敗し、ffmpeg は何も出さないため
@@ -116,15 +118,14 @@ pub const Source = struct {
     stbl: []const u8,
     /// moov の直下の udta(タグ)。なければ null
     udta: ?box.Box,
-    /// 出力のタイムスケール(デコード結果のサンプルレート)と、元のタイムスケールからの倍率
-    rate: u32,
-    scale: u32,
-    /// 先頭の遅延(出力のタイムスケールの単位)
+    /// メディアのタイムスケール(出力もこのまま使う)
+    timescale: u32,
+    /// 先頭の遅延(タイムスケールの単位)
     delay: u64,
 };
 
-/// 再生位置 `[start, end)`(デコード結果のサンプル数)を切り出して `w` に書く。範囲は呼び出し側が丸めておく
-/// (`start < end <= 長さ`)。サンプルのデータが入力の外を指していれば InvalidM4a
+/// 再生位置 `[start, end)`(メディアのタイムスケールの単位)を切り出して `w` に書く。範囲は呼び出し側が丸めておく
+/// (`start < end`、`delay + end` がメディアの長さ以下)。サンプルのデータが入力の外を指していれば InvalidM4a
 pub fn trim(gpa: std.mem.Allocator, src: Source, start: u64, end: u64, w: *Io.Writer) Error!void {
     const ms = std.math.add(u64, start, src.delay) catch return error.InvalidM4a;
     const me = std.math.add(u64, end, src.delay) catch return error.InvalidM4a;
@@ -139,7 +140,7 @@ pub fn trim(gpa: std.mem.Allocator, src: Source, start: u64, end: u64, w: *Io.Wr
         while (try it.next()) |smp| : (count += 1) {
             if (pos <= ms) first = count;
             if (pos < me) last = count;
-            pos = std.math.add(u64, pos, @as(u64, smp.duration) * src.scale) catch return error.InvalidM4a;
+            pos = std.math.add(u64, pos, smp.duration) catch return error.InvalidM4a;
         }
         if (pos < me) return error.InvalidM4a;
     }
@@ -147,54 +148,50 @@ pub fn trim(gpa: std.mem.Allocator, src: Source, start: u64, end: u64, w: *Io.Wr
     const l = @min(last + postroll_frames, count - 1);
     // 後ろに残すフレームが足りない分は、最後のフレームを繰り返す(再生されない)
     const repeat = last + postroll_frames - l;
-    const n = l - k + 1 + repeat;
 
-    // コピーするサンプルの長さと大きさ
+    // コピーするサンプル(繰り返す分も含む)と、その長さの表
+    var copied: std.ArrayList(Sample) = .empty;
+    defer copied.deinit(gpa);
+    try copied.ensureTotalCapacity(gpa, l - k + 1 + repeat);
     var stts: std.ArrayList([2]u32) = .empty;
     defer stts.deinit(gpa);
-    var sizes: std.ArrayList(u32) = .empty;
-    defer sizes.deinit(gpa);
-    try sizes.ensureTotalCapacity(gpa, n);
     var k_start: u64 = 0;
     var media: u64 = 0;
     var payload: u64 = 0;
-    var last_sample: Sample = undefined;
     {
         var it = (try Samples.init(src.stbl)).?;
         var i: u32 = 0;
         while (try it.next()) |smp| : (i += 1) {
             if (i < k) {
-                k_start += @as(u64, smp.duration) * src.scale;
+                k_start += smp.duration;
                 continue;
             }
             if (i > l) break;
             if (smp.offset > src.input.len or smp.size > src.input.len - smp.offset) return error.InvalidM4a;
             const copies: u32 = if (i == l) 1 + repeat else 1;
             for (0..copies) |_| {
-                const d = std.math.mul(u32, smp.duration, src.scale) catch return error.InvalidM4a;
-                if (stts.items.len > 0 and stts.items[stts.items.len - 1][1] == d) {
+                if (stts.items.len > 0 and stts.items[stts.items.len - 1][1] == smp.duration) {
                     stts.items[stts.items.len - 1][0] += 1;
                 } else {
-                    try stts.append(gpa, .{ 1, d });
+                    try stts.append(gpa, .{ 1, smp.duration });
                 }
-                sizes.appendAssumeCapacity(smp.size);
-                media += d;
+                copied.appendAssumeCapacity(smp);
+                media += smp.duration;
                 payload += smp.size;
             }
-            last_sample = smp;
         }
     }
-    const media_time = ms - k_start;
-    const seg = end - start;
+    var m: Moov = .{ .seg = end - start, .media = media, .media_time = ms - k_start, .stts = stts.items, .samples = copied.items, .chunk_offset = 0 };
 
-    // moov を組み立てる。チャンクは 1 つで、mdat の中身の位置は moov の長さで決まる(長さは位置の値によらない)
+    // moov を組み立てる。チャンクは 1 つで、mdat の中身の位置は moov の長さで決まる。moov の長さは位置の値によらない
+    // (位置は stco の 32 ビットで書く。moov が 4GB を超えることはないので co64 は使わない)
     var b: Builder = .{ .gpa = gpa };
     defer b.list.deinit(gpa);
     const mdat_header: u64 = if (payload + 8 > std.math.maxInt(u32)) 16 else 8;
-    try writeMoov(&b, src, .{ .seg = seg, .media = media, .media_time = media_time, .stts = stts.items, .sizes = sizes.items, .chunk_offset = 0 });
-    const chunk_offset = src.ftyp.len + b.list.items.len + mdat_header;
+    try writeMoov(&b, src, m);
+    m.chunk_offset = std.math.cast(u32, src.ftyp.len + b.list.items.len + mdat_header) orelse return error.InvalidM4a;
     b.list.clearRetainingCapacity();
-    try writeMoov(&b, src, .{ .seg = seg, .media = media, .media_time = media_time, .stts = stts.items, .sizes = sizes.items, .chunk_offset = chunk_offset });
+    try writeMoov(&b, src, m);
 
     try w.writeAll(src.ftyp);
     try w.writeAll(b.list.items);
@@ -206,32 +203,26 @@ pub fn trim(gpa: std.mem.Allocator, src: Source, start: u64, end: u64, w: *Io.Wr
         try w.writeInt(u32, @intCast(payload + 8), .big);
         try w.writeAll("mdat");
     }
-    var it = (try Samples.init(src.stbl)).?;
-    var i: u32 = 0;
-    while (try it.next()) |smp| : (i += 1) {
-        if (i < k) continue;
-        if (i > l) break;
+    for (copied.items) |smp| {
         const at: usize = @intCast(smp.offset);
         try w.writeAll(src.input[at..][0..smp.size]);
     }
-    const at: usize = @intCast(last_sample.offset);
-    for (0..repeat) |_| try w.writeAll(src.input[at..][0..last_sample.size]);
 }
 
 const Moov = struct {
-    /// 再生する長さと、コピーしたサンプルの長さの合計(出力のタイムスケールの単位)
+    /// 再生する長さと、コピーしたサンプルの長さの合計(タイムスケールの単位)
     seg: u64,
     media: u64,
     /// 先頭で捨てる長さ(最初にコピーしたサンプルの先頭から、区間の先頭まで)
     media_time: u64,
     stts: []const [2]u32,
-    sizes: []const u32,
-    chunk_offset: u64,
+    samples: []const Sample,
+    chunk_offset: u32,
 };
 
 fn writeMoov(b: *Builder, src: Source, m: Moov) Error!void {
     const moov = try b.begin("moov");
-    const mvhd = try beginTimes(b, "mvhd", src.rate, m.seg);
+    const mvhd = try beginTimes(b, "mvhd", src.timescale, m.seg);
     // 再生速度、音量、予約、行列、予約、次のトラックの番号
     try b.int(u32, 0x00010000);
     try b.int(u16, 0x0100);
@@ -289,7 +280,7 @@ fn writeMoov(b: *Builder, src: Source, m: Moov) Error!void {
             const orig_mdhd = try box.findPath(src.trak, &.{ "mdia", "mdhd" }) orelse return error.InvalidM4a;
             const lang_at: usize = if (orig_mdhd.body.len > 0 and orig_mdhd.body[0] == 1) 32 else 20;
             const lang = try box.int(u16, orig_mdhd.body, lang_at);
-            const mdhd = try beginTimes(b, "mdhd", src.rate, m.media);
+            const mdhd = try beginTimes(b, "mdhd", src.timescale, m.media);
             try b.int(u16, lang);
             try b.int(u16, 0);
             b.end(mdhd);
@@ -326,28 +317,20 @@ fn writeMoov(b: *Builder, src: Source, m: Moov) Error!void {
             try b.int(u32, 0);
             try b.int(u32, 1);
             try b.int(u32, 1);
-            try b.int(u32, @intCast(m.sizes.len));
+            try b.int(u32, @intCast(m.samples.len));
             try b.int(u32, 1);
             b.end(stsc);
             const stsz = try b.begin("stsz");
             try b.int(u32, 0);
             try b.int(u32, 0);
-            try b.int(u32, @intCast(m.sizes.len));
-            for (m.sizes) |s| try b.int(u32, s);
+            try b.int(u32, @intCast(m.samples.len));
+            for (m.samples) |smp| try b.int(u32, smp.size);
             b.end(stsz);
-            if (m.chunk_offset > std.math.maxInt(u32)) {
-                const co64 = try b.begin("co64");
-                try b.int(u32, 0);
-                try b.int(u32, 1);
-                try b.int(u64, m.chunk_offset);
-                b.end(co64);
-            } else {
-                const stco = try b.begin("stco");
-                try b.int(u32, 0);
-                try b.int(u32, 1);
-                try b.int(u32, @intCast(m.chunk_offset));
-                b.end(stco);
-            }
+            const stco = try b.begin("stco");
+            try b.int(u32, 0);
+            try b.int(u32, 1);
+            try b.int(u32, m.chunk_offset);
+            b.end(stco);
             b.end(stbl);
             b.end(minf);
         }
@@ -514,7 +497,7 @@ test Samples {
 
 test writeUdta {
     const gpa = std.testing.allocator;
-    const m: Moov = .{ .seg = 100, .media = 3072, .media_time = 1500, .stts = &.{}, .sizes = &.{}, .chunk_offset = 0 };
+    const m: Moov = .{ .seg = 100, .media = 3072, .media_time = 1500, .stts = &.{}, .samples = &.{}, .chunk_offset = 0 };
     // udta: chpl(ほかの子)と、meta(フルボックス)の中の hdlr、ilst(©nam と古い iTunSMPB)
     const name = "\x00\x00\x00\x19\xa9nam\x00\x00\x00\x11data\x00\x00\x00\x01\x00\x00\x00\x00a";
     const old = "\x00\x00\x00\x48----\x00\x00\x00\x1cmean\x00\x00\x00\x00com.apple.iTunes\x00\x00\x00\x14name\x00\x00\x00\x00iTunSMPB\x00\x00\x00\x10data\x00\x00\x00\x01\x00\x00\x00\x00";

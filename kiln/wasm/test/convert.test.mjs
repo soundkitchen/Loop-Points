@@ -85,20 +85,6 @@ test('ogg.trim(Opus)', async () => {
 test('ogg.trim(Vorbis)', async () => {
   const vorbis = await data('vorbis-stereo.ogg');   // 44.1kHz、22050 サンプル
   const t = kiln.ogg.trim(vorbis, { startSample: 5000, endSample: 15000 });
-
-test('m4a.trim', async () => {
-  const he = await data('aac-he-afconvert.m4a');   // HE-AAC、出力は 44.1kHz、22050 サンプル
-  const t = kiln.m4a.trim(he, { startSample: 5000, endSample: 15000 });
-  assert.deepEqual([t.startSample, t.endSample], [5000, 15000]);
-  const p = kiln.m4a.probe(t.data);
-  assert.deepEqual([p.codec, p.profile, p.samples, p.sampleRate, p.channels, p.trimmable], ['aac', 'he', 10000, 44100, 2, true]);
-  // 全体
-  const all = kiln.m4a.trim(await data('aac-lc-ffmpeg.m4a'));
-  assert.deepEqual([all.startSample, all.endSample, kiln.m4a.probe(all.data).samples], [0, 22050, 22050]);
-  // ALAC は切り出さない
-  const alac = await data('alac-afconvert.m4a');
-  assert.throws(() => kiln.m4a.trim(alac), { code: 'UnsupportedFormat' });
-});
   // 先頭はパケットの区切りに寄せる(指定以下)。末尾は区間どおり
   assert.ok(t.startSample <= 5000 && t.startSample > 5000 - 1024, `${t.startSample}`);
   assert.equal(t.endSample, 15000);
@@ -107,4 +93,24 @@ test('m4a.trim', async () => {
   // 全体
   const all = kiln.ogg.trim(vorbis);
   assert.deepEqual([all.startSample, all.endSample, kiln.ogg.probe(all.data).samples], [0, 22050, 22050]);
+});
+
+test('m4a.trim', async () => {
+  const he = await data('aac-he-afconvert.m4a');   // HE-AAC、出力は 44.1kHz、22050 サンプル。タイムスケールは中心の 22.05kHz
+  const t = kiln.m4a.trim(he, { startSample: 5000, endSample: 15000 });
+  assert.deepEqual([t.startSample, t.endSample], [5000, 15000]);
+  const p = kiln.m4a.probe(t.data);
+  assert.deepEqual([p.codec, p.profile, p.samples, p.sampleRate, p.channels, p.trimmable], ['aac', 'he', 10000, 44100, 2, true]);
+  // HE-AAC はタイムスケールの単位(2 サンプル)に寄せる。先頭は切り捨て、終わりは切り上げ
+  const odd = kiln.m4a.trim(he, { startSample: 5001, endSample: 15001 });
+  assert.deepEqual([odd.startSample, odd.endSample, kiln.m4a.probe(odd.data).samples], [5000, 15002, 10002]);
+  // AAC-LC はサンプル単位。全体
+  const lc = await data('aac-lc-ffmpeg.m4a');
+  const one = kiln.m4a.trim(lc, { startSample: 5001, endSample: 5002 });
+  assert.deepEqual([one.startSample, one.endSample, kiln.m4a.probe(one.data).samples], [5001, 5002, 1]);
+  const all = kiln.m4a.trim(lc);
+  assert.deepEqual([all.startSample, all.endSample, kiln.m4a.probe(all.data).samples], [0, 22050, 22050]);
+  // ALAC は切り出さない
+  const alac = await data('alac-afconvert.m4a');
+  assert.throws(() => kiln.m4a.trim(alac), { code: 'UnsupportedFormat' });
 });
