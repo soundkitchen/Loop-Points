@@ -211,6 +211,11 @@ export interface OggInfo {
   preSkip: number;
   /** 読めずに飛ばしたページ(CRC が合わない、途切れた、欠けた)の数 */
   invalidPages: number;
+  /**
+   * `ogg.trim` で切り出せるか。読めないページや欠けたページがあるものと、先頭の切り詰め(最初のページの
+   * グラニュール位置)のある Vorbis は切り出せない
+   */
+  trimmable: boolean;
 }
 
 /** AAC の種類。`he` は HE-AAC(SBR)、`hev2` は HE-AAC v2(SBR と PS)、`other` はそれ以外のオブジェクトタイプ */
@@ -266,9 +271,11 @@ export interface AacInfo {
 export interface Ogg {
   probe(input: BytesInput): OggInfo;
   /**
-   * 再エンコードせずにサンプル単位で切り出す。結果は Ogg のバイト列。今は Opus だけ(Vorbis は `UnsupportedFormat`)。
-   * 区間の前の 80ms と一緒にパケットをそのままコピーし、pre-skip と最後のページのグラニュール位置で前後の余分を捨てさせる。
-   * 読めないページや欠けたページがあるものは `InvalidOgg`
+   * 再エンコードせずに切り出す。結果は Ogg のバイト列。パケットをそのままコピーし、末尾の余分は最後のページの
+   * グラニュール位置で捨てさせる。読めないページや欠けたページがあるものは `InvalidOgg`。
+   * - Opus: サンプル単位。区間の前の 80ms と一緒にコピーし、先頭の余分は pre-skip で捨てさせる
+   * - Vorbis: 末尾はサンプル単位。先頭は、区間の先頭を含むパケットの区切りに寄せる(`start` は指定以下になる。
+   *   44.1kHz の oggenc なら最大 1024 サンプル前)。先頭の切り詰めのあるものは `UnsupportedFormat`
    */
   trim(input: BytesInput, options?: RangeOptions): RangeResult & { data: Uint8Array<ArrayBuffer> };
 }
@@ -731,6 +738,7 @@ export async function load(source: WasmBytes): Promise<Kiln> {
           duration: samples / sampleRate,
           preSkip: Number(e.kiln_value(5)),
           invalidPages: Number(e.kiln_value(6)),
+          trimmable: e.kiln_value(7) === 1n,
         };
       });
     },

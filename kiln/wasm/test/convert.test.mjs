@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// mp3 / wav / flac の切り出し・デコード・書き出しと、ogg(Opus)の切り出しの実行時テスト。wasm/kiln.ts、zig build でできた zig-out/kiln.wasm、testdata/ を読む。
+// mp3 / wav / flac の切り出し・デコード・書き出しと、ogg(Opus / Vorbis)の切り出しの実行時テスト。wasm/kiln.ts、zig build でできた zig-out/kiln.wasm、testdata/ を読む。
 // kiln.ts の Exports(wasm の export 関数の型)は wasm/main.zig を手で写したものなので、引数の数や並びがずれると
 // wasm は足りない引数を 0 として黙って動く。各経路を実際に呼び、結果を probe で確かめて、そのずれに気づけるようにする。
 // Loop Points のリポジトリ直下の `npm run kiln:test` で動く
@@ -80,7 +80,17 @@ test('ogg.trim(Opus)', async () => {
   // 秒でも指定できる。末尾は長さで切り詰める
   const s = kiln.ogg.trim(opus, { start: 0.25, end: 10 });
   assert.deepEqual([s.startSample, s.endSample, kiln.ogg.probe(s.data).samples], [12000, 24000, 12000]);
-  // Vorbis はまだ切り出せない
-  const vorbis = await data('vorbis-stereo.ogg');
-  assert.throws(() => kiln.ogg.trim(vorbis), (e) => e.code === 'UnsupportedFormat');
+});
+
+test('ogg.trim(Vorbis)', async () => {
+  const vorbis = await data('vorbis-stereo.ogg');   // 44.1kHz、22050 サンプル
+  const t = kiln.ogg.trim(vorbis, { startSample: 5000, endSample: 15000 });
+  // 先頭はパケットの区切りに寄せる(指定以下)。末尾は区間どおり
+  assert.ok(t.startSample <= 5000 && t.startSample > 5000 - 1024, `${t.startSample}`);
+  assert.equal(t.endSample, 15000);
+  const p = kiln.ogg.probe(t.data);
+  assert.deepEqual([p.codec, p.samples, p.sampleRate, p.channels, p.invalidPages], ['vorbis', 15000 - t.startSample, 44100, 2, 0]);
+  // 全体
+  const all = kiln.ogg.trim(vorbis);
+  assert.deepEqual([all.startSample, all.endSample, kiln.ogg.probe(all.data).samples], [0, 22050, 22050]);
 });

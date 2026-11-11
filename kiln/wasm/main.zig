@@ -373,14 +373,16 @@ export fn kiln_flac_trim(ptr: [*]const u8, len: usize, start: u64, end: u64, has
 
 /// Ogg(Vorbis / Opus)を解析する。成功すると kiln_value に
 /// 0: サンプルレート、1: チャンネル数、2: サンプル数、3: コーデック(0: Vorbis、1: Opus)、
-/// 4: エンコード前のサンプルレート(Opus。0 は不明)、5: pre-skip、6: 飛ばしたページの数を置く
+/// 4: エンコード前のサンプルレート(Opus。0 は不明)、5: pre-skip、6: 飛ばしたページの数、
+/// 7: 切り出せるか(0: いいえ、1: はい)を置く
 export fn kiln_ogg_probe(ptr: [*]const u8, len: usize) bool {
     const i = kiln.ogg.probe(ptr[0..len]) catch |err| return fail(err);
-    setValues(.{ i.sample_rate, i.channels, i.samples, @backingInt(i.codec), i.input_sample_rate, i.pre_skip, i.invalid_pages });
+    setValues(.{ i.sample_rate, i.channels, i.samples, @backingInt(i.codec), i.input_sample_rate, i.pre_skip, i.invalid_pages, @intFromBool(i.trimmable) });
     return true;
 }
 
-/// Ogg(今は Opus だけ)を、再エンコードせずに切り出す。start / end は再生位置のサンプル数(Opus は 48kHz)。
+/// Ogg(Opus / Vorbis)を、再エンコードせずに切り出す。start / end は再生位置のサンプル数(Opus は 48kHz)。
+/// Vorbis の start は、パケットの区切りに寄せた実際の切り始め。
 /// 成功すると出力を kiln_output_* に、kiln_value に 0: start、1: end、2: サンプルレートを置く
 export fn kiln_ogg_trim(ptr: [*]const u8, len: usize, start: u64, end: u64, has_end: bool) bool {
     kiln_output_free();

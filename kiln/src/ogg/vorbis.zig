@@ -231,6 +231,34 @@ pub fn blockSize(first: u8, id: Identification, modes: Modes) ?u16 {
     return id.blocksize[@intFromBool(modes.long[mode])];
 }
 
+/// 音声パケットの長さ(サンプル数)を順に数える。長さは、前のパケットのブロックの長さ / 4 + 今のパケットのブロックの長さ / 4
+pub const Counter = struct {
+    id: Identification,
+    modes: Modes,
+    /// 前の音声パケットのブロックの長さ。null はまだ音声パケットがない
+    prev: ?u16 = null,
+
+    /// 次のパケットの長さ。`first` はパケットの先頭のバイト(空のパケットは null)。
+    /// 音声パケットでなければ null(前のブロックの長さは変えない)。最初の音声パケットは 0
+    pub fn next(c: *Counter, first: ?u8) ?u64 {
+        const bs = blockSize(first orelse return null, c.id, c.modes) orelse return null;
+        defer c.prev = bs;
+        return if (c.prev) |p| p / 4 + bs / 4 else 0;
+    }
+};
+
+test Counter {
+    const id: Identification = .{ .channels = 1, .sample_rate = 44100, .blocksize = .{ 256, 2048 } };
+    var modes: Modes = .{ .count = 2, .long = @splat(false) };
+    modes.long[1] = true;
+    var c: Counter = .{ .id = id, .modes = modes };
+    try std.testing.expectEqual(0, c.next(0b10).?); // 長いブロック(最初は 0)
+    try std.testing.expectEqual(null, c.next(null)); // 空のパケット
+    try std.testing.expectEqual(null, c.next(1)); // 音声パケットではない
+    try std.testing.expectEqual(512 + 64, c.next(0b00).?); // 長い → 短い
+    try std.testing.expectEqual(128, c.next(0b00).?); // 短い → 短い
+}
+
 test ilog {
     try std.testing.expectEqual(0, ilog(0));
     try std.testing.expectEqual(1, ilog(1));

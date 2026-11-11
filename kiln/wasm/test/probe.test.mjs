@@ -22,12 +22,14 @@ test('ogg.probe', async () => {
     duration: 0.5,
     preSkip: 312,
     invalidPages: 0,
+    trimmable: true,
   });
   const v = kiln.ogg.probe(await data('vorbis-mono22k.ogg'));
   assert.equal(v.codec, 'vorbis');
   assert.equal(v.inputSampleRate, null);
   assert.equal(v.sampleRate, 22050);
   assert.equal(v.samples, 11025);
+  assert.equal(v.trimmable, true);
 });
 
 test('m4a.probe', async () => {

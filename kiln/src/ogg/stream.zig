@@ -105,6 +105,13 @@ pub fn opusSamples(input: []const u8, pk: Packet) u32 {
     return opus.packetSamples(pk.len, two[0], two[1]) orelse 0;
 }
 
+/// パケットの先頭のバイト(空のパケットは null)
+pub fn firstByte(input: []const u8, pk: Packet) ?u8 {
+    if (pk.len == 0) return null;
+    var r: page.PacketReader = .init(input, pk.page, pk.seg);
+    return r.byte();
+}
+
 /// テスト用: ストリームのパケットをすべて集める。返したものは呼び出し側が解放する
 pub fn collectAll(gpa: std.mem.Allocator, input: []const u8) ![]Packet {
     var first_it: page.Iterator = .{ .input = input };

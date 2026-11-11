@@ -1,18 +1,19 @@
 // SPDX-License-Identifier: MIT
-//! Ogg Opus の無劣化の切り出し(設計は docs/ogg.md §6)。
+//! Ogg(Opus / Vorbis)の無劣化の切り出し(設計は docs/ogg.md §6、§7)。
 //!
-//! 区間を含む音声パケットを、区間の前の 80ms(デコーダの状態がそろうまでの分)と一緒にそのままコピーし、
+//! Opus: 区間を含む音声パケットを、区間の前の 80ms(デコーダの状態がそろうまでの分)と一緒にそのままコピーし、
 //! ID ヘッダの pre-skip で先頭の余分を、最後のページのグラニュール位置で末尾の余分を捨てさせる(RFC 7845 §4.2、§4.5)。
-//! ページは作り直す(ページ番号・グラニュール位置・CRC)。serial とコメントヘッダは元のまま。
+//! Vorbis: 区間の先頭を含むパケットとその前のパケット(重ね合わせの相手)からコピーし、先頭はパケットの区切りに寄せる。
+//! 末尾は最後のページのグラニュール位置で捨てさせる(Vorbis I §A.2)。
+//! ページは作り直す(ページ番号・グラニュール位置・CRC)。serial とコメント・設定のヘッダは元のまま。
 const std = @import("std");
 const Io = std.Io;
 const page = @import("page.zig");
 const stream = @import("stream.zig");
+const vorbis = @import("vorbis.zig");
 
 /// 区間の前に残す長さ(48kHz のサンプル数)。RFC 7845 §4.6 が勧める 80ms
 pub const preroll: u64 = 3840;
-/// 1 ページに入れる音声の長さの目安(48kHz で 1 秒)。シークの細かさのため
-const page_samples: u64 = 48000;
 /// ID ヘッダの最大の長さ(19 バイト + ストリーム数などの 2 バイト + チャンネルの割り当て表 255)
 const max_head_len = 21 + 255;
 
@@ -22,12 +23,8 @@ pub const Error = error{ InvalidOgg, OutOfMemory, UnsupportedFormat } || Io.Writ
 /// `pre_skip` は入力の ID ヘッダの値、`lead` は先頭の切り詰めで pre-skip のほかに捨てる長さ(ogg.zig の analyze)。
 /// 範囲は呼び出し側が丸めておく(`start < end <= 長さ`)。パケットの数え方は probe と同じ(stream.Walker)
 pub fn opusTrim(gpa: std.mem.Allocator, input: []const u8, pre_skip: u16, lead: u64, start: u64, end: u64, w: *Io.Writer) Error!void {
-    var first_it: page.Iterator = .{ .input = input };
-    const first = first_it.next() orelse return error.InvalidOgg;
-    var walker: stream.Walker = .init(input, first);
-    var packets: std.ArrayList(stream.Packet) = .empty;
+    var packets = try collect(gpa, input);
     defer packets.deinit(gpa);
-    while (try walker.next()) |pk| try packets.append(gpa, pk);
     if (packets.items.len < 3) return error.InvalidOgg;
     const audio = packets.items[2..];
 
@@ -51,7 +48,7 @@ pub fn opusTrim(gpa: std.mem.Allocator, input: []const u8, pre_skip: u16, lead: 
     }
     const new_skip = std.math.cast(u16, s_idx - k_start) orelse return error.InvalidOgg;
 
-    var pw: PageWriter = try .init(gpa, w, first.serial);
+    var pw: PageWriter = try .init(gpa, w, packets.items[0].page.serial);
     defer pw.deinit();
 
     // ID ヘッダ(pre-skip だけ書き換える)とコメントヘッダ。どちらもそれだけでページを終える
@@ -70,14 +67,87 @@ pub fn opusTrim(gpa: std.mem.Allocator, input: []const u8, pre_skip: u16, lead: 
     const final_granule = std.math.cast(i64, @as(u64, new_skip) + (end - start)) orelse return error.InvalidOgg;
     var out_pos: u64 = 0;
     for (audio[k .. last + 1], k..) |pk, i| {
-        if (pw.packets > 0 and (pw.page_samples >= page_samples or pw.nseg + pk.len / 255 + 1 > 255)) try pw.flush(false);
         const n = stream.opusSamples(input, pk);
         out_pos += n;
         const granule = if (i == last) final_granule else std.math.cast(i64, out_pos) orelse return error.InvalidOgg;
-        try pw.packetFrom(input, pk, granule);
-        pw.page_samples += n;
+        try pw.audioPacket(input, pk, granule, n, 48000);
     }
     try pw.flush(true);
+}
+
+/// 再生位置 `[start, end)`(サンプル数)を切り出して `w` に書き、実際に切り始めた位置を返す。先頭は、区間の先頭を含む
+/// パケットの開始位置に寄せる(`start` 以下になる。ブラウザなどのデコーダが先頭の切り詰めを守らないため)。
+/// `counter` は解析で作った、数える前の状態。入力は先頭の切り詰めがないもの(ogg.zig の analyze の lead が 0)で、
+/// 再生位置はデコード結果の先頭からの位置と同じ。範囲は呼び出し側が丸めておく(`start < end <= 長さ`)
+pub fn vorbisTrim(gpa: std.mem.Allocator, input: []const u8, counter: vorbis.Counter, sample_rate: u32, start: u64, end: u64, w: *Io.Writer) Error!u64 {
+    var packets = try collect(gpa, input);
+    defer packets.deinit(gpa);
+    if (packets.items.len < 4) return error.InvalidOgg;
+    const audio = packets.items[3..];
+
+    // 区間の先頭を含むパケット(長さが 0 でなく、開始位置が start 以下の最後のもの)と、その前の音声パケット
+    // (重ね合わせの相手。これを最初に置くとデコーダは何も出さず、次のパケットから元と同じ値を出す)。
+    // 最後に使うパケットは、開始位置が end より前の最後のもの
+    var c = counter;
+    var head: ?usize = null;
+    var k: usize = 0;
+    var head_start: u64 = 0;
+    var last: usize = 0;
+    var prev_audio: ?usize = null;
+    var pos: u64 = 0;
+    for (audio, 0..) |pk, i| {
+        const n = c.next(stream.firstByte(input, pk)) orelse continue;
+        if (n > 0 and pos <= start) {
+            head = i;
+            head_start = pos;
+            k = prev_audio.?;
+        }
+        if (pos < end) last = i;
+        pos += n;
+        prev_audio = i;
+    }
+    if (head == null or last < head.?) return error.InvalidOgg;
+
+    var pw: PageWriter = try .init(gpa, w, packets.items[0].page.serial);
+    defer pw.deinit();
+
+    // 識別ヘッダだけの最初のページと、コメント・設定のヘッダ(音声は新しいページから始める)
+    try pw.packetFrom(input, packets.items[0], 0);
+    try pw.flush(false);
+    try pw.packetFrom(input, packets.items[1], 0);
+    try pw.packetFrom(input, packets.items[2], 0);
+    try pw.flush(false);
+
+    // 最初の音声パケット(何も出さない)は、それだけで 1 ページにする(グラニュール位置 0)。区間が短く音声が 1 ページに
+    // 収まると、末尾の切り詰めを Chromium と ffmpeg が守らないため
+    try pw.packetFrom(input, audio[k], 0);
+    try pw.flush(false);
+
+    // 音声。最後のページのグラニュール位置で末尾を切り詰める。最初のパケットと区間の先頭のパケットの間にある、
+    // 音声でないパケットもそのままコピーする
+    c = counter;
+    _ = c.next(stream.firstByte(input, audio[k]));
+    const final_granule = std.math.cast(i64, end - head_start) orelse return error.InvalidOgg;
+    var out_pos: u64 = 0;
+    for (audio[k + 1 .. last + 1], k + 1..) |pk, i| {
+        const n = c.next(stream.firstByte(input, pk)) orelse 0;
+        out_pos += n;
+        const granule = if (i == last) final_granule else std.math.cast(i64, out_pos) orelse return error.InvalidOgg;
+        try pw.audioPacket(input, pk, granule, n, sample_rate);
+    }
+    try pw.flush(true);
+    return head_start;
+}
+
+/// ストリームのパケットをすべて集める(数え方は解析と同じ)。返したものは呼び出し側が解放する
+fn collect(gpa: std.mem.Allocator, input: []const u8) Error!std.ArrayList(stream.Packet) {
+    var first_it: page.Iterator = .{ .input = input };
+    const first = first_it.next() orelse return error.InvalidOgg;
+    var walker: stream.Walker = .init(input, first);
+    var packets: std.ArrayList(stream.Packet) = .empty;
+    errdefer packets.deinit(gpa);
+    while (try walker.next()) |pk| try packets.append(gpa, pk);
+    return packets;
 }
 
 /// パケットを受け取ってページに詰め、`w` に書く。1 ページに入らないパケットは次のページへ続ける
@@ -113,6 +183,14 @@ pub const PageWriter = struct {
     pub fn packet(pw: *PageWriter, bytes: []const u8, granule: i64) Io.Writer.Error!void {
         try pw.write(bytes);
         try pw.endPacket(granule);
+    }
+
+    /// 音声パケットを足す。`n` はパケットの長さ(サンプル数)。1 ページにはおよそ 1 秒(`rate` サンプル)ずつ入れる
+    /// (シークの細かさのため)。表に入りきらなければ、パケットの前でページを終える
+    pub fn audioPacket(pw: *PageWriter, input: []const u8, pk: stream.Packet, granule: i64, n: u64, rate: u64) Io.Writer.Error!void {
+        if (pw.packets > 0 and (pw.page_samples >= rate or pw.nseg + pk.len / 255 + 1 > 255)) try pw.flush(false);
+        try pw.packetFrom(input, pk, granule);
+        pw.page_samples += n;
     }
 
     /// 入力の中のパケットを、ページをまたいで読みながら足す
