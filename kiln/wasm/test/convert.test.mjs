@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// mp3 / wav / flac の切り出し・デコード・書き出しと、ogg(Opus / Vorbis)の切り出しの実行時テスト。wasm/kiln.ts、zig build でできた zig-out/kiln.wasm、testdata/ を読む。
+// mp3 / wav / flac の切り出し・デコード・書き出しと、ogg(Opus / Vorbis)と m4a(AAC)の切り出しの実行時テスト。wasm/kiln.ts、zig build でできた zig-out/kiln.wasm、testdata/ を読む。
 // kiln.ts の Exports(wasm の export 関数の型)は wasm/main.zig を手で写したものなので、引数の数や並びがずれると
 // wasm は足りない引数を 0 として黙って動く。各経路を実際に呼び、結果を probe で確かめて、そのずれに気づけるようにする。
 // Loop Points のリポジトリ直下の `npm run kiln:test` で動く
@@ -93,4 +93,24 @@ test('ogg.trim(Vorbis)', async () => {
   // 全体
   const all = kiln.ogg.trim(vorbis);
   assert.deepEqual([all.startSample, all.endSample, kiln.ogg.probe(all.data).samples], [0, 22050, 22050]);
+});
+
+test('m4a.trim', async () => {
+  const he = await data('aac-he-afconvert.m4a');   // HE-AAC、出力は 44.1kHz、22050 サンプル。タイムスケールは中心の 22.05kHz
+  const t = kiln.m4a.trim(he, { startSample: 5000, endSample: 15000 });
+  assert.deepEqual([t.startSample, t.endSample], [5000, 15000]);
+  const p = kiln.m4a.probe(t.data);
+  assert.deepEqual([p.codec, p.profile, p.samples, p.sampleRate, p.channels, p.trimmable], ['aac', 'he', 10000, 44100, 2, true]);
+  // HE-AAC はタイムスケールの単位(2 サンプル)に寄せる。先頭は切り捨て、終わりは切り上げ
+  const odd = kiln.m4a.trim(he, { startSample: 5001, endSample: 15001 });
+  assert.deepEqual([odd.startSample, odd.endSample, kiln.m4a.probe(odd.data).samples], [5000, 15002, 10002]);
+  // AAC-LC はサンプル単位。全体
+  const lc = await data('aac-lc-ffmpeg.m4a');
+  const one = kiln.m4a.trim(lc, { startSample: 5001, endSample: 5002 });
+  assert.deepEqual([one.startSample, one.endSample, kiln.m4a.probe(one.data).samples], [5001, 5002, 1]);
+  const all = kiln.m4a.trim(lc);
+  assert.deepEqual([all.startSample, all.endSample, kiln.m4a.probe(all.data).samples], [0, 22050, 22050]);
+  // ALAC は切り出さない
+  const alac = await data('alac-afconvert.m4a');
+  assert.throws(() => kiln.m4a.trim(alac), { code: 'UnsupportedFormat' });
 });

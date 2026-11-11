@@ -245,6 +245,12 @@ export interface M4aInfo {
   encoderDelay: number;
   /** AAC の AudioSpecificConfig(WebCodecs の AudioDecoder の `description` に使える)。ALAC は空 */
   audioSpecificConfig: Uint8Array<ArrayBuffer>;
+  /**
+   * `m4a.trim` で切り出せるか。ALAC、HE-AAC v2(PS。途中から復号すると左右が元と違う)、SBR や PS の有無が
+   * 分からない AAC、タイムスケールがサンプルレートの整数分の 1 でないもの、遅延と長さがメディアに収まらない編集リスト、
+   * 空の編集や複数の編集のある編集リスト、サンプルの説明が複数あるもの、stz2、データが途中で切れているものは切り出せない
+   */
+  trimmable: boolean;
 }
 
 export interface AacInfo {
@@ -282,6 +288,15 @@ export interface Ogg {
 
 export interface M4a {
   probe(input: BytesInput): M4aInfo;
+  /**
+   * AAC を再エンコードせずに切り出す。結果は m4a のバイト列。メディアのタイムスケールの単位で区間どおりになる
+   * (AAC-LC はサンプル単位。中心のレートのタイムスケールの HE-AAC は 2 サンプル単位で、`start` は指定以下、`end` は
+   * 指定以上に寄せる)。区間を含むフレームを前の 2 フレームと
+   * 後ろの 1 フレーム(入力の末尾で足りなければ最後のフレームを繰り返す)と一緒にコピーし、前後の余分は
+   * 編集リスト(elst)と iTunSMPB の両方で捨てさせる。
+   * 切り出せないもの(`trimmable` が false)は `UnsupportedFormat`
+   */
+  trim(input: BytesInput, options?: RangeOptions): RangeResult & { data: Uint8Array<ArrayBuffer> };
 }
 
 export interface Aac {
@@ -297,9 +312,9 @@ export interface Kiln {
   readonly wav: Wav;
   /** FLAC の解析、切り出し、デコード、書き出し */
   readonly flac: Flac;
-  /** Ogg(Vorbis / Opus)の解析 */
+  /** Ogg(Vorbis / Opus)の解析と切り出し */
   readonly ogg: Ogg;
-  /** m4a(AAC / ALAC)の解析 */
+  /** m4a(AAC / ALAC)の解析と、AAC の切り出し */
   readonly m4a: M4a;
   /** aac(ADTS)の解析 */
   readonly aac: Aac;
@@ -356,6 +371,7 @@ interface Exports {
   kiln_ogg_probe: ProbeExport;
   kiln_ogg_trim: RangeExport;
   kiln_m4a_probe: ProbeExport;
+  kiln_m4a_trim: RangeExport;
   kiln_aac_probe: ProbeExport;
 }
 
@@ -772,8 +788,13 @@ export async function load(source: WasmBytes): Promise<Kiln> {
           duration: samples / sampleRate,
           encoderDelay: Number(e.kiln_value(7)),
           audioSpecificConfig,
+          trimmable: e.kiln_value(9) === 1n,
         };
       });
+    },
+
+    trim(input, options = {}) {
+      return trimWith(e.kiln_m4a_probe, e.kiln_m4a_trim, input, options);
     },
   };
 

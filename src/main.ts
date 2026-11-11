@@ -505,9 +505,10 @@ addEventListener('drop', (e) => {
 
 // 開いている音源で選べる形式を入れる。kiln で調べ終わるまでは拡張子から決め、選べないようにする
 function updateOutFormats() {
-  // 調べる前の仮の形式。.ogg は中身が何か (Opus、Vorbis、そのほか) 分からないので、元の形式は出さない (kiln で調べてから出す)
+  // 調べる前の仮の形式。.ogg と .m4a は中身が何か (Opus か Vorbis か、AAC か ALAC かなど) 分からないので、
+  // 元の形式は出さない (kiln で調べてから出す)
   const ext = extFormat(name);
-  const formats = cropSource?.formats ?? formatsFor(ext === 'ogg' ? null : ext);
+  const formats = cropSource?.formats ?? formatsFor(ext === 'ogg' || ext === 'm4a' ? null : ext);
   outFormat.replaceChildren(...formats.map((f) => new Option(OUT_FORMATS[f].label, f)));
   outFormat.disabled = formats.length < 2 || !cropSource;
 }
