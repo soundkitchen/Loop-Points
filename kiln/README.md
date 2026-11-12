@@ -35,7 +35,7 @@ zig build test       # コアのテスト(wasm のビルドも含む)
 
 ## Loop Points からの使い方
 
-Loop Points は JS 側の包みの `wasm/kiln.ts`(TypeScript)をソースから直接 import し、`zig-out/kiln.wasm` を Vite の `?url&inline` でチャンクに埋め込んで、バイト列で `load` に渡します(`src/cropRender.ts`)。CSP の `connect-src 'none'` で fetch を止めているので、`load` は URL を受け取らず、バイト列だけを受け取ります。wasm を動かすには、CSP の `script-src` に `'wasm-unsafe-eval'` が要ります。
+Loop Points は JS 側の包みの `wasm/kiln.ts`(TypeScript)をソースから直接 import し、`zig-out/kiln.wasm` を Vite の `?url&inline` でチャンクに埋め込んで、バイト列で `load` に渡します(`src/kilnLoader.ts`)。CSP の `connect-src 'none'` で fetch を止めているので、`load` は URL を受け取らず、バイト列だけを受け取ります。wasm を動かすには、CSP の `script-src` に `'wasm-unsafe-eval'` が要ります。
 
 ```js
 import { load, KilnError } from '../kiln/wasm/kiln';

@@ -1,4 +1,4 @@
-// 音源の一部を、指定の形式のファイルにする。kiln (kiln/) を使い、main からはクロップモードに切り替えたときに読み込む
+// 音源の一部を、指定の形式のファイルにする。kiln (kilnLoader.ts) を使い、main からはクロップモードに切り替えたときに読み込む
 //   mp3 → mp3: 再エンコードせずにサンプル単位で切り出す
 //   mp3 → WAV: kiln でデコードして 16-bit で書く (元のサンプルレートのまま)
 //   FLAC → FLAC: FLAC のまま切り出す (可逆。区間の先頭と末尾にかかるフレームだけ作り直す)
@@ -9,43 +9,13 @@
 //     タイムスケールは元のままで、HE-AAC は 2 サンプル単位)
 //   WAV → WAV: 元の形式のままバイト列を切り出す
 //   ほかの形式 → WAV: ブラウザでデコードし、kiln で 16-bit で書く (元のレートが分かればそのレート)
-import { KilnError, load, type FlacInfo, type Kiln, type KilnErrorCode, type M4aInfo, type Mp3Info, type OggInfo, type WavInfo } from '../kiln/wasm/kiln';
-// CSP の connect-src 'none' では fetch で wasm を読めない (data: URL も止まる) ので、チャンクに埋め込んでバイト列で渡す
-import kilnWasm from '../kiln/zig-out/kiln.wasm?url&inline';
+import type { FlacInfo, M4aInfo, Mp3Info, OggInfo, WavInfo } from '../kiln/wasm/kiln';
 import { OUT_FORMATS, extFormat, formatsFor, isOgg, type OutFormat } from './cropFormat';
-import { sampleRateOf, startsWith } from './sampleRate';
+import { loadKiln } from './kilnLoader';
+import { sampleRateOf } from './sampleRate';
+import { probeSource } from './sourceRate';
 
 const WAV_SAMPLE_FORMAT = 'i16';
-
-function toBytes(dataUrl: string): Uint8Array<ArrayBuffer> {
-  const text = atob(dataUrl.slice(dataUrl.indexOf(',') + 1));
-  const bytes = new Uint8Array(text.length);
-  for (let i = 0; i < text.length; i++) bytes[i] = text.charCodeAt(i);
-  return bytes;
-}
-
-// 一度読み込んだら使い回す。失敗したときは残さず、次に調べるときに読み直す
-let kiln: Promise<Kiln> | null = null;
-function loadKiln(): Promise<Kiln> {
-  if (!kiln) {
-    const loading = load(toBytes(kilnWasm));
-    loading.catch(() => { if (kiln === loading) kiln = null; });
-    kiln = loading;
-  }
-  return kiln;
-}
-
-const NOT_READABLE = new Set<KilnErrorCode>(['NotMp3', 'NotWav', 'NotFlac', 'NotOgg', 'NotM4a', 'UnsupportedFormat', 'InvalidWav', 'InvalidFlac', 'InvalidOgg', 'InvalidM4a']);
-
-// kiln が扱えない入力 (MPEG-2 の mp3、壊れた FLAC など) なら null。それ以外のエラーはそのまま投げる
-function probe<T>(read: () => T): T | null {
-  try {
-    return read();
-  } catch (e) {
-    if (e instanceof KilnError && NOT_READABLE.has(e.code)) return null;
-    throw e;
-  }
-}
 
 // 書き出す前に調べた音源。書き出しは、元のファイルを読み直さずにこのバイト列を使う。
 // 保存先に元の音源を選ぶと、保存先を選んだ時点で Chromium がそのファイルを空にして、読めなくなるため
@@ -67,22 +37,15 @@ export interface CropSource {
 export async function inspect(file: File, decoded: AudioBuffer): Promise<CropSource> {
   const k = await loadKiln();
   const bytes = new Uint8Array(await file.arrayBuffer());
-  // 中身で判定する。mp3 はフレームの同期を探すので、ほかの形式を読み違えないよう拡張子が .mp3 のものに限る
-  const wav = startsWith(bytes, 0, 'RIFF') ? probe(() => k.wav.probe(bytes)) : null;
-  const mp3 = !wav && extFormat(file.name) === 'mp3' ? probe(() => k.mp3.probe(bytes)) : null;
-  // FLAC は拡張子によらず調べる。flac.probe は ID3v2 タグを飛ばし、FLAC でなければフレームを読まずに NotFlac を返す。
-  // FLAC ならすべてのフレームを走査するので、大きなファイルでは少し時間がかかる
-  const flac = !wav && !mp3 ? probe(() => k.flac.probe(bytes)) : null;
+  const { wav, mp3, flac, ogg: oggInfo, m4a: m4aInfo } = probeSource(k, file.name, bytes);
   // ブラウザは decoded を AudioContext のレートに変換しているので、そのレートのサンプル数で比べる (変換の丸めの分は許す)
   const sameLength = (samples: number, sampleRate: number) => Math.abs(decoded.length - (samples * decoded.sampleRate) / sampleRate) <= 2;
   const lengthMismatch = flac !== null && !sameLength(flac.samples, flac.sampleRate);
   // Ogg は、kiln が切り出せる (trimmable。読めないページがなく、先頭の切り詰めのある Vorbis でない) うえで、
   // ブラウザと長さが合うときだけ元の形式のまま切り出す。それ以外は WAV だけにする (WAV はブラウザのデコードから
   // 書くので、波形の位置とずれない)
-  const oggInfo = !wav && !mp3 && !flac ? probe(() => k.ogg.probe(bytes)) : null;
   const ogg = oggInfo?.trimmable && sameLength(oggInfo.samples, oggInfo.sampleRate) ? oggInfo : null;
   // m4a も同じ。kiln が切り出せるのは AAC で、ALAC (ブラウザで開けない) と HE-AAC v2 などは WAV だけになる
-  const m4aInfo = !wav && !mp3 && !flac && !oggInfo ? probe(() => k.m4a.probe(bytes)) : null;
   const m4a = m4aInfo?.trimmable && sameLength(m4aInfo.samples, m4aInfo.sampleRate) ? m4aInfo : null;
   const native: OutFormat | null = mp3 ? 'mp3' : flac ? 'flac' : ogg ? (ogg.codec === 'opus' && extFormat(file.name) === 'opus' ? 'opus' : 'ogg') : m4a ? 'm4a' : null;
   return { file, formats: formatsFor(native), mp3Start: mp3 ? mp3.minStart / mp3.sampleRate : 0, bytes, wav, mp3, flac, ogg, m4a, lengthMismatch };
