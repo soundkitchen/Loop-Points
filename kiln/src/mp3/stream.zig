@@ -93,25 +93,33 @@ const First = union(enum) {
 /// フレームが続くこと(またはフレームが入力の終わりまでぴったり収まること)を確かめる。
 /// 先に MPEG-1 Layer III 以外の MPEG オーディオのフレームが見つかったら `UnsupportedFormat`
 fn findFirstFrame(data: []const u8, start: usize) Error!usize {
-    return switch (findFirst(data, start) orelse return error.NotMp3) {
+    return switch (findFirst(data, start, data.len) orelse return error.NotMp3) {
         .layer3 => |pos| pos,
         .other => error.UnsupportedFormat,
     };
 }
 
+/// `headerSampleRate` が最初のフレームを探す範囲(先頭の ID3v2 タグの後ろから数えたバイト数)
+pub const header_search_len = 64 * 1024;
+
 /// 最初のフレームのヘッダに書かれたサンプルレート。先頭の ID3v2 タグは飛ばす。MPEG-1 Layer III 以外の
 /// MPEG オーディオ(kiln が扱わない MPEG-2 / 2.5 など)でも読む。後ろのフレームは見ないので、入力が
-/// ファイルの先頭の一部でもよい。フレームが見つからなければ null(タグが入力より長いときも)
+/// ファイルの先頭の一部でもよい。フレームが見つからなければ null(タグが入力より長いときも)。
+/// 最初のフレームは、タグの後ろの `header_search_len` バイトの中でだけ探す。解析(`Stream.parse`)は入力の
+/// 終わりまで探すが、ここは形式の判定(`kiln.detect`)に使うので、MP3 でない入力の奥で、偶然フレームに
+/// 見える並びを拾わないようにする(確かめるのは、次の位置にも同じ種類のヘッダがあることだけ)
 pub fn headerSampleRate(data: []const u8) ?u32 {
-    return switch (findFirst(data, id3.skipTags(data)) orelse return null) {
+    const start = id3.skipTags(data);
+    return switch (findFirst(data, start, start +| header_search_len) orelse return null) {
         .layer3 => |pos| Header.parse(data[pos..]).?.sampleRate(),
         .other => |rate| rate,
     };
 }
 
-fn findFirst(data: []const u8, start: usize) ?First {
+/// `start` 以上 `end` 未満の位置から始まる、最初のフレーム(続くフレームは `end` より後ろでも読む)
+fn findFirst(data: []const u8, start: usize, end: usize) ?First {
     var pos = start;
-    while (pos + 4 <= data.len) : (pos += 1) {
+    while (pos + 4 <= data.len and pos < end) : (pos += 1) {
         if (!syncCandidate(data[pos..])) continue;
         if (Header.parse(data[pos..])) |h| {
             const next = pos + h.frameLen();

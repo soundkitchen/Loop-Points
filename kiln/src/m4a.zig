@@ -58,11 +58,13 @@ pub fn probe(input: []const u8) ParseError!Info {
 /// moov の最初の音声トラックの説明に書かれた、デコード結果のサンプルレート(HE-AAC は SBR の後のレート。
 /// `kiln.detect` に使う)。サンプルの表や mdat は見ないので、kiln が切り出せない m4a でも、moov が入っていれば
 /// 入力がファイルの先頭の一部でも読める。SBR があるか分からない AAC は null(レートが実際の半分のことがある)。
-/// moov が入力に入っていない、音声トラックがない、説明が読めないときはエラー
+/// moov が入力に入っていない、音声トラックがない、説明が読めない(AAC でも ALAC でもないコーデックも)ときはエラー
 pub fn headerSampleRate(input: []const u8) ParseError!?u32 {
     if (!hasSignature(input)) return error.NotM4a;
     var top: box.Iterator = .{ .data = input };
-    // 入力が moov の前や途中で切れていると、そこで InvalidM4a になる
+    // 最初の moov を使う。解析の `findMoov` と違い、moov の後ろは見ない(後ろの moof で断片化した MP4 と分かっても、
+    // moov が 2 つあっても、レートは最初の moov の説明から読める)。入力が moov の前や途中で切れていると、
+    // そこで InvalidM4a になる
     const moov = while (try top.next()) |b| {
         if (b.is("moov")) break b;
     } else return error.InvalidM4a;
@@ -229,8 +231,6 @@ pub fn trimAlloc(gpa: std.mem.Allocator, input: []const u8, options: TrimOptions
     return .{ .data = try out.toOwnedSlice(), .start = r.start, .end = r.end, .sample_rate = r.sample_rate };
 }
 
-/// 最上位のボックスから `moov` を探す。`moof` があれば断片化した MP4。
-/// 最後のボックス(多くは `mdat`)が途切れていても、`moov` を読めていれば構わない
 /// 音声のトラックか。読めないトラック(ボックスの長さが壊れているなど)は false
 fn isSoundTrack(trak: box.Box) bool {
     const hdlr = (box.findPath(trak.body, &.{ "mdia", "hdlr" }) catch null) orelse return false;
@@ -250,6 +250,8 @@ fn trackMedia(trak: box.Box) ParseError!TrackMedia {
     return .{ .timescale = timescale, .stbl = stbl };
 }
 
+/// 最上位のボックスから `moov` を探す。`moof` があれば断片化した MP4。
+/// 最後のボックス(多くは `mdat`)が途切れていても、`moov` を読めていれば構わない
 fn findMoov(input: []const u8) ParseError!box.Box {
     var it: box.Iterator = .{ .data = input };
     var moov: ?box.Box = null;

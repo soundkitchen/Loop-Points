@@ -60,10 +60,12 @@ pub const Detected = struct {
 ///
 /// WAV は先頭のバイト列(RIFF / RF64 / RIFX と WAVE)で、FLAC は先頭(ID3v2 タグがあればその後)の `fLaC` か
 /// Ogg FLAC の印で、Ogg は先頭の `OggS` で、m4a は先頭の `ftyp` ボックスで、aac は先頭(ID3v2 タグがあれば
-/// その後)に ADTS のフレームが続くことで判定し、それ以外は MPEG オーディオのフレームを探す(先頭にゴミがある
-/// MP3 も、MP3 の解析と同じく受け付ける)。どれでもなければ null。
-/// kiln が扱えない種類(MPEG-2 の MP3、μ-law の WAV、連結した Ogg、ALAC 以外の MP4 など)もその形式を返し、
-/// レートもヘッダーから読む(ブラウザはデコードできることがある)。詳しいエラーは各形式の解析で出す
+/// その後)に ADTS のフレームが続くことで判定し、それ以外は MPEG オーディオのフレームを探す。先頭にゴミがある
+/// MP3 も受け付けるが、MP3 の解析と違い、最初のフレームは先頭(ID3v2 タグの後ろ)の 64KiB の中でだけ探す
+/// (MP3 でない入力の奥で、偶然フレームに見える並びを拾わないため)。どれでもなければ null。
+/// kiln が扱えない種類(MPEG-2 の MP3、μ-law の WAV、連結した Ogg、HE-AAC v2 の m4a など)もその形式を返し、
+/// レートもヘッダーから読む(ブラウザはデコードできることがある)。m4a のうち AAC でも ALAC でもないコーデック
+/// (MP4 の Opus や FLAC)は、形式は m4a で、レートは null。詳しいエラーは各形式の解析で出す
 pub fn detect(input: []const u8) ?Detected {
     if (input.len >= 12 and std.mem.eql(u8, input[8..12], "WAVE")) {
         const riff = input[0..4];
@@ -126,6 +128,16 @@ test detect {
     @memset(junk[0..16], 0);
     @memcpy(junk[16..], testdata.cbr128_lame);
     try expectDetected(.mp3, 44100, &junk);
+    // ただし、最初のフレームは先頭(ID3v2 タグの後ろ)の 64KiB の中でだけ探す(解析は入力の終わりまで探す)
+    const far = try std.testing.allocator.alloc(u8, mp3.header_search_len + testdata.cbr128_lame.len);
+    defer std.testing.allocator.free(far);
+    @memset(far, 0);
+    @memcpy(far[mp3.header_search_len - 1 ..][0..testdata.cbr128_lame.len], testdata.cbr128_lame);
+    try expectDetected(.mp3, 44100, far[0 .. far.len - 1]);
+    @memset(far, 0);
+    @memcpy(far[mp3.header_search_len..], testdata.cbr128_lame);
+    try std.testing.expectEqual(null, detect(far));
+    try std.testing.expectEqual(44100, (try mp3.probe(far)).sample_rate);
     // 先頭が同期ワードでも、フレームが続かなければ MP3 ではない
     try std.testing.expectEqual(null, detect("\xFF\xFB\x90\x64abc"));
     try std.testing.expectEqual(null, detect(""));

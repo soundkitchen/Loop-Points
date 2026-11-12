@@ -80,7 +80,8 @@ const nch = try dec.decodeFrame(frame_bytes, &pcm); // pcm: [2][1152]f32。扱�
 
 `kiln.detect(input)` は、入力のヘッダーから形式(`Format`)とデコード結果のサンプルレートを読み、`?Detected`(`format` と `sample_rate: ?u32`)を返す。Loop Points が、音源を開くたびに元のサンプルレートを知るのに使う([`draft.md`](draft.md) §2.14)。
 
-- **形式の判定**: 拡張子は見ない。WAV は先頭のバイト列(RIFF / RF64 / RIFX と WAVE)、FLAC は先頭(ID3v2 タグがあればその後)の `fLaC` か Ogg FLAC の印、Ogg は先頭の `OggS`、m4a は先頭の `ftyp` ボックス、aac は先頭(ID3v2 タグがあればその後)に ADTS のフレームが続くことで判定し、それ以外は MPEG オーディオのフレームを探す(先頭にゴミがある MP3 も、MP3 の解析と同じく受け付ける)。ADTS は MP3 と同期ワードが似ているので、MP3 より先に見る。どれでもなければ null
+- **形式の判定**: 拡張子は見ない。WAV は先頭のバイト列(RIFF / RF64 / RIFX と WAVE)、FLAC は先頭(ID3v2 タグがあればその後)の `fLaC` か Ogg FLAC の印、Ogg は先頭の `OggS`、m4a は先頭の `ftyp` ボックス、aac は先頭(ID3v2 タグがあればその後)に ADTS のフレームが続くことで判定し、それ以外は MPEG オーディオのフレームを探す。ADTS は MP3 と同期ワードが似ているので、MP3 より先に見る。どれでもなければ null
+- **MP3 のフレームを探す範囲**: MP3 には先頭の印がなく、フレームの並び(次の位置にも同じ種類のヘッダがあること)で判定する。先頭にゴミがある MP3 も受け付けるが、解析(`mp3.probe`)が入力の終わりまで探すのと違い、最初のフレームは先頭(ID3v2 タグの後ろ)の 64KiB(`mp3.header_search_len`)の中でだけ探す。MP3 でない入力の奥(圧縮された音声のデータなど)で、偶然フレームに見える並びを拾わないため。それでも誤って MP3 と判定することはありうるので、Loop Points は、拡張子が .mp3 のときだけ MP3 の判定を使う
 - **ヘッダーだけを読む**: 音声のデータはたどらない(`probe` と違い、フレームやページを走査しない)。そのため軽く、入力はファイルの先頭の一部でもよい。先頭の一部を渡して形式かレートが読めなかったときは、全体を渡すと読めることがある(大きな ID3v2 タグの後ろの MP3 や FLAC、moov が後ろにある m4a、`fmt ` が後ろにある WAV)。足りないことを知らせるエラーはなく、呼ぶ側が「レートが null なら全体を渡し直す」と決める
 - **kiln が扱えない種類も読む**: 形式ごとの解析や切り出しが `UnsupportedFormat` や `Invalid…` にするものでも、ヘッダーのレートは返す(ブラウザはデコードできることがある)。詳しいエラーは各形式の解析で出す
 
@@ -89,9 +90,9 @@ const nch = try dec.decodeFrame(frame_bytes, &pcm); // pcm: [2][1152]f32。扱�
 | WAV | `fmt ` チャンク。符号化の種類は見ず、`data` チャンクも要らない | RF64、ビッグエンディアンの RIFX、μ-law / A-law、ADPCM など | `fmt ` が入力にない、レートが 0 |
 | FLAC | 最初のメタデータブロックの STREAMINFO だけ(`metadata.Metadata.streamInfo`) | 後ろのメタデータやフレームが壊れたもの | Ogg FLAC、最初のブロックが STREAMINFO でない、レートが 0 |
 | Ogg | 最初のページの識別ヘッダ。Vorbis はヘッダの値、Opus は常に 48000 | 連結、多重化、壊れたページのあるもの | Vorbis でも Opus でもない(Speex など)、識別ヘッダが読めない |
-| m4a | moov の最初の音声トラックのサンプルエントリ(HE-AAC は SBR の後のレート。ALAC も読む)。サンプルの表や mdat は見ない | HE-AAC v2、断片化した MP4(moov の後ろの moof は見ない)、サンプルの表が食い違うもの | SBR があるか分からない AAC(レートが実際の半分のことがある)、moov が入力にない、音声トラックがない |
+| m4a | 最初の moov の、最初の音声トラックのサンプルエントリ(HE-AAC は SBR の後のレート。ALAC も読む)。サンプルの表や mdat は見ない | HE-AAC v2、断片化した MP4(解析の `findMoov` と違い、moov の後ろの moof は見ない)、サンプルの表が食い違うもの | SBR があるか分からない AAC(レートが実際の半分のことがある)、AAC でも ALAC でもないコーデック(MP4 の Opus や FLAC)、moov が入力にない、音声トラックがない |
 | aac(ADTS) | 読まない | — | いつも null(ヘッダーから HE-AAC かどうかが分からない。[`aac.md`](aac.md) §3) |
-| MP3 | 先頭の ID3v2 タグの後ろの、最初のフレームのヘッダ(`mp3/stream.zig` の `headerSampleRate`。フレームの見つけ方は解析と同じ) | MPEG-2 / 2.5、Layer I / II(`AnyHeader` のレート) | フレームが見つからないときは、形式ごと null |
+| MP3 | 先頭の ID3v2 タグの後ろの、最初のフレームのヘッダ(`mp3/stream.zig` の `headerSampleRate`。フレームの確かめ方は解析と同じで、探す範囲だけ 64KiB に限る) | MPEG-2 / 2.5、Layer I / II(`AnyHeader` のレート) | フレームが見つからないときは、形式ごと null |
 
 ### 2.3 wasm と JS
 
