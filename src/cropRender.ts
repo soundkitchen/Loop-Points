@@ -12,10 +12,9 @@
 import { KilnError, type FlacInfo, type Kiln, type KilnErrorCode, type M4aInfo, type Mp3Info, type OggInfo, type WavInfo } from '../kiln/wasm/kiln';
 import { OUT_FORMATS, extFormat, formatsFor, isOgg, type OutFormat } from './cropFormat';
 import { loadKiln } from './kilnLoader';
+import { sourceFormat } from './sourceRate';
 
 const WAV_SAMPLE_FORMAT = 'i16';
-
-const startsWith = (d: Uint8Array, at: number, s: string) => [...s].every((c, i) => d[at + i] === c.charCodeAt(0));
 
 const NOT_READABLE = new Set<KilnErrorCode>(['NotMp3', 'NotWav', 'NotFlac', 'NotOgg', 'NotM4a', 'UnsupportedFormat', 'InvalidWav', 'InvalidFlac', 'InvalidOgg', 'InvalidM4a']);
 
@@ -29,7 +28,7 @@ function probe<T>(read: () => T): T | null {
   }
 }
 
-// kiln で読めた形式の情報。入るのは 1 つだけで、どれでも読めなければすべて null
+// kiln で読めた形式の情報。入るのは 1 つだけで、読めなければすべて null
 interface Probed {
   wav: WavInfo | null;
   mp3: Mp3Info | null;
@@ -39,15 +38,19 @@ interface Probed {
 }
 
 function probeSource(k: Kiln, fileName: string, bytes: Uint8Array<ArrayBuffer>): Probed {
-  // 中身で判定する。mp3 はフレームの同期を探すので、ほかの形式を読み違えないよう拡張子が .mp3 のものに限る
-  const wav = startsWith(bytes, 0, 'RIFF') ? probe(() => k.wav.probe(bytes)) : null;
-  const mp3 = !wav && extFormat(fileName) === 'mp3' ? probe(() => k.mp3.probe(bytes)) : null;
-  // FLAC は拡張子によらず調べる。flac.probe は ID3v2 タグを飛ばし、FLAC でなければフレームを読まずに NotFlac を返す。
-  // FLAC ならすべてのフレームを走査するので、大きなファイルでは少し時間がかかる
-  const flac = !wav && !mp3 ? probe(() => k.flac.probe(bytes)) : null;
-  const ogg = !wav && !mp3 && !flac ? probe(() => k.ogg.probe(bytes)) : null;
-  const m4a = !wav && !mp3 && !flac && !ogg ? probe(() => k.m4a.probe(bytes)) : null;
-  return { wav, mp3, flac, ogg, m4a };
+  // 形式は kiln の detect で判定し (sourceRate.ts。音源を開くときと同じ判定)、その形式の解析だけを呼ぶ。解析は、呼ぶたびに
+  // 音源をまるごと wasm のメモリに写すので、合う形式を探して順に試さない。
+  // 判定できなかったときは、拡張子が .mp3 なら mp3 の解析を試す。detect は mp3 の最初のフレームを先頭の近くでしか探さないが、
+  // 解析は終わりまで探すので、先頭に大きなゴミがある mp3 も読める
+  const format = sourceFormat(k, fileName, bytes) ?? (extFormat(fileName) === 'mp3' ? 'mp3' : null);
+  return {
+    wav: format === 'wav' ? probe(() => k.wav.probe(bytes)) : null,
+    mp3: format === 'mp3' ? probe(() => k.mp3.probe(bytes)) : null,
+    // flac.probe はすべてのフレームを走査するので、大きなファイルでは少し時間がかかる
+    flac: format === 'flac' ? probe(() => k.flac.probe(bytes)) : null,
+    ogg: format === 'ogg' ? probe(() => k.ogg.probe(bytes)) : null,
+    m4a: format === 'm4a' ? probe(() => k.m4a.probe(bytes)) : null,
+  };
 }
 
 // 書き出す前に調べた音源。書き出しは、元のファイルを読み直さずにこのバイト列を使う。

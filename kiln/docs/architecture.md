@@ -78,7 +78,7 @@ const nch = try dec.decodeFrame(frame_bytes, &pcm); // pcm: [2][1152]f32。扱�
 
 ### 2.2.1 形式とサンプルレートの判定(`kiln.detect`)
 
-`kiln.detect(input)` は、入力のヘッダーから形式(`Format`)とデコード結果のサンプルレートを読み、`?Detected`(`format` と `sample_rate: ?u32`)を返す。Loop Points が、音源を開くたびに元のサンプルレートを知るのに使う([`draft.md`](draft.md) §2.14)。
+`kiln.detect(input)` は、入力のヘッダーから形式(`Format`)とデコード結果のサンプルレートを読み、`?Detected`(`format` と `sample_rate: ?u32`)を返す。Loop Points が、音源を開くたびに元のサンプルレートを知るのと、クロップの準備で呼ぶ解析(`probe`)を 1 つに決めるのに使う([`draft.md`](draft.md) §2.14、§2.15)。
 
 - **形式の判定**: 拡張子は見ない。WAV は先頭のバイト列(RIFF / RF64 / RIFX と WAVE)、FLAC は先頭(ID3v2 タグがあればその後)の `fLaC` か Ogg FLAC の印、Ogg は先頭の `OggS`、m4a は先頭の `ftyp` ボックス、aac は先頭(ID3v2 タグがあればその後)に ADTS のフレームが続くことで判定し、それ以外は MPEG オーディオのフレームを探す。ADTS は MP3 と同期ワードが似ているので、MP3 より先に見る。どれでもなければ null
 - **MP3 のフレームを探す範囲**: MP3 には先頭の印がなく、フレームの並び(次の位置にも同じ種類のヘッダがあること)で判定する。先頭にゴミがある MP3 も受け付けるが、解析(`mp3.probe`)が入力の終わりまで探すのと違い、最初のフレームは先頭(ID3v2 タグの後ろ)の 64KiB(`mp3.header_search_len`)の中でだけ探す。MP3 でない入力の奥(圧縮された音声のデータなど)で、偶然フレームに見える並びを拾わないため。それでも誤って MP3 と判定することはありうるので、Loop Points は、拡張子が .mp3 のときだけ MP3 の判定を使う
