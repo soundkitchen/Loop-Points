@@ -1,7 +1,14 @@
-// 音源の形式を kiln で調べる。クロップの書き出しの準備 (cropRender.ts の inspect) に使う
+// 音源の形式と元のサンプルレートを kiln で調べる。音源を開くとき (main.ts の decode) と、クロップの書き出しの準備
+// (cropRender.ts の inspect) に使う
 import { KilnError, type FlacInfo, type Kiln, type KilnErrorCode, type M4aInfo, type Mp3Info, type OggInfo, type WavInfo } from '../kiln/wasm/kiln';
 import { extFormat } from './cropFormat';
-import { startsWith } from './sampleRate';
+import { loadKiln } from './kilnLoader';
+
+// AudioContext と OfflineAudioContext が受け付けるレートの範囲。外れた値は、元のレートが分からないものとして扱う
+const MIN_RATE = 3000;
+const MAX_RATE = 768000;
+
+const startsWith = (d: Uint8Array, at: number, s: string) => [...s].every((c, i) => d[at + i] === c.charCodeAt(0));
 
 const NOT_READABLE = new Set<KilnErrorCode>(['NotMp3', 'NotWav', 'NotFlac', 'NotOgg', 'NotM4a', 'UnsupportedFormat', 'InvalidWav', 'InvalidFlac', 'InvalidOgg', 'InvalidM4a']);
 
@@ -34,4 +41,24 @@ export function probeSource(k: Kiln, fileName: string, bytes: Uint8Array<ArrayBu
   const ogg = !wav && !mp3 && !flac ? probe(() => k.ogg.probe(bytes)) : null;
   const m4a = !wav && !mp3 && !flac && !ogg ? probe(() => k.m4a.probe(bytes)) : null;
   return { wav, mp3, flac, ogg, m4a };
+}
+
+// kiln で読めなかった FLAC (壊れたものなど) のレートを、先頭から読む。ブラウザはデコードできることがある
+function flacHeaderRate(d: Uint8Array): number | null {
+  // 最初のメタデータブロックが STREAMINFO (種類 0) のときだけ読む。ほかのブロックなら 18〜20 バイト目は関係のない値
+  if (startsWith(d, 0, 'fLaC') && d.length >= 21 && (d[4] & 0x7f) === 0) return (d[18] << 12) | (d[19] << 4) | (d[20] >> 4);   // STREAMINFO の 20 ビット
+  return null;
+}
+
+// 音源の元のサンプルレート (デコード結果のレート。Opus は常に 48kHz)。分からなければ null で、呼ぶ側で出力の機器のレートを使う。
+// 分からないのは、kiln で読めない形式 (.aac の ADTS は、ヘッダーから HE-AAC かどうかが分からない。MPEG-2 の mp3 など) と、
+// SBR があるか分からない m4a (レートが実際の半分のことがある)
+export function rateOf(p: Probed, bytes: Uint8Array): number | null {
+  const m4a = p.m4a && p.m4a.sbr !== null ? p.m4a.sampleRate : null;
+  const rate = p.wav?.sampleRate ?? p.mp3?.sampleRate ?? p.flac?.sampleRate ?? p.ogg?.sampleRate ?? m4a ?? flacHeaderRate(bytes);
+  return rate !== null && rate >= MIN_RATE && rate <= MAX_RATE ? rate : null;
+}
+
+export async function sourceRate(fileName: string, bytes: Uint8Array<ArrayBuffer>): Promise<number | null> {
+  return rateOf(probeSource(await loadKiln(), fileName, bytes), bytes);
 }

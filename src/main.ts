@@ -22,11 +22,11 @@ const AUDIO_EXT = new RegExp(`\\.(${AUDIO_EXTS.join('|')})$`, 'i');
 const JSON_EXT = /\.json$/i;
 const SHIFT_NOTICE = 0.001;  // 無劣化の mp3 と Ogg Vorbis で、切り始めが指定とこれ (秒) 以上ずれたら知らせる
 
-const ctx = new AudioContext();
-const player = new LoopPlayer(ctx);
+const player = new LoopPlayer();
 const files = new Map<string, File>();   // 読み込んだ音源。キーはファイル名で、JSON の項目と対応する
 type Crop = { start: number; end: number };   // クロップの範囲 (サンプル)。音源ごとに持ち、ファイルを読み直すと全体に戻る
-type Decoded = { source: File; buffer: AudioBuffer; mono: Float32Array; crop: Crop };
+// buffer は音源の元のサンプルレートのまま。converted は、元のレートが分からず、出力の機器のレートに変換してデコードしたもの
+type Decoded = { source: File; buffer: AudioBuffer; mono: Float32Array; crop: Crop; converted: boolean };
 const decoded = new Map<string, Decoded>();
 const decoding = new Map<File, Promise<Decoded>>();   // デコード中の音源。同じファイルを二重にデコードしない
 
@@ -351,8 +351,14 @@ function decode(file: string, source: File): Promise<Decoded> {
   if (!pending) {
     pending = (async () => {
       try {
-        const b = await ctx.decodeAudioData(await source.arrayBuffer());
-        const d = { source, buffer: b, mono: mixdown(b), crop: { start: 0, end: b.length } };
+        // 元のサンプルレートのままデコードする。AudioContext の decodeAudioData はそのコンテキストのレートに変換するので、
+        // 変換後の波形で探したゼロクロスや「サンプル」の値が、元のレートで鳴らす側と合わなくなる。
+        // 元のレートは kiln で調べる (最初の音源を開くときに kiln を読み込む)。分からなければ出力の機器のレートにする
+        const bytes = await source.arrayBuffer();
+        const { sourceRate } = await import('./sourceRate');
+        const rate = await sourceRate(file, new Uint8Array(bytes));
+        const b = await new OfflineAudioContext(1, 1, rate ?? player.outputRate).decodeAudioData(bytes);
+        const d = { source, buffer: b, mono: mixdown(b), crop: { start: 0, end: b.length }, converted: rate === null };
         // デコード中に同じ名前のファイルで置き換えられていたら、古い結果は残さない
         if (files.get(file) === source) decoded.set(file, d);
         return d;
@@ -409,7 +415,7 @@ async function open(file: string): Promise<'opened' | 'failed' | 'superseded'> {
     document.body.classList.add('loaded');
     requestAnimationFrame(frame);
   }
-  showInfo(`${buffer.sampleRate} Hz · ${buffer.numberOfChannels}ch · ${formatTime(buffer.duration)} (${buffer.length} サンプル)`);
+  showInfo(`${buffer.sampleRate} Hz${d.converted ? ' (変換後)' : ''} · ${buffer.numberOfChannels}ch · ${formatTime(buffer.duration)} (${buffer.length} サンプル)`);
   view.setData(mono, buffer.sampleRate);
   applyLoop();
   return 'opened';
@@ -588,7 +594,7 @@ $('play-cursor').addEventListener('click', () => play(cursor));
 $('stop').addEventListener('click', () => player.stop());
 $('fit').addEventListener('click', () => view.fit());
 const volume = $<HTMLInputElement>('volume');
-const applyVolume = () => { player.gain.gain.value = Number(volume.value); };
+const applyVolume = () => { player.setVolume(Number(volume.value)); };
 volume.addEventListener('input', applyVolume);
 applyVolume();
 

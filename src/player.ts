@@ -1,6 +1,12 @@
-// ループ区間つきの再生。書き出した値を使う側と同じく AudioBufferSourceNode の loop / loopStart / loopEnd で鳴らす
+// ループ区間つきの再生。書き出した値を使う側と同じく AudioBufferSourceNode の loop / loopStart / loopEnd で鳴らす。
+// AudioContext は、鳴らすバッファと同じレートで作る。レートが違うと、AudioBufferSourceNode が鳴らしながら線形補間で
+// 変換し、高域が落ちて折り返しの雑音が乗る (44.1kHz を 48kHz で鳴らすと、10kHz で -1.5dB、雑音が -22dB)。
+// 同じレートならバッファのサンプルをそのまま鳴らし、出力の機器のレートへの変換はブラウザに任せる
 export class LoopPlayer {
-  readonly gain: GainNode;
+  // 出力の機器のレート (レートを指定しない AudioContext のレート)。元のレートが分からない音源は、このレートでデコードする
+  readonly outputRate: number;
+  private ctx: AudioContext;
+  private gain: GainNode;
   private src: AudioBufferSourceNode | null = null;
   private buffer: AudioBuffer | null = null;
   private pos = 0;        // 再生位置 (秒)
@@ -10,16 +16,32 @@ export class LoopPlayer {
   private once = false;   // playOnce で鳴らしている間。ループしない
   private onceEnd = 0;    // playOnce で止める位置 (秒)
 
-  constructor(readonly ctx: AudioContext) {
-    this.gain = ctx.createGain();
-    this.gain.connect(ctx.destination);
+  constructor() {
+    this.ctx = new AudioContext();
+    this.outputRate = this.ctx.sampleRate;
+    this.gain = this.ctx.createGain();
+    this.gain.connect(this.ctx.destination);
   }
 
   get playing() { return this.src !== null; }
 
+  setVolume(v: number) { this.gain.gain.value = v; }
+
+  // rate の AudioContext に切り替える。レートの違う音源に切り替えたときだけ作り直す
+  private use(rate: number) {
+    if (this.ctx.sampleRate === rate) return;
+    const volume = this.gain.gain.value;
+    void this.ctx.close();
+    this.ctx = new AudioContext({ sampleRate: rate });
+    this.gain = this.ctx.createGain();
+    this.gain.gain.value = volume;
+    this.gain.connect(this.ctx.destination);
+  }
+
   // from がループの終わり以降なら開始点から鳴らす。仕様では offset > loopEnd で始めるとループに入らず、バッファの終わりで止まる
   play(buffer: AudioBuffer, from: number, loopStart: number, loopEnd: number) {
     this.stop();
+    this.use(buffer.sampleRate);
     void this.ctx.resume();
     if (from >= loopEnd) from = loopStart;
     const src = this.ctx.createBufferSource();
@@ -42,6 +64,7 @@ export class LoopPlayer {
   // from から to まで 1 回だけ鳴らして止める
   playOnce(buffer: AudioBuffer, from: number, to: number) {
     this.stop();
+    this.use(buffer.sampleRate);
     void this.ctx.resume();
     const src = this.ctx.createBufferSource();
     src.buffer = buffer;

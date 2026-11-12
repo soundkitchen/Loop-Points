@@ -124,11 +124,11 @@ async function findZig() {
   return downloadZig();
 }
 
-// kiln.wasm はクロップのチャンクに埋め込む。別のファイルとして出ると、CSP の connect-src 'none' で読めず、クロップの書き出しが壊れる
+// kiln.wasm は、最初の音源を開くときに読むチャンクに埋め込む。別のファイルとして出ると、CSP の connect-src 'none' で読めず、音源を開けなくなる
 function checkDist() {
   const found = readdirSync(path.join(root, 'dist'), { recursive: true }).filter((f) => String(f).endsWith('.wasm'));
   if (found.length) {
-    console.error(`dist/ has .wasm files (${found.join(', ')}). kiln.wasm must be inlined into the crop chunk.`);
+    console.error(`dist/ has .wasm files (${found.join(', ')}). kiln.wasm must be inlined into the kiln chunk.`);
     process.exit(1);
   }
 }
