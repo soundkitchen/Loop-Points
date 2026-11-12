@@ -571,9 +571,9 @@ $('export-crop').addEventListener('click', () => void whileWriting('音源を書
   if (written === 'mp3' && out.start - from / rate >= SHIFT_NOTICE) notes.push(`mp3 の先頭は無劣化では切り出せないので、${formatTime(out.start)} から切り出しました`);
   // Ogg Vorbis は、先頭をパケットの区切り (指定より前) に寄せて切り出す
   if (written === 'ogg' && source.ogg?.codec === 'vorbis' && from / rate - out.start >= SHIFT_NOTICE) notes.push(`Ogg Vorbis の先頭は無劣化ではパケットの区切りでしか切り出せないので、少し前の ${formatTime(out.start)} から切り出しました`);
-  // kiln は壊れたフレームを無音で埋めて長さを保つが、ブラウザのデコードは飛ばすことがあるので、波形の位置とずれうる
   // FLAC は整数しか持てないので、浮動小数点の WAV の ±1.0 を超える部分は頭がつぶれる
   if (out.clipped > 0) notes.push(`±1.0 (0dBFS) を超えるサンプルが ${out.clipped} 個あったので、FLAC ではクリップして書き出しました。元の音量のまま残すには、WAV で書き出してください`);
+  // kiln は壊れたフレームを無音で埋めて長さを保つが、ブラウザのデコードは飛ばすことがあるので、波形の位置とずれうる
   if (out.invalidFrames > 0) notes.push(`壊れていたフレームが ${out.invalidFrames} 個あったので、その部分は無音にして書き出しました。ブラウザは壊れたフレームを飛ばして表示することがあるので、その後ろでは、波形で選んだ位置と書き出した位置がずれていることがあります`);
   if (notes.length > 0) alert(notes.join('\n'));
   await openCropped(new File([out.blob], handle.name, { type: out.blob.type }), sourceLoop, loopStart - out.start, loopEnd - out.start);
