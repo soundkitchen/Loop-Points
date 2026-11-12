@@ -66,6 +66,9 @@ pub const Info = struct {
     samples: u64,
 };
 
+/// `fmt ` チャンクに書かれたサンプルレート(`kiln.detect` に使う。wav/parse.zig)
+pub const headerSampleRate = parse.headerSampleRate;
+
 /// 入力全体を解析して、サンプルレートや長さを返す
 pub fn probe(input: []const u8) ParseError!Info {
     const w = try parse.Wav.parse(input);

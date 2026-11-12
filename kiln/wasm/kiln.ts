@@ -303,9 +303,30 @@ export interface Aac {
   probe(input: BytesInput): AacInfo;
 }
 
+/** 入力の形式(`kiln.detect` の結果) */
+export type Format = 'mp3' | 'wav' | 'flac' | 'ogg' | 'm4a' | 'aac';
+
+export interface Detected {
+  /** 中身から判定した形式(拡張子は見ない)。kiln が扱えない種類(MPEG-2 の MP3、μ-law の WAV など)もその形式になる */
+  format: Format;
+  /**
+   * デコード結果のサンプルレート(ヘッダーに書かれた値。HE-AAC の m4a は SBR の後、Opus は常に 48000)。
+   * 読めなければ null。読めないのは、ヘッダーから決められないもの(aac の ADTS、SBR があるか分からない m4a、
+   * Vorbis でも Opus でもない Ogg)と、ヘッダーが入力に入っていないもの(WAV の `fmt `、m4a の moov)
+   */
+  sampleRate: number | null;
+}
+
 export interface Kiln {
   /** ライブラリのバージョン */
   readonly version: string;
+  /**
+   * 入力のヘッダーから、形式とデコード結果のサンプルレートを読む。音声のデータはたどらないので軽く、
+   * 入力はファイルの先頭の一部でもよい。形式が分からなければ null。
+   * 先頭の一部を渡して null か `sampleRate` が null になったときは、全体を渡すと読めることがある
+   * (大きな ID3v2 タグの後ろの MP3 や FLAC、moov が後ろにある m4a、`fmt ` が後ろにある WAV)
+   */
+  detect(input: BytesInput): Detected | null;
   /** MP3 の解析、トリム、デコード(PCM、WAV、FLAC) */
   readonly mp3: Mp3;
   /** WAV の解析、切り出し、書き出し(WAV と FLAC) */
@@ -343,6 +364,7 @@ interface Exports {
   kiln_version_len(): number;
   kiln_error_ptr(): Ptr;
   kiln_error_len(): number;
+  kiln_detect: ProbeExport;
   kiln_value(i: number): bigint;
   kiln_output_ptr(): Ptr;
   kiln_output_len(): number;
@@ -819,8 +841,18 @@ export async function load(source: WasmBytes): Promise<Kiln> {
     },
   };
 
+  // kiln.Format(src/root.zig)の番号と並びを合わせる
+  const DETECT_FORMATS: Format[] = ['mp3', 'wav', 'flac', 'ogg', 'm4a', 'aac'];
+
   return {
     version: decoder.decode(bytesAt(e.kiln_version_ptr(), e.kiln_version_len())),
+    detect(input) {
+      return withInput(input, (ptr, len) => {
+        check(e.kiln_detect(ptr, len));
+        if (Number(e.kiln_value(0)) === 0) return null;
+        return { format: DETECT_FORMATS[Number(e.kiln_value(1))], sampleRate: Number(e.kiln_value(2)) || null };
+      });
+    },
     mp3,
     wav,
     flac,

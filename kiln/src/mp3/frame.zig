@@ -144,6 +144,8 @@ pub const AnyHeader = struct {
     len: usize,
     /// 同じストリームのフレームか比べるための値(バージョン・レイヤー・サンプルレートのビット)
     kind: u32,
+    /// ヘッダのサンプルレート(MPEG-2 は MPEG-1 の半分、MPEG-2.5 は 4 分の 1)
+    sample_rate: u32,
 
     /// [バージョン(0: MPEG-1、1: MPEG-2 / 2.5)][レイヤー(0: I、1: II、2: III)] のビットレート(kbps)
     const any_bitrates = [2][3][15]u16{
@@ -182,7 +184,7 @@ pub const AnyHeader = struct {
             1 => 144 * kbps * 1000 / sr + padding,
             else => (if (mpeg1) @as(usize, 144) else 72) * kbps * 1000 / sr + padding,
         };
-        return .{ .len = len, .kind = raw & 0x001E0C00 };
+        return .{ .len = len, .kind = raw & 0x001E0C00, .sample_rate = sr };
     }
 };
 

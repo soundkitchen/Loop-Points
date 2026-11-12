@@ -22,9 +22,13 @@ export function misuse(k: Kiln, bytes: Uint8Array) {
   k.flac.encode([new Float32Array(4)]);
   // @ts-expect-error flac.trim に書き出しの指定はない
   k.flac.trim(bytes, { compression: 5 });
+  // @ts-expect-error detect の結果は null のことがある
+  k.detect(bytes).sampleRate;
+  // @ts-expect-error detect の sampleRate は null のことがある
+  const rate: number = k.detect(bytes)!.sampleRate;
   // @ts-expect-error code は決まった名前だけ
   const code: KilnErrorCode = 'Oops';
   // @ts-expect-error aac の profile に HE-AAC はない(ADTS のヘッダに書けない)
   const profile: AacInfo['profile'] = 'he';
-  return [code, profile];
+  return [code, profile, rate];
 }

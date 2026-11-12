@@ -116,6 +116,15 @@ Loop Points の音源の解析(音源を開くときの、元のサンプルレ�
 - **レートが分からないもの**: 解析で読めないもの(MPEG-2 の mp3 など)と、SBR の有無が分からない m4a(`sbr` が null)は、Loop Points が出力の機器のレートで扱う。aac(ADTS)は、ヘッダから HE-AAC かどうかが分からない(§2.8)ので、`aac.probe` は使わず、同じく出力の機器のレートで扱う(Loop Points のユーザーが選んだ)
 - **確かめた事実**: Chromium で元のレートの `OfflineAudioContext` でデコードした長さは、解析の `samples` とサンプル単位で一致する(testdata の mp3、WAV、FLAC、Vorbis、Opus、m4a。`vorbis-mono22k.ogg` だけ Chromium が 17 サンプル短い)。kiln に変更はない
 
+### 2.14 2026-11-12 に決めたこと(形式とサンプルレートの判定)
+
+- **きっかけ**: Loop Points が音源を開くたびに解析(`probe`)をまるごと呼び、レートしか使っていなかった(§2.13)。入力全体を wasm のメモリに写すので、大きな WAV でメモリが増えたまま残る(Loop Points の #26)
+- **関数の形**: `kiln.detect(input)` が形式とサンプルレート(`{ format, sampleRate }`)を返す(Loop Points のユーザーが選んだ。レートだけ、チャンネル数も、の案もあった)。コアにあった形式の判定(`detect`)にレートを足し、wasm と kiln.ts に出す。設計は [`architecture.md`](architecture.md) §2.2.1
+- **渡す範囲**: Loop Points は先頭の 64KB を渡し、レートが読めなければ全体を渡し直す(Loop Points のユーザーが選んだ)。そのため `detect` はヘッダーだけを読み、入力が途中で切れていても読めるようにする。足りないことを知らせるエラーは作らず、「レートが null なら全体を渡し直す」は呼ぶ側で決める(aac など、いつも null のものは全体をもう 1 回読むことになるが、圧縮された形式なので小さい)
+- **kiln が扱えない種類**: ヘッダーに書かれたレートを返す(Loop Points のユーザーが選んだ)。MPEG-2 / 2.5 の MP3、kiln が読めない符号化の WAV(μ-law など)、RF64、RIFX、連結した Ogg、壊れた FLAC が、元のレートで開けるようになる。それまで Loop Points 側にあった Ogg と FLAC のヘッダー読みは、kiln に移った
+- **確かめた事実**: Chromium は、MPEG-2(16 / 22.05 / 24kHz)と MPEG-2.5(8 / 11.025 / 12kHz)の Layer III、μ-law と A-law の WAV を、ヘッダーのレートの `OfflineAudioContext` でそのままデコードできる(長さは、レートを掛けた値と一致)。Layer II、ADPCM、64bit 浮動小数点の WAV は、レートによらずデコードできない
+- **レートを読まないもの**: aac(ADTS)と、SBR があるか分からない m4a は、これまでどおり null(§2.8、§2.13)
+
 ## 3. まだ決めていないこと
 
 書き出せる形式とその順番、エンコーダを kiln に持たせるか(Ogg Vorbis、mp3)、wasm を形式ごとに分けるかなどは、Loop Points の #16 で扱う。

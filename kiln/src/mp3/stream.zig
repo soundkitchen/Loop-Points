@@ -81,30 +81,55 @@ pub const Stream = struct {
     }
 };
 
+/// 最初に見つかった MPEG オーディオのフレーム
+const First = union(enum) {
+    /// MPEG-1 Layer III のフレームの位置
+    layer3: usize,
+    /// MPEG-1 Layer III 以外(MPEG-2 / 2.5、Layer I / II)のフレーム。ヘッダのサンプルレート
+    other: u32,
+};
+
 /// `start` 以降で最初のフレームの位置。誤検出を避けるため、直後にもう 1 つ同じ形式の
 /// フレームが続くこと(またはフレームが入力の終わりまでぴったり収まること)を確かめる。
 /// 先に MPEG-1 Layer III 以外の MPEG オーディオのフレームが見つかったら `UnsupportedFormat`
 fn findFirstFrame(data: []const u8, start: usize) Error!usize {
+    return switch (findFirst(data, start) orelse return error.NotMp3) {
+        .layer3 => |pos| pos,
+        .other => error.UnsupportedFormat,
+    };
+}
+
+/// 最初のフレームのヘッダに書かれたサンプルレート。先頭の ID3v2 タグは飛ばす。MPEG-1 Layer III 以外の
+/// MPEG オーディオ(kiln が扱わない MPEG-2 / 2.5 など)でも読む。後ろのフレームは見ないので、入力が
+/// ファイルの先頭の一部でもよい。フレームが見つからなければ null(タグが入力より長いときも)
+pub fn headerSampleRate(data: []const u8) ?u32 {
+    return switch (findFirst(data, id3.skipTags(data)) orelse return null) {
+        .layer3 => |pos| Header.parse(data[pos..]).?.sampleRate(),
+        .other => |rate| rate,
+    };
+}
+
+fn findFirst(data: []const u8, start: usize) ?First {
     var pos = start;
     while (pos + 4 <= data.len) : (pos += 1) {
         if (!syncCandidate(data[pos..])) continue;
         if (Header.parse(data[pos..])) |h| {
             const next = pos + h.frameLen();
-            if (next == data.len) return pos;
+            if (next == data.len) return .{ .layer3 = pos };
             if (next < data.len and syncCandidate(data[next..])) {
-                if (Header.parse(data[next..])) |h2| if (h2.compatible(h)) return pos;
+                if (Header.parse(data[next..])) |h2| if (h2.compatible(h)) return .{ .layer3 = pos };
             }
             continue;
         }
         const any = frame.AnyHeader.parse(data[pos..]) orelse continue;
         const next = pos + any.len;
         if (next > data.len) continue;
-        if (next == data.len) return error.UnsupportedFormat;
+        if (next == data.len) return .{ .other = any.sample_rate };
         if (!syncCandidate(data[next..])) continue;
         const any2 = frame.AnyHeader.parse(data[next..]) orelse continue;
-        if (any2.kind == any.kind) return error.UnsupportedFormat;
+        if (any2.kind == any.kind) return .{ .other = any.sample_rate };
     }
-    return error.NotMp3;
+    return null;
 }
 
 /// 最初のフレームの候補にしてよいか。emphasis の予約値(2)のヘッダは、ゴミが偶然同期ワードに

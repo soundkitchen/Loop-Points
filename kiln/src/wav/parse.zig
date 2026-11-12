@@ -108,6 +108,35 @@ pub const Wav = struct {
     }
 };
 
+/// `fmt ` チャンクに書かれたサンプルレート。符号化の種類は見ないので、kiln が扱わない WAV(RF64、ビッグエンディアンの
+/// RIFX、μ-law など)でも読む。`data` チャンクは要らないので、入力がファイルの先頭の一部でもよい。
+/// WAV でない、`fmt ` が入力に入っていない、レートが 0 のときは null
+pub fn headerSampleRate(input: []const u8) ?u32 {
+    if (input.len < 12 or !std.mem.eql(u8, input[8..12], "WAVE")) return null;
+    const riff = input[0..4];
+    const big = std.mem.eql(u8, riff, "RIFX");
+    if (!big and !std.mem.eql(u8, riff, "RIFF") and !std.mem.eql(u8, riff, "RF64")) return null;
+
+    var pos: usize = 12;
+    while (pos <= input.len and input.len - pos >= 8) {
+        const size = readU32(input[pos + 4 ..][0..4], big);
+        const body_start = pos + 8;
+        if (std.mem.eql(u8, input[pos..][0..4], "fmt ")) {
+            // タグ(2)、チャンネル数(2)、サンプルレート(4)
+            if (size < 8 or input.len - body_start < 8) return null;
+            const rate = readU32(input[body_start + 4 ..][0..4], big);
+            return if (rate == 0) null else rate;
+        }
+        pos = body_start +| size;
+        pos +|= size & 1;
+    }
+    return null;
+}
+
+fn readU32(b: *const [4]u8, big: bool) u32 {
+    return std.mem.readInt(u32, b, if (big) .big else .little);
+}
+
 const testdata = @import("testdata");
 
 test "parse: testdata の WAV" {

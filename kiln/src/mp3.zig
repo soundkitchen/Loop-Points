@@ -50,6 +50,9 @@ pub fn probe(input: []const u8) ParseError!Info {
     };
 }
 
+/// 最初のフレームのヘッダに書かれたサンプルレート(`kiln.detect` に使う。mp3/stream.zig)
+pub const headerSampleRate = stream.headerSampleRate;
+
 /// 区間 `[options.start, options.end)` を再エンコードせずに切り出し、`w` に書く。
 /// 範囲外の指定は丸め、実際に切り出した区間(と入力のサンプルレート)を返す。`w.flush()` は呼び出し側が行う。
 /// 出力の構成は docs/lyria-mp3.md §4

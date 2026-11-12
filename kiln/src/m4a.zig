@@ -55,6 +55,27 @@ pub fn probe(input: []const u8) ParseError!Info {
     return (try analyze(input)).info;
 }
 
+/// moov の最初の音声トラックの説明に書かれた、デコード結果のサンプルレート(HE-AAC は SBR の後のレート。
+/// `kiln.detect` に使う)。サンプルの表や mdat は見ないので、kiln が切り出せない m4a でも、moov が入っていれば
+/// 入力がファイルの先頭の一部でも読める。SBR があるか分からない AAC は null(レートが実際の半分のことがある)。
+/// moov が入力に入っていない、音声トラックがない、説明が読めないときはエラー
+pub fn headerSampleRate(input: []const u8) ParseError!?u32 {
+    if (!hasSignature(input)) return error.NotM4a;
+    var top: box.Iterator = .{ .data = input };
+    // 入力が moov の前や途中で切れていると、そこで InvalidM4a になる
+    const moov = while (try top.next()) |b| {
+        if (b.is("moov")) break b;
+    } else return error.InvalidM4a;
+    var it: box.Iterator = .{ .data = moov.body };
+    while (try it.next()) |b| {
+        if (!b.is("trak") or !isSoundTrack(b)) continue;
+        const media = try trackMedia(b);
+        const info = try sampleEntry(media.stbl.body, media.timescale);
+        return if (info.sbr == null) null else info.sample_rate;
+    }
+    return error.UnsupportedFormat;
+}
+
 /// 解析の結果と、切り出しに使う部品
 const Analysis = struct {
     info: Info,
@@ -84,18 +105,14 @@ fn analyze(input: []const u8) ParseError!Analysis {
             udta = b;
         } else if (b.is("trak") and track == null) {
             // 読めないトラック(ボックスの長さが壊れているなど)は飛ばし、後ろの音声トラックを探す
-            const hdlr = (box.findPath(b.body, &.{ "mdia", "hdlr" }) catch null) orelse continue;
-            const kind = slice(hdlr.body, 8, 4) catch continue;
-            if (std.mem.eql(u8, kind, "soun")) track = b;
+            if (isSoundTrack(b)) track = b;
         }
     }
     const trak = track orelse return error.UnsupportedFormat;
 
-    const mdhd = try box.findPath(trak.body, &.{ "mdia", "mdhd" }) orelse return error.InvalidM4a;
-    const v1 = mdhd.body.len > 0 and mdhd.body[0] == 1;
-    const timescale = try box.int(u32, mdhd.body, if (v1) 20 else 12);
-    if (timescale == 0) return error.InvalidM4a;
-    const stbl = try box.findPath(trak.body, &.{ "mdia", "minf", "stbl" }) orelse return error.InvalidM4a;
+    const track_media = try trackMedia(trak);
+    const timescale = track_media.timescale;
+    const stbl = track_media.stbl;
 
     var info = try sampleEntry(stbl.body, timescale);
 
@@ -214,6 +231,25 @@ pub fn trimAlloc(gpa: std.mem.Allocator, input: []const u8, options: TrimOptions
 
 /// 最上位のボックスから `moov` を探す。`moof` があれば断片化した MP4。
 /// 最後のボックス(多くは `mdat`)が途切れていても、`moov` を読めていれば構わない
+/// 音声のトラックか。読めないトラック(ボックスの長さが壊れているなど)は false
+fn isSoundTrack(trak: box.Box) bool {
+    const hdlr = (box.findPath(trak.body, &.{ "mdia", "hdlr" }) catch null) orelse return false;
+    const kind = slice(hdlr.body, 8, 4) catch return false;
+    return std.mem.eql(u8, kind, "soun");
+}
+
+/// トラックのメディアのタイムスケールと、サンプルの表(stbl)
+const TrackMedia = struct { timescale: u32, stbl: box.Box };
+
+fn trackMedia(trak: box.Box) ParseError!TrackMedia {
+    const mdhd = try box.findPath(trak.body, &.{ "mdia", "mdhd" }) orelse return error.InvalidM4a;
+    const v1 = mdhd.body.len > 0 and mdhd.body[0] == 1;
+    const timescale = try box.int(u32, mdhd.body, if (v1) 20 else 12);
+    if (timescale == 0) return error.InvalidM4a;
+    const stbl = try box.findPath(trak.body, &.{ "mdia", "minf", "stbl" }) orelse return error.InvalidM4a;
+    return .{ .timescale = timescale, .stbl = stbl };
+}
+
 fn findMoov(input: []const u8) ParseError!box.Box {
     var it: box.Iterator = .{ .data = input };
     var moov: ?box.Box = null;
