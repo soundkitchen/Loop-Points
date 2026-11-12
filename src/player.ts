@@ -3,7 +3,8 @@
 // 変換し、高域が落ちて折り返しの雑音が乗る (44.1kHz を 48kHz で鳴らすと、10kHz で -1.5dB、雑音が -22dB)。
 // 同じレートならバッファのサンプルをそのまま鳴らし、出力の機器のレートへの変換はブラウザに任せる
 export class LoopPlayer {
-  // 出力の機器のレート (レートを指定しない AudioContext のレート)。元のレートが分からない音源は、このレートでデコードする
+  // 出力の機器のレート (レートを指定しない AudioContext のレート)。元のレートが分からない音源は、このレートでデコードする。
+  // ページを開いたときの値で、あとで出力の機器を切り替えても変えない (違っていても、そのレートの AudioContext で鳴らせる)
   readonly outputRate: number;
   private ctx: AudioContext;
   private gain: GainNode;
@@ -30,12 +31,14 @@ export class LoopPlayer {
   // rate の AudioContext に切り替える。レートの違う音源に切り替えたときだけ作り直す
   private use(rate: number) {
     if (this.ctx.sampleRate === rate) return;
-    const volume = this.gain.gain.value;
+    // 先に作る。作れずに投げたときに、閉じたコンテキストを残さない
+    const ctx = new AudioContext({ sampleRate: rate });
+    const gain = ctx.createGain();
+    gain.gain.value = this.gain.gain.value;
+    gain.connect(ctx.destination);
     void this.ctx.close();
-    this.ctx = new AudioContext({ sampleRate: rate });
-    this.gain = this.ctx.createGain();
-    this.gain.gain.value = volume;
-    this.gain.connect(this.ctx.destination);
+    this.ctx = ctx;
+    this.gain = gain;
   }
 
   // from がループの終わり以降なら開始点から鳴らす。仕様では offset > loopEnd で始めるとループに入らず、バッファの終わりで止まる

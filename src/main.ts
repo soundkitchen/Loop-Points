@@ -353,10 +353,13 @@ function decode(file: string, source: File): Promise<Decoded> {
       try {
         // 元のサンプルレートのままデコードする。AudioContext の decodeAudioData はそのコンテキストのレートに変換するので、
         // 変換後の波形で探したゼロクロスや「サンプル」の値が、元のレートで鳴らす側と合わなくなる。
-        // 元のレートは kiln で調べる (最初の音源を開くときに kiln を読み込む)。分からなければ出力の機器のレートにする
+        // 元のレートは kiln で調べる (最初の音源を開くときに kiln を読み込む)。分からなければ出力の機器のレートにする。
+        // kiln を読み込めないときや、調べている途中で失敗したときも、ブラウザがデコードできれば開けるよう、同じ扱いにする
         const bytes = await source.arrayBuffer();
-        const { sourceRate } = await import('./sourceRate');
-        const rate = await sourceRate(file, new Uint8Array(bytes));
+        const rate = await import('./sourceRate').then((m) => m.sourceRate(file, new Uint8Array(bytes))).catch((e) => {
+          console.warn(`Could not read the sample rate of ${file}; decoding at the output device rate.`, e);
+          return null;
+        });
         const b = await new OfflineAudioContext(1, 1, rate ?? player.outputRate).decodeAudioData(bytes);
         const d = { source, buffer: b, mono: mixdown(b), crop: { start: 0, end: b.length }, converted: rate === null };
         // デコード中に同じ名前のファイルで置き換えられていたら、古い結果は残さない

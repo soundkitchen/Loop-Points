@@ -37,10 +37,9 @@ export async function inspect(file: File, decoded: AudioBuffer): Promise<CropSou
   const k = await loadKiln();
   const bytes = new Uint8Array(await file.arrayBuffer());
   const { wav, mp3, flac, ogg: oggInfo, m4a: m4aInfo } = probeSource(k, file.name, bytes);
-  // decoded は元のレートのままなので、長さはサンプル単位で合うはず。レートが範囲の外で、出力の機器のレートに変換して
-  // デコードした音源 (sourceRate.ts) だけ、そのレートのサンプル数で比べ、変換の丸めの分を許す
-  const sameLength = (samples: number, sampleRate: number) =>
-    Math.abs(decoded.length - (samples * decoded.sampleRate) / sampleRate) <= (decoded.sampleRate === sampleRate ? 0 : 2);
+  // decoded のレートのサンプル数で比べる。decoded はふつう元のレートのままで、長さはサンプル単位で合う。出力の機器のレートに
+  // 変換してデコードした音源 (sourceRate.ts) の丸めの分と、ブラウザと kiln の数え方の小さな違いは許す
+  const sameLength = (samples: number, sampleRate: number) => Math.abs(decoded.length - (samples * decoded.sampleRate) / sampleRate) <= 2;
   const lengthMismatch = flac !== null && !sameLength(flac.samples, flac.sampleRate);
   // Ogg は、kiln が切り出せる (trimmable。読めないページがなく、先頭の切り詰めのある Vorbis でない) うえで、
   // ブラウザと長さが合うときだけ元の形式のまま切り出す。それ以外は WAV だけにする (WAV はブラウザのデコードから

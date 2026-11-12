@@ -43,8 +43,19 @@ export function probeSource(k: Kiln, fileName: string, bytes: Uint8Array<ArrayBu
   return { wav, mp3, flac, ogg, m4a };
 }
 
-// kiln で読めなかった FLAC (壊れたものなど) のレートを、先頭から読む。ブラウザはデコードできることがある
-function flacHeaderRate(d: Uint8Array): number | null {
+// kiln で読めなかった Ogg と FLAC のレートを、ファイルの先頭から読む。kiln が扱わなくても、ブラウザはデコードできることがある
+// (連結や多重化の Ogg、ヘッダーの後ろが壊れた Ogg、壊れた FLAC など)
+function oggRate(d: Uint8Array): number | null {
+  const packet = 27 + d[26];   // 最初のページのヘッダの直後
+  if (startsWith(d, packet, 'OpusHead')) return 48000;   // Opus のデコード結果は常に 48kHz
+  if (d[packet] === 1 && startsWith(d, packet + 1, 'vorbis') && d.length >= packet + 16) {
+    return new DataView(d.buffer, d.byteOffset, d.byteLength).getUint32(packet + 12, true);
+  }
+  return null;
+}
+
+function headerRate(d: Uint8Array): number | null {
+  if (startsWith(d, 0, 'OggS')) return oggRate(d);
   // 最初のメタデータブロックが STREAMINFO (種類 0) のときだけ読む。ほかのブロックなら 18〜20 バイト目は関係のない値
   if (startsWith(d, 0, 'fLaC') && d.length >= 21 && (d[4] & 0x7f) === 0) return (d[18] << 12) | (d[19] << 4) | (d[20] >> 4);   // STREAMINFO の 20 ビット
   return null;
@@ -55,7 +66,7 @@ function flacHeaderRate(d: Uint8Array): number | null {
 // SBR があるか分からない m4a (レートが実際の半分のことがある)
 export function rateOf(p: Probed, bytes: Uint8Array): number | null {
   const m4a = p.m4a && p.m4a.sbr !== null ? p.m4a.sampleRate : null;
-  const rate = p.wav?.sampleRate ?? p.mp3?.sampleRate ?? p.flac?.sampleRate ?? p.ogg?.sampleRate ?? m4a ?? flacHeaderRate(bytes);
+  const rate = p.wav?.sampleRate ?? p.mp3?.sampleRate ?? p.flac?.sampleRate ?? p.ogg?.sampleRate ?? m4a ?? headerRate(bytes);
   return rate !== null && rate >= MIN_RATE && rate <= MAX_RATE ? rate : null;
 }
 
