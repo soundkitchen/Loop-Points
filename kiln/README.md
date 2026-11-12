@@ -1,6 +1,6 @@
 # K!LN
 
-Loop Points のクロップの書き出しを受け持つ、Zig 製のライブラリです。wasm にしてブラウザの中で動かし、音声を読み込み、切り出し、形式を選んで書き出します。ブラウザでできること(デコードなど)はブラウザで行い、できない部分(元の形式のままの切り出し、元のサンプルレートの読み取り、ブラウザにないエンコーダなど)を受け持ちます。
+Loop Points の音源の解析とクロップの書き出しを受け持つ、Zig 製のライブラリです。wasm にしてブラウザの中で動かし、音声を読み込み、切り出し、形式を選んで書き出します。Loop Points は、音源を開くときに元のサンプルレートを調べるのにも使います。ブラウザでできること(デコードなど)はブラウザで行い、できない部分(元の形式のままの切り出し、元のサンプルレートの読み取り、ブラウザにないエンコーダなど)を受け持ちます。
 
 - 表示名は `K!LN`、識別子(ディレクトリ名・モジュール名)は `kiln` です
 - もとは [soundkitchen/kiln](https://github.com/soundkitchen/kiln) で開発していて、`1eebfb7` までの履歴を `git subtree` で取り込んであります。そのため、取り込む前のコミットメッセージにある `#番号` は、soundkitchen/kiln の Issue と PR を指します
@@ -35,7 +35,7 @@ zig build test       # コアのテスト(wasm のビルドも含む)
 
 ## Loop Points からの使い方
 
-Loop Points は JS 側の包みの `wasm/kiln.ts`(TypeScript)をソースから直接 import し、`zig-out/kiln.wasm` を Vite の `?url&inline` でチャンクに埋め込んで、バイト列で `load` に渡します(`src/cropRender.ts`)。CSP の `connect-src 'none'` で fetch を止めているので、`load` は URL を受け取らず、バイト列だけを受け取ります。wasm を動かすには、CSP の `script-src` に `'wasm-unsafe-eval'` が要ります。
+Loop Points は JS 側の包みの `wasm/kiln.ts`(TypeScript)をソースから直接 import し、`zig-out/kiln.wasm` を Vite の `?url&inline` でチャンクに埋め込んで、バイト列で `load` に渡します(`src/kilnLoader.ts`)。CSP の `connect-src 'none'` で fetch を止めているので、`load` は URL を受け取らず、バイト列だけを受け取ります。wasm を動かすには、CSP の `script-src` に `'wasm-unsafe-eval'` が要ります。
 
 ```js
 import { load, KilnError } from '../kiln/wasm/kiln';

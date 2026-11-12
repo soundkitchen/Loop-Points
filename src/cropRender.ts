@@ -1,4 +1,4 @@
-// 音源の一部を、指定の形式のファイルにする。kiln (kiln/) を使い、main からはクロップモードに切り替えたときに読み込む
+// 音源の一部を、指定の形式のファイルにする。kiln (kilnLoader.ts) を使い、main からはクロップモードに切り替えたときに読み込む
 //   mp3 → mp3: 再エンコードせずにサンプル単位で切り出す
 //   mp3 → WAV: kiln でデコードして 16-bit で書く (元のサンプルレートのまま)
 //   FLAC → FLAC: FLAC のまま切り出す (可逆。区間の先頭と末尾にかかるフレームだけ作り直す)
@@ -8,44 +8,13 @@
 //   m4a (AAC) → m4a: フレームをコピーして切り出す (前の 2 フレームと後ろの 1 フレームも残し、編集リストと iTunSMPB で前後を捨てさせる。
 //     タイムスケールは元のままで、HE-AAC は 2 サンプル単位)
 //   WAV → WAV: 元の形式のままバイト列を切り出す
-//   ほかの形式 → WAV: ブラウザでデコードし、kiln で 16-bit で書く (元のレートが分かればそのレート)
-import { KilnError, load, type FlacInfo, type Kiln, type KilnErrorCode, type M4aInfo, type Mp3Info, type OggInfo, type WavInfo } from '../kiln/wasm/kiln';
-// CSP の connect-src 'none' では fetch で wasm を読めない (data: URL も止まる) ので、チャンクに埋め込んでバイト列で渡す
-import kilnWasm from '../kiln/zig-out/kiln.wasm?url&inline';
+//   ほかの形式 → WAV: ブラウザでデコードしたものを、kiln で 16-bit で書く (元のレートが分かればそのレート)
+import type { FlacInfo, M4aInfo, Mp3Info, OggInfo, WavInfo } from '../kiln/wasm/kiln';
 import { OUT_FORMATS, extFormat, formatsFor, isOgg, type OutFormat } from './cropFormat';
-import { sampleRateOf, startsWith } from './sampleRate';
+import { loadKiln } from './kilnLoader';
+import { probeSource } from './sourceRate';
 
 const WAV_SAMPLE_FORMAT = 'i16';
-
-function toBytes(dataUrl: string): Uint8Array<ArrayBuffer> {
-  const text = atob(dataUrl.slice(dataUrl.indexOf(',') + 1));
-  const bytes = new Uint8Array(text.length);
-  for (let i = 0; i < text.length; i++) bytes[i] = text.charCodeAt(i);
-  return bytes;
-}
-
-// 一度読み込んだら使い回す。失敗したときは残さず、次に調べるときに読み直す
-let kiln: Promise<Kiln> | null = null;
-function loadKiln(): Promise<Kiln> {
-  if (!kiln) {
-    const loading = load(toBytes(kilnWasm));
-    loading.catch(() => { if (kiln === loading) kiln = null; });
-    kiln = loading;
-  }
-  return kiln;
-}
-
-const NOT_READABLE = new Set<KilnErrorCode>(['NotMp3', 'NotWav', 'NotFlac', 'NotOgg', 'NotM4a', 'UnsupportedFormat', 'InvalidWav', 'InvalidFlac', 'InvalidOgg', 'InvalidM4a']);
-
-// kiln が扱えない入力 (MPEG-2 の mp3、壊れた FLAC など) なら null。それ以外のエラーはそのまま投げる
-function probe<T>(read: () => T): T | null {
-  try {
-    return read();
-  } catch (e) {
-    if (e instanceof KilnError && NOT_READABLE.has(e.code)) return null;
-    throw e;
-  }
-}
 
 // 書き出す前に調べた音源。書き出しは、元のファイルを読み直さずにこのバイト列を使う。
 // 保存先に元の音源を選ぶと、保存先を選んだ時点で Chromium がそのファイルを空にして、読めなくなるため
@@ -67,22 +36,16 @@ export interface CropSource {
 export async function inspect(file: File, decoded: AudioBuffer): Promise<CropSource> {
   const k = await loadKiln();
   const bytes = new Uint8Array(await file.arrayBuffer());
-  // 中身で判定する。mp3 はフレームの同期を探すので、ほかの形式を読み違えないよう拡張子が .mp3 のものに限る
-  const wav = startsWith(bytes, 0, 'RIFF') ? probe(() => k.wav.probe(bytes)) : null;
-  const mp3 = !wav && extFormat(file.name) === 'mp3' ? probe(() => k.mp3.probe(bytes)) : null;
-  // FLAC は拡張子によらず調べる。flac.probe は ID3v2 タグを飛ばし、FLAC でなければフレームを読まずに NotFlac を返す。
-  // FLAC ならすべてのフレームを走査するので、大きなファイルでは少し時間がかかる
-  const flac = !wav && !mp3 ? probe(() => k.flac.probe(bytes)) : null;
-  // ブラウザは decoded を AudioContext のレートに変換しているので、そのレートのサンプル数で比べる (変換の丸めの分は許す)
+  const { wav, mp3, flac, ogg: oggInfo, m4a: m4aInfo } = probeSource(k, file.name, bytes);
+  // decoded のレートのサンプル数で比べる。decoded はふつう元のレートのままで、長さはサンプル単位で合う。出力の機器のレートに
+  // 変換してデコードした音源 (sourceRate.ts) の丸めの分と、ブラウザと kiln の数え方の小さな違いは許す
   const sameLength = (samples: number, sampleRate: number) => Math.abs(decoded.length - (samples * decoded.sampleRate) / sampleRate) <= 2;
   const lengthMismatch = flac !== null && !sameLength(flac.samples, flac.sampleRate);
   // Ogg は、kiln が切り出せる (trimmable。読めないページがなく、先頭の切り詰めのある Vorbis でない) うえで、
   // ブラウザと長さが合うときだけ元の形式のまま切り出す。それ以外は WAV だけにする (WAV はブラウザのデコードから
   // 書くので、波形の位置とずれない)
-  const oggInfo = !wav && !mp3 && !flac ? probe(() => k.ogg.probe(bytes)) : null;
   const ogg = oggInfo?.trimmable && sameLength(oggInfo.samples, oggInfo.sampleRate) ? oggInfo : null;
   // m4a も同じ。kiln が切り出せるのは AAC で、ALAC (ブラウザで開けない) と HE-AAC v2 などは WAV だけになる
-  const m4aInfo = !wav && !mp3 && !flac && !oggInfo ? probe(() => k.m4a.probe(bytes)) : null;
   const m4a = m4aInfo?.trimmable && sameLength(m4aInfo.samples, m4aInfo.sampleRate) ? m4aInfo : null;
   const native: OutFormat | null = mp3 ? 'mp3' : flac ? 'flac' : ogg ? (ogg.codec === 'opus' && extFormat(file.name) === 'opus' ? 'opus' : 'ogg') : m4a ? 'm4a' : null;
   return { file, formats: formatsFor(native), mp3Start: mp3 ? mp3.minStart / mp3.sampleRate : 0, bytes, wav, mp3, flac, ogg, m4a, lengthMismatch };
@@ -94,14 +57,13 @@ export interface Rendered {
   invalidFrames: number;   // 壊れていて無音にしたフレームの数 (FLAC の切り出しと、mp3 / FLAC のデコード)
 }
 
-// start 以上 end 未満 (decoded のサンプル) を書き出す。decoded は AudioContext のレートに変換されているので、
-// 元のレートで切り、音を変換しないで済むようにする
+// start 以上 end 未満 (decoded のサンプル) を書き出す。decoded は元のレートのまま (sourceRate.ts) なので、kiln で切る位置と同じ
 export async function renderCrop(source: CropSource, decoded: AudioBuffer, start: number, end: number, format: OutFormat): Promise<Rendered> {
   const k = await loadKiln();
   const { bytes, wav, mp3, flac, ogg, m4a } = source;
-  // rate のサンプルに直す。別々に丸めると短い範囲が 0 になるので、最低 1 サンプルは残す
-  // 後端が波形の末尾なら、音源の末尾まで。ブラウザがレートを変換すると、波形の長さが丸めで 1 サンプルほど短くなり、
-  // 換算すると末尾に届かないため
+  // rate のサンプルに直す。ふつうは decoded と同じレートで、位置は変わらない。違うのは、レートが範囲の外で、出力の機器の
+  // レートに変換してデコードした音源だけ。そのときは、別々に丸めると短い範囲が 0 になるので、最低 1 サンプルは残す。
+  // 後端が波形の末尾なら、音源の末尾まで (変換すると、波形の長さが丸めで 1 サンプルほど短くなり、換算すると末尾に届かない)
   const range = (rate: number, length: number) => {
     const startSample = Math.min(Math.round((start / decoded.sampleRate) * rate), length - 1);
     const endSample = end >= decoded.length ? length : Math.round((end / decoded.sampleRate) * rate);
@@ -142,10 +104,9 @@ export async function renderCrop(source: CropSource, decoded: AudioBuffer, start
     const r = k.flac.toWav(bytes, range(flac.sampleRate, flac.samples));
     return { blob: blob(r.data), start: r.start, invalidFrames: r.invalidFrames };
   }
-  // decodeAudioData は渡したバッファを使えなくする。bytes は次の書き出しでも使うので、写しを渡す
-  const rate = sampleRateOf(bytes) ?? decoded.sampleRate;
-  const audio = rate === decoded.sampleRate ? decoded : await new OfflineAudioContext(decoded.numberOfChannels, 1, rate).decodeAudioData(bytes.slice().buffer);
-  const { startSample, endSample } = range(rate, audio.length);
-  const channels = Array.from({ length: audio.numberOfChannels }, (_, c) => audio.getChannelData(c).subarray(startSample, endSample));
-  return { blob: blob(k.wav.encode(channels, { sampleRate: rate, format: WAV_SAMPLE_FORMAT })), start: startSample / rate, invalidFrames: 0 };
+  // kiln で読めない形式は、ブラウザでデコードしたものをそのまま書く。元のレートが分かった音源は元のレートで、
+  // 分からなかった音源は出力の機器のレートでデコードしてある
+  const { startSample, endSample } = range(decoded.sampleRate, decoded.length);
+  const channels = Array.from({ length: decoded.numberOfChannels }, (_, c) => decoded.getChannelData(c).subarray(startSample, endSample));
+  return { blob: blob(k.wav.encode(channels, { sampleRate: decoded.sampleRate, format: WAV_SAMPLE_FORMAT })), start: startSample / decoded.sampleRate, invalidFrames: 0 };
 }
