@@ -112,6 +112,19 @@ export fn kiln_output_free() void {
     output = &.{};
 }
 
+/// 入力のヘッダーから、形式とデコード結果のサンプルレートを読む(入力はファイルの先頭の一部でもよい)。
+/// 失敗しない(いつも true)。kiln_value に 0: 形式が分かったか(0: 分からない、1: 分かった)、
+/// 1: 形式(kiln.Format の番号。0: mp3、1: wav、2: flac、3: ogg、4: m4a、5: aac)、
+/// 2: サンプルレート(0 は読めなかった)を置く
+export fn kiln_detect(ptr: [*]const u8, len: usize) bool {
+    if (kiln.detect(ptr[0..len])) |d| {
+        setValues(.{ 1, @backingInt(d.format), d.sample_rate orelse 0 });
+    } else {
+        setValues(.{0});
+    }
+    return true;
+}
+
 /// MP3 を解析する。成功すると kiln_value に
 /// 0: サンプルレート、1: チャンネル数、2: サンプル数、3: フレーム数、4: 指定できる先頭の最小値
 /// を置く

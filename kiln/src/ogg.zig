@@ -45,6 +45,21 @@ pub fn hasSignature(input: []const u8) bool {
     return input.len >= 4 and std.mem.eql(u8, input[0..4], page.capture);
 }
 
+/// 最初のページの識別ヘッダに書かれた、デコード結果のサンプルレート(Opus は常に 48000。`kiln.detect` に使う)。
+/// 後ろのページは見ないので、kiln が扱わない Ogg(連結、多重化、壊れたページのあるもの)でも、入力が
+/// ファイルの先頭の一部でも読める。Vorbis でも Opus でもない、識別ヘッダが読めないときは null
+pub fn headerSampleRate(input: []const u8) ?u32 {
+    if (!hasSignature(input)) return null;
+    var it: page.Iterator = .{ .input = input };
+    const first = it.next() orelse return null;
+    if (!first.bos() or first.lacing.len == 0) return null;
+    var id_buf: [300]u8 = undefined;
+    const id = readPacket(input, first, 0, &id_buf);
+    if (std.mem.startsWith(u8, id, "OpusHead")) return opus.sample_rate;
+    if (std.mem.startsWith(u8, id, "\x01vorbis")) return (vorbis.identification(id) catch return null).sample_rate;
+    return null;
+}
+
 /// 入力全体を解析して、コーデック・サンプルレート・長さなどを返す
 pub fn probe(input: []const u8) ParseError!Info {
     return (try analyze(input)).info;

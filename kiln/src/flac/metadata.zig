@@ -93,6 +93,16 @@ pub const Metadata = struct {
         return .{ .start = start, .info = si, .frames_start = it.pos };
     }
 
+    /// 先頭(ID3v2 タグがあればその後)の `fLaC` に続く STREAMINFO だけを読む。ほかのメタデータブロックは
+    /// 見ないので、後ろが壊れた FLAC でも、入力がファイルの先頭の一部でも読める。FLAC でない(Ogg FLAC も)、
+    /// 最初のブロックが STREAMINFO でない、入力に収まらないときは null
+    pub fn streamInfo(input: []const u8) ?StreamInfo {
+        const rest = input[id3.skipTags(input)..];
+        if (rest.len < 8 + StreamInfo.len or !std.mem.eql(u8, rest[0..4], "fLaC")) return null;
+        if (rest[4] & 0x7F != 0 or std.mem.readInt(u24, rest[5..8], .big) != StreamInfo.len) return null;
+        return .parse(rest[8..][0..StreamInfo.len]);
+    }
+
     /// メタデータブロックを順にたどる(`parse` が確かめた後なので、どのブロックも入力に収まる)
     pub fn blocks(m: Metadata, input: []const u8) BlockIterator {
         return .{ .input = input, .pos = m.start + 4, .end = m.frames_start };

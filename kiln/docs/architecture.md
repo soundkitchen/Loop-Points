@@ -12,7 +12,7 @@
 
 | パス | 内容 | ビルド成果物 |
 |---|---|---|
-| `src/root.zig` | コアのルート。モジュール名 `kiln`。入力の形式の判定(`kiln.detect`)もここに置く | — |
+| `src/root.zig` | コアのルート。モジュール名 `kiln`。入力の形式とサンプルレートをヘッダーから読む `kiln.detect` もここに置く | — |
 | `src/pcm.zig` | PCM のサンプル形式と、f32 との変換(`kiln.pcm`) | — |
 | `src/mp3.zig`, `src/mp3/` | MP3 の解析と無劣化トリム(`kiln.mp3`)。`frame`(フレームヘッダ)/ `id3` / `xing`(Xing・LAME タグ)/ `stream`(入力の解析)/ `trim` に分ける。デコーダは `bits`(ビット読み取り)/ `huffman` / `layer3`(周波数領域の処理)/ `synth`(IMDCT と合成フィルタ)/ `decoder`(設計は [`mp3-decoder.md`](mp3-decoder.md)) | — |
 | `src/wav.zig`, `src/wav/` | WAV の解析とサンプル精度のトリム、エンコーダ(`kiln.wav`)。`parse`(チャンクの解析)/ `header`(ヘッダの書き出し)/ `encoder` に分ける | — |
@@ -74,7 +74,25 @@ const nch = try dec.decodeFrame(frame_bytes, &pcm); // pcm: [2][1152]f32。扱�
 
 ### 2.2 CLI
 
-2026-11-11 に外した([`draft.md`](draft.md) §2.9)。CLI が使っていた入力の形式の判定(`kiln.detect`)はコアに残っている。今はコアのテストからしか呼ばず、wasm には export していない(Loop Points で中身から形式を判定するときに、wasm/main.zig と kiln.ts につなぐ)。拡張子は見ない。WAV は先頭のバイト列(RIFF / RF64 / RIFX と WAVE)、FLAC は先頭(ID3v2 タグがあればその後)の `fLaC` か Ogg FLAC の印、Ogg は先頭の `OggS`、m4a は先頭の `ftyp` ボックス、aac は先頭(ID3v2 タグがあればその後)に ADTS のフレームが続くことで判定し、それ以外は MP3 の解析に任せる(先頭にゴミがある MP3 も受け付ける)。ADTS は MP3 と同期ワードが似ているので、MP3 の解析より先に見る
+2026-11-11 に外した([`draft.md`](draft.md) §2.9)。CLI が使っていた入力の形式の判定(`kiln.detect`)はコアに残し、2026-11-12 に、サンプルレートも返す形にして wasm と kiln.ts に出した(下の「形式とサンプルレートの判定」)。
+
+### 2.2.1 形式とサンプルレートの判定(`kiln.detect`)
+
+`kiln.detect(input)` は、入力のヘッダーから形式(`Format`)とデコード結果のサンプルレートを読み、`?Detected`(`format` と `sample_rate: ?u32`)を返す。Loop Points が、音源を開くたびに元のサンプルレートを知るのに使う([`draft.md`](draft.md) §2.14)。
+
+- **形式の判定**: 拡張子は見ない。WAV は先頭のバイト列(RIFF / RF64 / RIFX と WAVE)、FLAC は先頭(ID3v2 タグがあればその後)の `fLaC` か Ogg FLAC の印、Ogg は先頭の `OggS`、m4a は先頭の `ftyp` ボックス、aac は先頭(ID3v2 タグがあればその後)に ADTS のフレームが続くことで判定し、それ以外は MPEG オーディオのフレームを探す。ADTS は MP3 と同期ワードが似ているので、MP3 より先に見る。どれでもなければ null
+- **MP3 のフレームを探す範囲**: MP3 には先頭の印がなく、フレームの並び(次の位置にも同じ種類のヘッダがあること)で判定する。先頭にゴミがある MP3 も受け付けるが、解析(`mp3.probe`)が入力の終わりまで探すのと違い、最初のフレームは先頭(ID3v2 タグの後ろ)の 64KiB(`mp3.header_search_len`)の中でだけ探す。MP3 でない入力の奥(圧縮された音声のデータなど)で、偶然フレームに見える並びを拾わないため。それでも誤って MP3 と判定することはありうるので、Loop Points は、拡張子が .mp3 のときだけ MP3 の判定を使う
+- **ヘッダーだけを読む**: 音声のデータはたどらない(`probe` と違い、フレームやページを走査しない)。そのため軽く、入力はファイルの先頭の一部でもよい。先頭の一部を渡して形式かレートが読めなかったときは、全体を渡すと読めることがある(大きな ID3v2 タグの後ろの MP3 や FLAC、moov が後ろにある m4a、`fmt ` が後ろにある WAV)。足りないことを知らせるエラーはなく、呼ぶ側が「レートが null なら全体を渡し直す」と決める
+- **kiln が扱えない種類も読む**: 形式ごとの解析や切り出しが `UnsupportedFormat` や `Invalid…` にするものでも、ヘッダーのレートは返す(ブラウザはデコードできることがある)。詳しいエラーは各形式の解析で出す
+
+| 形式 | レートを読む場所(各形式の `headerSampleRate`) | kiln が扱えなくても読むもの | null になるもの |
+|---|---|---|---|
+| WAV | `fmt ` チャンク。符号化の種類は見ず、`data` チャンクも要らない | RF64、ビッグエンディアンの RIFX、μ-law / A-law、ADPCM など | `fmt ` が入力にない、レートが 0 |
+| FLAC | 最初のメタデータブロックの STREAMINFO だけ(`metadata.Metadata.streamInfo`) | 後ろのメタデータやフレームが壊れたもの | Ogg FLAC、最初のブロックが STREAMINFO でない、レートが 0 |
+| Ogg | 最初のページの識別ヘッダ。Vorbis はヘッダの値、Opus は常に 48000 | 連結、多重化、壊れたページのあるもの | Vorbis でも Opus でもない(Speex など)、識別ヘッダが読めない |
+| m4a | 最初の moov の、最初の音声トラックのサンプルエントリ(HE-AAC は SBR の後のレート。ALAC も読む)。サンプルの表や mdat は見ない | HE-AAC v2、断片化した MP4(解析の `findMoov` と違い、moov の後ろの moof は見ない)、サンプルの表が食い違うもの | SBR があるか分からない AAC(レートが実際の半分のことがある)、AAC でも ALAC でもないコーデック(MP4 の Opus や FLAC)、moov が入力にない、音声トラックがない |
+| aac(ADTS) | 読まない | — | いつも null(ヘッダーから HE-AAC かどうかが分からない。[`aac.md`](aac.md) §3) |
+| MP3 | 先頭の ID3v2 タグの後ろの、最初のフレームのヘッダ(`mp3/stream.zig` の `headerSampleRate`。フレームの確かめ方は解析と同じで、探す範囲だけ 64KiB に限る) | MPEG-2 / 2.5、Layer I / II(`AnyHeader` のレート) | フレームが見つからないときは、形式ごと null |
 
 ### 2.3 wasm と JS
 
@@ -98,6 +116,7 @@ const nch = try dec.decodeFrame(frame_bytes, &pcm); // pcm: [2][1152]f32。扱�
 - `kiln_mp3_decode` は、チャンネルごとに並べた f32 を出力のバイト列に置き、チャンネル数を `kiln_value(3)`、復号できなかったフレームの数を `kiln_value(4)` で返す。`kiln_mp3_to_wav` も同じ並び(0: start、1: end、2: サンプルレート、3: チャンネル数、4: 復号できなかったフレームの数)で返す。WAV は `kiln.mp3.toWavAlloc` で作り、入力の解析は 1 回、出力は前もって計算した大きさで一度に確保する
 - `wav.encode` のサンプルは、`kiln_alloc_f32` で確保した領域(4 バイト境界)にチャンネルごとに続けて書き、`kiln_wav_encode` に渡す。形式は `kiln.pcm.Format` の番号でやり取りする(JS 側の `FORMATS` と並びを合わせる)
 - `mp3.trim` / `mp3.decode` / `mp3.toWav` / `mp3.toFlac` / `wav.trim` / `wav.toFlac` / `flac.trim` / `flac.decode` / `flac.toWav` / `ogg.trim` / `m4a.trim` は、秒で指定されたときだけ、サンプルレートを知るために先に `kiln_mp3_probe` / `kiln_wav_probe` / `kiln_flac_format` / `kiln_ogg_probe` / `kiln_m4a_probe` を呼ぶ(FLAC はメタデータだけを読む)。サンプル数だけの指定では、`trim`(`flac.trim`、`ogg.trim`、`m4a.trim` を含む)と `toWav` と `toFlac` と `flac.decode` は入力の解析が 1 回で済む(戻り値の秒は各 export が返すサンプルレートで計算する)。`kiln_mp3_decode` は、出力の大きさを決めるために中で probe してから復号するので、サンプル数だけの指定でも解析は 2 回(`kiln_flac_decode` はフレームの一覧 `kiln.flac.Index` を使い回すので 1 回)
+- `detect(bytes)` は、ヘッダーから形式とサンプルレートを読み、`{ format, sampleRate }` か null を返す(§2.2.1)。`format` は `'mp3'` / `'wav'` / `'flac'` / `'ogg'` / `'m4a'` / `'aac'`、`sampleRate` は読めなければ null。失敗はなく、`KilnError` を投げない。`kiln_detect` はいつも true を返し、`kiln_value` に 0: 形式が分かったか、1: 形式(`kiln.Format` の番号。JS 側の `DETECT_FORMATS` と並びを合わせる)、2: サンプルレート(0 は読めなかった)を置く。入力は、ほかの関数と同じく渡された分をまるごと linear memory に写すので、大きなファイルでは呼ぶ側が先頭の一部だけを渡す
 - `ogg.probe` / `m4a.probe` / `aac.probe` は解析(§2.7)。Ogg と m4a は切り出しの `ogg.trim`(`kiln_ogg_trim`。Opus と Vorbis)と `m4a.trim`(`kiln_m4a_trim`。AAC)も持つ。`kiln_value` が足りないので 10 個に増やした(export は `setValues` で、使わない分は 0 にする)。SBR / PS の 3 値は 0: なし、1: あり、2: 不明でやり取りし、JS では `false` / `true` / `null` にする。`m4a.probe` は AudioSpecificConfig を出力のバイト列で返す
 - `startSample` / `endSample` に BigInt を渡すときは 0 以上 2^64 未満でなければ `RangeError` にする(u64 の引数で桁あふれしないように)
 - サンプル位置は u64 なので、export 関数の引数・戻り値は JS では BigInt になる

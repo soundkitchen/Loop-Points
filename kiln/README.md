@@ -42,6 +42,7 @@ import { load, KilnError } from '../kiln/wasm/kiln';
 
 const kiln = await load(wasmBytes);                         // Uint8Array か ArrayBuffer
 const bytes = new Uint8Array(await file.arrayBuffer());
+const detected = kiln.detect(bytes.subarray(0, 65536));     // { format, sampleRate } か null。ヘッダーだけを読むので、先頭の一部でもよい
 const info = kiln.mp3.probe(bytes);                         // { sampleRate, channels, samples, duration, minStart, ... }
 const { data, start } = kiln.mp3.trim(bytes, { start: 1.5, end: 10 }); // 秒。startSample / endSample でサンプル数も可
 const wav = kiln.wav.trim(wavBytes, { startSample: 0, endSample: 44100 }).data;
@@ -55,7 +56,8 @@ const { data: opusCut } = kiln.ogg.trim(opusBytes, { start: 1.5, end: 10 }); // 
 const { data: aacCut } = kiln.m4a.trim(m4aBytes, { start: 1.5, end: 10 });    // AAC のまま切り出す(m4a.probe の trimmable が true のもの)
 ```
 
-- 失敗すると `KilnError` を投げます。`code` はエラーの名前(`'NotMp3'` / `'EmptyRange'` など。一覧は `kiln.ts` の `KilnErrorCode`)
+- `detect` は、ヘッダーから形式とデコード結果のサンプルレートを読みます。音声のデータをたどらないので軽く、kiln が扱えない種類(MPEG-2 の MP3、μ-law の WAV、連結した Ogg など)でもレートを返します。先頭の一部を渡して `sampleRate` が null のときは、全体を渡すと読めることがあります(moov が後ろにある m4a など)。aac(ADTS)と、SBR があるか分からない m4a は、いつも null です
+- `detect` のほかは、失敗すると `KilnError` を投げます。`code` はエラーの名前(`'NotMp3'` / `'EmptyRange'` など。一覧は `kiln.ts` の `KilnErrorCode`)
 - 切り出しは範囲外の指定を丸め、実際に切り出した区間(`start` / `end` など)を返します。MP3 → MP3 の無劣化の切り出しでは、LAME タグのない MP3 の先頭 529 サンプルより前からは切り出せません(`probe` の `minStart`)
 - 処理は同期です。何分もある曲のデコードには数百 ms かかります
 - API の全体と型は `wasm/kiln.ts`、細部は [`docs/architecture.md`](docs/architecture.md) §2.3 にあります

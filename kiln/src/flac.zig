@@ -48,6 +48,13 @@ pub fn streamFormat(input: []const u8) ParseError!StreamFormat {
     return .{ .sample_rate = si.sample_rate, .channels = si.channels, .bits_per_sample = si.bits };
 }
 
+/// STREAMINFO に書かれたサンプルレート(`kiln.detect` に使う)。STREAMINFO だけを読むので、kiln が扱えない
+/// 壊れた FLAC でも、入力がファイルの先頭の一部でも読める。読めない(Ogg FLAC も)か、レートが 0 なら null
+pub fn headerSampleRate(input: []const u8) ?u32 {
+    const si = metadata.Metadata.streamInfo(input) orelse return null;
+    return if (si.sample_rate == 0) null else si.sample_rate;
+}
+
 /// 先頭(ID3v2 タグがあればその後)が FLAC の印(`fLaC`、または Ogg FLAC)か。フレームは見ない
 /// (`kiln.detect` に使う。壊れたメタデータや Ogg FLAC も true で、詳しいエラーは `probe` で出す)
 pub fn hasSignature(input: []const u8) bool {
