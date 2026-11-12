@@ -229,9 +229,10 @@ function updateWarning() {
   else if (mode === 'crop' && cropSource?.lengthMismatch) {
     messages.push(`${name} は、ブラウザでデコードした長さ (${formatTime(buffer!.duration)}) と FLAC の長さ (${formatTime(cropSource.flac!.duration)}) が違います。壊れたフレームをブラウザが飛ばしていると、波形で選んだ位置と書き出す位置がずれるので、書き出せません`);
   } else if (mode === 'crop' && cropCutsLoop()) {
+    // 切り始めがずれない形式 (WAV。FLAC など mp3 以外も同じ) でも削れるなら、範囲そのものが区間にかかっている
     messages.push(cropCutsLoop('wav')
       ? 'クロップの範囲がループ区間にかかっているので、書き出せません。線を区間の外へ動かすか、ループモードで区間を動かしてください'
-      : `長さの情報のない mp3 は、無劣化では ${formatTime(cropSource!.mp3Start)} より前から切り出せません。ループの開始が削れるので、書き出せません。WAV を選ぶと書き出せます`);
+      : `長さの情報のない mp3 は、無劣化では ${formatTime(cropSource!.mp3Start)} より前から切り出せません。ループの開始が削れるので、書き出せません。WAV か FLAC を選ぶと書き出せます`);
   }
   $('warning').textContent = messages.join('\n');
 }
@@ -517,9 +518,8 @@ function updateOutFormats() {
   // 調べる前の仮の形式。.ogg と .m4a は中身が何か (Opus か Vorbis か、AAC か ALAC かなど) 分からないので、
   // 元の形式は出さない (kiln で調べてから出す)
   const ext = extFormat(name);
-  const native = cropSource ? cropSource.native : ext === 'ogg' || ext === 'm4a' ? null : ext;
-  const formats = cropSource?.formats ?? formatsFor(native);
-  outFormat.replaceChildren(...formats.map((f) => new Option(formatLabel(f, native), f)));
+  const formats = cropSource?.formats ?? formatsFor(ext === 'ogg' || ext === 'm4a' ? null : ext, buffer?.numberOfChannels ?? 0);
+  outFormat.replaceChildren(...formats.map((f) => new Option(formatLabel(f, formats), f)));
   outFormat.disabled = formats.length < 2 || !cropSource;
 }
 // 形式によって、実際に切り始める位置が変わる
@@ -572,6 +572,8 @@ $('export-crop').addEventListener('click', () => void whileWriting('音源を書
   // Ogg Vorbis は、先頭をパケットの区切り (指定より前) に寄せて切り出す
   if (written === 'ogg' && source.ogg?.codec === 'vorbis' && from / rate - out.start >= SHIFT_NOTICE) notes.push(`Ogg Vorbis の先頭は無劣化ではパケットの区切りでしか切り出せないので、少し前の ${formatTime(out.start)} から切り出しました`);
   // kiln は壊れたフレームを無音で埋めて長さを保つが、ブラウザのデコードは飛ばすことがあるので、波形の位置とずれうる
+  // FLAC は整数しか持てないので、浮動小数点の WAV の ±1.0 を超える部分は頭がつぶれる
+  if (out.clipped > 0) notes.push(`±1.0 (0dBFS) を超えるサンプルが ${out.clipped} 個あったので、FLAC ではクリップして書き出しました。元の音量のまま残すには、WAV で書き出してください`);
   if (out.invalidFrames > 0) notes.push(`壊れていたフレームが ${out.invalidFrames} 個あったので、その部分は無音にして書き出しました。ブラウザは壊れたフレームを飛ばして表示することがあるので、その後ろでは、波形で選んだ位置と書き出した位置がずれていることがあります`);
   if (notes.length > 0) alert(notes.join('\n'));
   await openCropped(new File([out.blob], handle.name, { type: out.blob.type }), sourceLoop, loopStart - out.start, loopEnd - out.start);
