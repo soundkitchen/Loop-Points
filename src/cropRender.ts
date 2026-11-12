@@ -9,6 +9,9 @@
 //     タイムスケールは元のままで、HE-AAC は 2 サンプル単位)
 //   WAV → WAV: 元の形式のままバイト列を切り出す
 //   ほかの形式 → WAV: ブラウザでデコードしたものを、kiln で 16-bit で書く (元のレートが分かればそのレート)
+//   WAV → FLAC: kiln で FLAC にする。整数の WAV は元のビット深度のまま (可逆)、浮動小数点の WAV は 24-bit
+//   mp3 → FLAC: kiln でデコードして 16-bit で書く (元のサンプルレートのまま)
+//   ほかの形式 → FLAC: ブラウザでデコードしたものを、kiln で 16-bit で書く (レートは WAV にするときと同じ)
 import { KilnError, type FlacInfo, type Kiln, type KilnErrorCode, type M4aInfo, type Mp3Info, type OggInfo, type WavInfo } from '../kiln/wasm/kiln';
 import { OUT_FORMATS, extFormat, formatsFor, isOgg, type OutFormat } from './cropFormat';
 import { loadKiln } from './kilnLoader';
@@ -60,7 +63,8 @@ function probeSource(k: Kiln, fileName: string, bytes: Uint8Array<ArrayBuffer>):
 // 保存先に元の音源を選ぶと、保存先を選んだ時点で Chromium がそのファイルを空にして、読めなくなるため
 export interface CropSource {
   file: File;
-  formats: OutFormat[];   // 書き出せる形式。先頭が初期値。kiln で無劣化で切れる mp3、FLAC、Ogg、m4a だけ、元の形式を選べる
+  native: OutFormat | null;   // 元の形式のまま切り出せる形式。kiln で無劣化で切れる mp3、FLAC、Ogg、m4a のときだけ
+  formats: OutFormat[];   // 書き出せる形式。先頭が初期値。元の形式 (native)、WAV、FLAC
   mp3Start: number;       // mp3 で書き出すときに切り始められる最初の位置 (秒)。長さの情報のない mp3 は 529 サンプル
   bytes: Uint8Array<ArrayBuffer>;
   wav: WavInfo | null;
@@ -88,7 +92,7 @@ export async function inspect(file: File, decoded: AudioBuffer): Promise<CropSou
   // m4a も同じ。kiln が切り出せるのは AAC で、ALAC (ブラウザで開けない) と HE-AAC v2 などは WAV だけになる
   const m4a = m4aInfo?.trimmable && sameLength(m4aInfo.samples, m4aInfo.sampleRate) ? m4aInfo : null;
   const native: OutFormat | null = mp3 ? 'mp3' : flac ? 'flac' : ogg ? (ogg.codec === 'opus' && extFormat(file.name) === 'opus' ? 'opus' : 'ogg') : m4a ? 'm4a' : null;
-  return { file, formats: formatsFor(native), mp3Start: mp3 ? mp3.minStart / mp3.sampleRate : 0, bytes, wav, mp3, flac, ogg, m4a, lengthMismatch };
+  return { file, native, formats: formatsFor(native), mp3Start: mp3 ? mp3.minStart / mp3.sampleRate : 0, bytes, wav, mp3, flac, ogg, m4a, lengthMismatch };
 }
 
 export interface Rendered {
@@ -110,6 +114,13 @@ export async function renderCrop(source: CropSource, decoded: AudioBuffer, start
     return { startSample, endSample: Math.min(Math.max(endSample, startSample + 1), length) };
   };
   const blob = (data: Uint8Array<ArrayBuffer>) => new Blob([data], { type: OUT_FORMATS[format].mime });
+  // kiln で読めない形式は、ブラウザでデコードしたものから書く。元のレートが分かった音源は元のレートで、
+  // 分からなかった音源は出力の機器のレートでデコードしてある
+  const decodedRange = () => {
+    const { startSample, endSample } = range(decoded.sampleRate, decoded.length);
+    const channels = Array.from({ length: decoded.numberOfChannels }, (_, c) => decoded.getChannelData(c).subarray(startSample, endSample));
+    return { channels, startSample };
+  };
 
   if (format === 'mp3') {
     if (!mp3) throw new Error(`${source.file.name} は無劣化で切り出せる mp3 ではありません。WAV で書き出してください`);
@@ -117,9 +128,23 @@ export async function renderCrop(source: CropSource, decoded: AudioBuffer, start
     return { blob: blob(r.data), start: r.start, invalidFrames: 0 };
   }
   if (format === 'flac') {
-    if (!flac) throw new Error(`${source.file.name} は無劣化で切り出せる FLAC ではありません。WAV で書き出してください`);
-    const r = k.flac.trim(bytes, range(flac.sampleRate, flac.samples));
-    return { blob: blob(r.data), start: r.start, invalidFrames: r.invalidFrames };
+    // FLAC の音源は FLAC のまま切り出す。ほかの音源はデコードして FLAC にエンコードする
+    if (flac) {
+      const r = k.flac.trim(bytes, range(flac.sampleRate, flac.samples));
+      return { blob: blob(r.data), start: r.start, invalidFrames: r.invalidFrames };
+    }
+    if (wav) {
+      // bitsPerSample を省くと、整数の WAV は元のビット深度のまま (可逆)。浮動小数点の WAV は、細かさをなるべく残すよう 24-bit にする
+      const float = wav.format === 'f32' || wav.format === 'f64';
+      const r = k.wav.toFlac(bytes, { ...range(wav.sampleRate, wav.samples), ...(float ? { bitsPerSample: 24 } : {}) });
+      return { blob: blob(r.data), start: r.start, invalidFrames: 0 };
+    }
+    if (mp3) {
+      const r = k.mp3.toFlac(bytes, { ...range(mp3.sampleRate, mp3.samples), bitsPerSample: 16 });
+      return { blob: blob(r.data), start: r.start, invalidFrames: r.invalidFrames };
+    }
+    const { channels, startSample } = decodedRange();
+    return { blob: blob(k.flac.encode(channels, { sampleRate: decoded.sampleRate, bitsPerSample: 16 })), start: startSample / decoded.sampleRate, invalidFrames: 0 };
   }
   if (isOgg(format)) {
     if (!ogg || (format === 'opus' && ogg.codec !== 'opus')) throw new Error(`${source.file.name} は無劣化で切り出せる ${format === 'opus' ? 'Ogg Opus' : 'Ogg'} ではありません。WAV で書き出してください`);
@@ -144,9 +169,6 @@ export async function renderCrop(source: CropSource, decoded: AudioBuffer, start
     const r = k.flac.toWav(bytes, range(flac.sampleRate, flac.samples));
     return { blob: blob(r.data), start: r.start, invalidFrames: r.invalidFrames };
   }
-  // kiln で読めない形式は、ブラウザでデコードしたものをそのまま書く。元のレートが分かった音源は元のレートで、
-  // 分からなかった音源は出力の機器のレートでデコードしてある
-  const { startSample, endSample } = range(decoded.sampleRate, decoded.length);
-  const channels = Array.from({ length: decoded.numberOfChannels }, (_, c) => decoded.getChannelData(c).subarray(startSample, endSample));
+  const { channels, startSample } = decodedRange();
   return { blob: blob(k.wav.encode(channels, { sampleRate: decoded.sampleRate, format: WAV_SAMPLE_FORMAT })), start: startSample / decoded.sampleRate, invalidFrames: 0 };
 }

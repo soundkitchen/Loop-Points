@@ -1,5 +1,5 @@
 // クロップの書き出し形式。mp3、FLAC、Ogg (Opus、Vorbis)、m4a (AAC) の音源は、再エンコードせずに元の形式で切り出せる。
-// WAV はどの音源からも書き出せる。
+// WAV と FLAC はどの音源からも書き出せる (FLAC の音源以外は、デコードして FLAC にエンコードする)。
 // opus は Ogg Opus。ogg は Ogg Opus か Ogg Vorbis (元の音源と同じ中身)。Ogg Opus は元の音源の拡張子に合わせる
 export type OutFormat = 'wav' | 'mp3' | 'flac' | 'opus' | 'ogg' | 'm4a';
 
@@ -19,9 +19,15 @@ export function extFormat(fileName: string): OutFormat | null {
 }
 
 // 音源から書き出せる形式。先頭が初期値。native は元の形式のまま切り出せる形式 (mp3、FLAC、Ogg、m4a) で、
-// その形式と WAV を選べる。それ以外 (null や WAV) は WAV だけ。
+// その形式、WAV、FLAC の順に並べる (FLAC の音源は FLAC と WAV)。それ以外 (null や WAV) は WAV と FLAC。
 // kiln が中身を調べる前は拡張子から、調べた後は kiln の結果から native を決める (cropRender.ts の inspect)
-export const formatsFor = (native: OutFormat | null): OutFormat[] => (native && native !== 'wav' ? [native, 'wav'] : ['wav']);
+export function formatsFor(native: OutFormat | null): OutFormat[] {
+  if (native === 'flac') return ['flac', 'wav'];
+  return native && native !== 'wav' ? [native, 'wav', 'flac'] : ['wav', 'flac'];
+}
+
+// セレクトに出す名前。FLAC は、FLAC の音源をそのまま切るときだけ「無劣化」と書く (ほかの音源からはエンコードする)
+export const formatLabel = (format: OutFormat, native: OutFormat | null) => (format === 'flac' && native !== 'flac' ? 'FLAC' : OUT_FORMATS[format].label);
 
 // 同じ中身で拡張子だけが違う形式か。opus は音源が Ogg Opus か。Ogg Opus は .opus と .ogg のどちらの名前でも書ける
 // (Ogg Vorbis は .ogg だけ)

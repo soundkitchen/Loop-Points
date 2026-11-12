@@ -1,4 +1,4 @@
-import { OUT_FORMATS, croppedName, extFormat, formatsFor, sameContent, type OutFormat } from './cropFormat';
+import { OUT_FORMATS, croppedName, extFormat, formatLabel, formatsFor, sameContent, type OutFormat } from './cropFormat';
 import type { CropSource } from './cropRender';
 import { canWrite, isAbort, pickAudioToSave, pickJsonToOpen, pickJsonToSave, writeContent } from './jsonFile';
 import { parseLoops, serializeLoops, type LoopMap, type LoopPoints } from './loops';
@@ -517,8 +517,9 @@ function updateOutFormats() {
   // 調べる前の仮の形式。.ogg と .m4a は中身が何か (Opus か Vorbis か、AAC か ALAC かなど) 分からないので、
   // 元の形式は出さない (kiln で調べてから出す)
   const ext = extFormat(name);
-  const formats = cropSource?.formats ?? formatsFor(ext === 'ogg' || ext === 'm4a' ? null : ext);
-  outFormat.replaceChildren(...formats.map((f) => new Option(OUT_FORMATS[f].label, f)));
+  const native = cropSource ? cropSource.native : ext === 'ogg' || ext === 'm4a' ? null : ext;
+  const formats = cropSource?.formats ?? formatsFor(native);
+  outFormat.replaceChildren(...formats.map((f) => new Option(formatLabel(f, native), f)));
   outFormat.disabled = formats.length < 2 || !cropSource;
 }
 // 形式によって、実際に切り始める位置が変わる
