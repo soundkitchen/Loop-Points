@@ -12,7 +12,7 @@
 import { KilnError, type FlacInfo, type Kiln, type KilnErrorCode, type M4aInfo, type Mp3Info, type OggInfo, type WavInfo } from '../kiln/wasm/kiln';
 import { OUT_FORMATS, extFormat, formatsFor, isOgg, type OutFormat } from './cropFormat';
 import { loadKiln } from './kilnLoader';
-import { sourceFormat } from './sourceRate';
+import { hasMp3Ext, sourceFormat } from './sourceDetect';
 
 const WAV_SAMPLE_FORMAT = 'i16';
 
@@ -38,12 +38,10 @@ interface Probed {
 }
 
 function probeSource(k: Kiln, fileName: string, bytes: Uint8Array<ArrayBuffer>): Probed {
-  // 形式は kiln の detect で判定し (sourceRate.ts。音源を開くときと同じ判定)、その形式の解析だけを呼ぶ。解析は、呼ぶたびに
-  // 音源をまるごと wasm のメモリに写すので、合う形式を探して順に試さない。
-  // 判定できなかったときは、拡張子が .mp3 なら mp3 の解析を試す。detect は mp3 の最初のフレームを先頭の近くでしか探さないが、
-  // 解析は終わりまで探すので、先頭に大きなゴミがある mp3 も読める
-  const format = sourceFormat(k, fileName, bytes) ?? (extFormat(fileName) === 'mp3' ? 'mp3' : null);
-  return {
+  // 形式は kiln の detect で判定し (sourceDetect.ts。音源を開くときと同じ判定)、その形式の解析だけを呼ぶ。解析は、呼ぶたびに
+  // 音源をまるごと wasm のメモリに写すので、合う形式を探して順に試さない
+  const format = sourceFormat(k, fileName, bytes);
+  const probed: Probed = {
     wav: format === 'wav' ? probe(() => k.wav.probe(bytes)) : null,
     mp3: format === 'mp3' ? probe(() => k.mp3.probe(bytes)) : null,
     // flac.probe はすべてのフレームを走査するので、大きなファイルでは少し時間がかかる
@@ -51,6 +49,11 @@ function probeSource(k: Kiln, fileName: string, bytes: Uint8Array<ArrayBuffer>):
     ogg: format === 'ogg' ? probe(() => k.ogg.probe(bytes)) : null,
     m4a: format === 'm4a' ? probe(() => k.m4a.probe(bytes)) : null,
   };
+  // 拡張子が .mp3 で、ここまでで読めなかったとき (形式を判定できなかったか、判定した形式の解析で読めなかった) は、mp3 の解析を
+  // 試す。detect は mp3 の最初のフレームを先頭の近くでしか探さないが、解析は終わりまで探すので、先頭に大きなゴミがある mp3 も
+  // 読める。RIFF で包んだ mp3 (detect は WAV と判定し、WAV の解析は中身が PCM でないので読めない) も、ここで読める
+  if (format !== 'mp3' && hasMp3Ext(fileName) && Object.values(probed).every((info) => info === null)) probed.mp3 = probe(() => k.mp3.probe(bytes));
+  return probed;
 }
 
 // 書き出す前に調べた音源。書き出しは、元のファイルを読み直さずにこのバイト列を使う。
@@ -75,7 +78,7 @@ export async function inspect(file: File, decoded: AudioBuffer): Promise<CropSou
   const bytes = new Uint8Array(await file.arrayBuffer());
   const { wav, mp3, flac, ogg: oggInfo, m4a: m4aInfo } = probeSource(k, file.name, bytes);
   // decoded のレートのサンプル数で比べる。decoded はふつう元のレートのままで、長さはサンプル単位で合う。出力の機器のレートに
-  // 変換してデコードした音源 (sourceRate.ts) の丸めの分と、ブラウザと kiln の数え方の小さな違いは許す
+  // 変換してデコードした音源 (sourceDetect.ts) の丸めの分と、ブラウザと kiln の数え方の小さな違いは許す
   const sameLength = (samples: number, sampleRate: number) => Math.abs(decoded.length - (samples * decoded.sampleRate) / sampleRate) <= 2;
   const lengthMismatch = flac !== null && !sameLength(flac.samples, flac.sampleRate);
   // Ogg は、kiln が切り出せる (trimmable。読めないページがなく、先頭の切り詰めのある Vorbis でない) うえで、
@@ -94,7 +97,7 @@ export interface Rendered {
   invalidFrames: number;   // 壊れていて無音にしたフレームの数 (FLAC の切り出しと、mp3 / FLAC のデコード)
 }
 
-// start 以上 end 未満 (decoded のサンプル) を書き出す。decoded は元のレートのまま (sourceRate.ts) なので、kiln で切る位置と同じ
+// start 以上 end 未満 (decoded のサンプル) を書き出す。decoded は元のレートのまま (sourceDetect.ts) なので、kiln で切る位置と同じ
 export async function renderCrop(source: CropSource, decoded: AudioBuffer, start: number, end: number, format: OutFormat): Promise<Rendered> {
   const k = await loadKiln();
   const { bytes, wav, mp3, flac, ogg, m4a } = source;

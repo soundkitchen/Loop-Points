@@ -12,20 +12,26 @@ const MAX_RATE = 768000;
 // 大きな音源 (WAV など) をそのまま渡さない。レートはヘッダーにあり、たいていはこの中に入っている
 const HEAD_BYTES = 64 * 1024;
 
-// 先頭の ID3v2 タグの長さ。タグがなければ 0。mp3 (と、まれに FLAC) の先頭にあり、画像が入っていると HEAD_BYTES より大きい。
-// ヘッダーはタグの後ろにあるので、その分も kiln に渡す
+// 先頭に続く ID3v2 タグの長さの合計。タグがなければ 0。mp3 (と、まれに FLAC) の先頭にあり、画像が入っていると HEAD_BYTES より
+// 大きい。ヘッダーはタグの後ろにあるので、その分も kiln に渡す。kiln (id3.zig の skipTags) は続くタグをすべて飛ばすので、
+// ここでもすべて数える (1 つ目だけを数えると、2 つ目のタグの途中で切れて、kiln がヘッダーに届かない)
 function id3v2Size(d: Uint8Array): number {
-  if (d.length < 10 || d[0] !== 0x49 || d[1] !== 0x44 || d[2] !== 0x33) return 0;   // "ID3"
-  const footer = d[3] === 4 && (d[5] & 0x10) !== 0 ? 10 : 0;
-  // 長さは、7 ビットずつの 4 バイト
-  return 10 + footer + (((d[6] & 0x7f) << 21) | ((d[7] & 0x7f) << 14) | ((d[8] & 0x7f) << 7) | (d[9] & 0x7f));
+  let pos = 0;
+  while (d.length - pos >= 10 && d[pos] === 0x49 && d[pos + 1] === 0x44 && d[pos + 2] === 0x33) {   // "ID3"
+    const footer = d[pos + 3] === 4 && (d[pos + 5] & 0x10) !== 0 ? 10 : 0;
+    // 長さは、7 ビットずつの 4 バイト
+    pos += 10 + footer + (((d[pos + 6] & 0x7f) << 21) | ((d[pos + 7] & 0x7f) << 14) | ((d[pos + 8] & 0x7f) << 7) | (d[pos + 9] & 0x7f));
+  }
+  return pos;
 }
 
 // kiln に渡す、ファイルの先頭 (ID3v2 タグがあれば、その後ろの HEAD_BYTES まで)
 const headOf = (bytes: Uint8Array<ArrayBuffer>) => bytes.subarray(0, id3v2Size(bytes) + HEAD_BYTES);
 
-// mp3 とみなすのは、拡張子が .mp3 のものだけ。mp3 は印がなくフレームの並びで判定するので、ほかの形式を読み違えないようにする
-const accept = (d: Detected | null, fileName: string) => (d?.format === 'mp3' && extFormat(fileName) !== 'mp3' ? null : d);
+// mp3 とみなすのは、拡張子が .mp3 のものだけ。mp3 は印がなくフレームの並びで判定するので、ほかの形式を読み違えないようにする。
+// 逆に、拡張子が .mp3 なのに mp3 と判定できなかった音源は、クロップの準備 (cropRender.ts の probeSource) が mp3 の解析を試す
+export const hasMp3Ext = (fileName: string) => extFormat(fileName) === 'mp3';
+const accept = (d: Detected | null, fileName: string) => (d?.format === 'mp3' && !hasMp3Ext(fileName) ? null : d);
 
 // 音源の形式。判定できなければ null。形式はファイルの先頭だけで決まる (mp3 は、最初のフレームが先頭の HEAD_BYTES の中に
 // あるものだけ)

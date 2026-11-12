@@ -1,4 +1,4 @@
-// kiln (kiln/) の wasm を読み込む。音源を調べるとき (sourceRate.ts) と、クロップで書き出すとき (cropRender.ts) に使う
+// kiln (kiln/) の wasm を読み込む。音源を調べるとき (sourceDetect.ts) と、クロップで書き出すとき (cropRender.ts) に使う
 import { load, type Kiln } from '../kiln/wasm/kiln';
 // CSP の connect-src 'none' では fetch で wasm を読めない (data: URL も止まる) ので、チャンクに埋め込んでバイト列で渡す
 import kilnWasm from '../kiln/zig-out/kiln.wasm?url&inline';
