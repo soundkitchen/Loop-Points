@@ -9,12 +9,46 @@
 //     タイムスケールは元のままで、HE-AAC は 2 サンプル単位)
 //   WAV → WAV: 元の形式のままバイト列を切り出す
 //   ほかの形式 → WAV: ブラウザでデコードしたものを、kiln で 16-bit で書く (元のレートが分かればそのレート)
-import type { FlacInfo, M4aInfo, Mp3Info, OggInfo, WavInfo } from '../kiln/wasm/kiln';
+import { KilnError, type FlacInfo, type Kiln, type KilnErrorCode, type M4aInfo, type Mp3Info, type OggInfo, type WavInfo } from '../kiln/wasm/kiln';
 import { OUT_FORMATS, extFormat, formatsFor, isOgg, type OutFormat } from './cropFormat';
 import { loadKiln } from './kilnLoader';
-import { probeSource } from './sourceRate';
 
 const WAV_SAMPLE_FORMAT = 'i16';
+
+const startsWith = (d: Uint8Array, at: number, s: string) => [...s].every((c, i) => d[at + i] === c.charCodeAt(0));
+
+const NOT_READABLE = new Set<KilnErrorCode>(['NotMp3', 'NotWav', 'NotFlac', 'NotOgg', 'NotM4a', 'UnsupportedFormat', 'InvalidWav', 'InvalidFlac', 'InvalidOgg', 'InvalidM4a']);
+
+// kiln が扱えない入力 (MPEG-2 の mp3、壊れた FLAC など) なら null。それ以外のエラーはそのまま投げる
+function probe<T>(read: () => T): T | null {
+  try {
+    return read();
+  } catch (e) {
+    if (e instanceof KilnError && NOT_READABLE.has(e.code)) return null;
+    throw e;
+  }
+}
+
+// kiln で読めた形式の情報。入るのは 1 つだけで、どれでも読めなければすべて null
+interface Probed {
+  wav: WavInfo | null;
+  mp3: Mp3Info | null;
+  flac: FlacInfo | null;
+  ogg: OggInfo | null;   // Opus か Vorbis。切り出せないもの (trimmable が false) も入る
+  m4a: M4aInfo | null;   // AAC か ALAC。切り出せないもの (trimmable が false) も入る
+}
+
+function probeSource(k: Kiln, fileName: string, bytes: Uint8Array<ArrayBuffer>): Probed {
+  // 中身で判定する。mp3 はフレームの同期を探すので、ほかの形式を読み違えないよう拡張子が .mp3 のものに限る
+  const wav = startsWith(bytes, 0, 'RIFF') ? probe(() => k.wav.probe(bytes)) : null;
+  const mp3 = !wav && extFormat(fileName) === 'mp3' ? probe(() => k.mp3.probe(bytes)) : null;
+  // FLAC は拡張子によらず調べる。flac.probe は ID3v2 タグを飛ばし、FLAC でなければフレームを読まずに NotFlac を返す。
+  // FLAC ならすべてのフレームを走査するので、大きなファイルでは少し時間がかかる
+  const flac = !wav && !mp3 ? probe(() => k.flac.probe(bytes)) : null;
+  const ogg = !wav && !mp3 && !flac ? probe(() => k.ogg.probe(bytes)) : null;
+  const m4a = !wav && !mp3 && !flac && !ogg ? probe(() => k.m4a.probe(bytes)) : null;
+  return { wav, mp3, flac, ogg, m4a };
+}
 
 // 書き出す前に調べた音源。書き出しは、元のファイルを読み直さずにこのバイト列を使う。
 // 保存先に元の音源を選ぶと、保存先を選んだ時点で Chromium がそのファイルを空にして、読めなくなるため
