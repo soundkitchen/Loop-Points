@@ -124,7 +124,8 @@ async function findZig() {
   return downloadZig();
 }
 
-// kiln.wasm は、最初の音源を開くときに読むチャンクに埋め込む。別のファイルとして出ると、CSP の connect-src 'none' で読めず、音源を開けなくなる
+// kiln.wasm は、最初の音源を開くときに読むチャンクに埋め込む。別のファイルとして出ると、CSP の connect-src 'none' で読めず、
+// 元のサンプルレートを調べられなくなり (出力の機器のレートに変換して開く)、クロップの書き出しもできなくなる
 function checkDist() {
   const found = readdirSync(path.join(root, 'dist'), { recursive: true }).filter((f) => String(f).endsWith('.wasm'));
   if (found.length) {
