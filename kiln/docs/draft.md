@@ -137,7 +137,7 @@ Loop Points の音源の解析(音源を開くときの、元のサンプルレ�
 
 ## 3. まだ決めていないこと
 
-書き出せる形式とその順番、エンコーダを kiln に持たせるか(Ogg Vorbis、mp3)、wasm を形式ごとに分けるかなどは、Loop Points の #16 で扱う。
+書き出せる形式とその順番、エンコーダを kiln に持たせるか(Ogg Vorbis、mp3)、wasm を形式ごとに分けるかなどは、Loop Points の #16 で扱う。FLAC への変換は、Loop Points がクロップの書き出しで使うようになった(WAV は `wav.toFlac`、mp3 は `mp3.toFlac`、ブラウザでデコードした音源は `flac.encode`)。kiln に変更はない。
 
 ## 4. 調べて分かった事実(判断材料)
 
