@@ -1,4 +1,5 @@
 // クロップの書き出し形式。mp3、FLAC、Ogg (Opus、Vorbis)、m4a (AAC) の音源は、再エンコードせずに元の形式で切り出せる。
+// aac (ADTS) の音源は、再エンコードせずに m4a に入れ替えて切り出せる (ADTS には前後の余分を捨てる指定を書けないため)。
 // WAV と FLAC はどの音源からも書き出せる (FLAC の音源以外は、デコードして FLAC にエンコードする)。
 // opus は Ogg Opus。ogg は Ogg Opus か Ogg Vorbis (元の音源と同じ中身)。Ogg Opus は元の音源の拡張子に合わせる
 export type OutFormat = 'wav' | 'mp3' | 'flac' | 'opus' | 'ogg' | 'm4a';
@@ -21,7 +22,7 @@ export function extFormat(fileName: string): OutFormat | null {
 // kiln の FLAC のエンコーダーが書けるチャンネル数の上限 (FLAC の仕様の上限)
 const FLAC_MAX_CHANNELS = 8;
 
-// 音源から書き出せる形式。先頭が初期値。native は元の形式のまま切り出せる形式 (mp3、FLAC、Ogg、m4a) で、
+// 音源から書き出せる形式。先頭が初期値。native は元の形式のまま切り出せる形式 (mp3、FLAC、Ogg、m4a。aac は m4a) で、
 // その形式、WAV、FLAC の順に並べる (FLAC の音源は FLAC と WAV)。それ以外 (null や WAV) は WAV と FLAC。
 // ただし、9 チャンネル以上の音源は FLAC にできないので、FLAC を除く。
 // kiln が中身を調べる前は拡張子から、調べた後は kiln の結果から native を決める (cropRender.ts の inspect)

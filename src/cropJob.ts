@@ -3,13 +3,15 @@
 import type { Kiln } from '../kiln/wasm/kiln';
 
 // kiln で読める音源の種類
-export type BytesKind = 'mp3' | 'flac' | 'ogg' | 'm4a' | 'wav';
-// 書き出す形式。native は元の形式のまま切り出す (mp3、FLAC、Ogg、m4a)。WAV の音源の wav も、元の形式のまま切り出す
+export type BytesKind = 'mp3' | 'flac' | 'ogg' | 'm4a' | 'aac' | 'wav';
+// 書き出す形式。native は元の形式のまま切り出す (mp3、FLAC、Ogg、m4a。aac は AAC のまま m4a に入れ替える)。
+// WAV の音源の wav も、元の形式のまま切り出す
 export type JobOutput = 'native' | 'wav' | 'flac';
 
 export type CropJob =
-  // kiln で読める音源。音源のバイト列の startSample 以上 endSample 未満 (音源のサンプル) を書く。float は浮動小数点の WAV か
-  | { kind: BytesKind; output: JobOutput; bytes: Uint8Array<ArrayBuffer>; startSample: number; endSample: number; float: boolean }
+  // kiln で読める音源。音源のバイト列の startSample 以上 endSample 未満 (音源のサンプル) を書く。float は浮動小数点の WAV か、
+  // sbr は HE-AAC の aac か (デコード結果のレートがヘッダーの 2 倍。ヘッダーからは分からないので、ブラウザで調べて渡す)
+  | { kind: BytesKind; output: JobOutput; bytes: Uint8Array<ArrayBuffer>; startSample: number; endSample: number; float: boolean; sbr: boolean }
   // kiln で読めない音源。ブラウザでデコードした PCM (区間だけ) を書く。start は区間の先頭 (秒)
   | { kind: 'pcm'; output: 'wav' | 'flac'; channels: Float32Array<ArrayBuffer>[]; sampleRate: number; start: number };
 
@@ -29,7 +31,7 @@ type BytesSource = Extract<CropJob, { kind: BytesKind }>;
 type Written = { data: Uint8Array<ArrayBuffer>; start: number; invalidFrames?: number };
 const range = (s: BytesSource) => ({ startSample: s.startSample, endSample: s.endSample });
 
-// kiln で読める音源から書く。音源の種類に、ない形式は書けない (Ogg と m4a の WAV と FLAC は、ブラウザでデコードした PCM から書く)
+// kiln で読める音源から書く。音源の種類に、ない形式は書けない (Ogg、m4a、aac の WAV と FLAC は、ブラウザでデコードした PCM から書く)
 const FROM_BYTES: Record<BytesKind, Partial<Record<JobOutput, (k: Kiln, s: BytesSource) => Written>>> = {
   mp3: {
     native: (k, s) => k.mp3.trim(s.bytes, range(s)),   // 再エンコードせずにサンプル単位で切り出す
@@ -46,6 +48,8 @@ const FROM_BYTES: Record<BytesKind, Partial<Record<JobOutput, (k: Kiln, s: Bytes
   // フレームをコピーして切り出す。前の 2 フレームと後ろの 1 フレームも残し、編集リストと iTunSMPB で前後を捨てさせる。
   // タイムスケールは元のままで、HE-AAC は 2 サンプル単位
   m4a: { native: (k, s) => k.m4a.trim(s.bytes, range(s)) },
+  // ADTS には前後の余分を捨てる指定を書けないので、フレームを m4a に入れ替えて、m4a と同じように切り出す
+  aac: { native: (k, s) => k.aac.trim(s.bytes, { ...range(s), sbr: s.sbr }) },
   wav: {
     wav: (k, s) => k.wav.trim(s.bytes, range(s)),   // 元の形式のままバイト列を切り出す
     // bitsPerSample を省くと、整数の WAV は元のビット深度のまま (可逆)
