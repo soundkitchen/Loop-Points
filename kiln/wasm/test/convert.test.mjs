@@ -134,3 +134,14 @@ test('aac.trim', async () => {
   assert.deepEqual([hs.startSample, hs.endSample], [4410, 8820]);
   assert.throws(() => kiln.aac.trim(lc, { startSample: 100, endSample: 100, sbr: false }), { code: 'EmptyRange' });
 });
+
+test('aac.frames', async () => {
+  const lc = await data('lc-ffmpeg.aac');
+  const f = kiln.aac.frames(lc, 3);
+  assert.equal(f.length, 3);
+  // 続けて並び、どれも ADTS の同期語で始まる
+  assert.equal(f[1].offset, f[0].offset + f[0].length);
+  for (const { offset } of f) assert.deepEqual([lc[offset], lc[offset + 1] & 0xf6], [0xff, 0xf0]);
+  assert.equal(kiln.aac.frames(lc, 1000).length, kiln.aac.probe(lc).frames);
+  assert.throws(() => kiln.aac.frames(new Uint8Array(10), 3), { code: 'NotAac' });
+});

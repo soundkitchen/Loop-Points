@@ -138,9 +138,9 @@ Loop Points の音源の解析(音源を開くときの、元のサンプルレ�
 ### 2.16 2026-11-13 に決めたこと(aac の切り出し)
 
 - **方式**: aac(ADTS)は、フレームを m4a に入れ替えて切り出す(Loop Points のユーザーが選んだ。ADTS のままフレーム単位で切る案もあった)。ADTS のままだと、前に残すフレーム(重ね合わせの相手)を捨てる指定が書けず、区間より 1〜2 フレーム前から鳴り、末尾もフレームの区切りまで伸びるため。フレームのヘッダを外して m4a のサンプルにし、m4a の切り出し(§2.12)と同じく、前の 2 フレームと後ろの 1 フレームと一緒にコピーして、前後の余分を編集リストと iTunSMPB で捨てさせる。タイムスケールはヘッダのレートなので、AAC-LC はサンプル単位、HE-AAC は 2 サンプル単位。設計は [`aac.md`](aac.md) §5
-- **HE-AAC かどうか**: kiln は音声データを読まないので、呼ぶ側が渡す(`sbr`。§2.8 の方針のまま)。Loop Points は、音源を開くときに WebCodecs の `AudioDecoder` で実際のレートとチャンネル数を調べ、.aac も元のレートのままデコードする(Loop Points のユーザーが選んだ。§2.13 で出力の機器のレートで扱うとしたのを改めた)。HE-AAC v2(PS)は、m4a と同じく切り出さない(呼ぶ側がチャンネル数で見分ける)
+- **HE-AAC かどうか**: kiln は音声データを読まないので、呼ぶ側が渡す(`sbr`。§2.8 の方針のまま)。Loop Points は、音源を開くときに WebCodecs の `AudioDecoder` で実際のレートとチャンネル数を調べ、.aac も元のレートのままデコードする(Loop Points のユーザーが選んだ。§2.13 で出力の機器のレートで扱うとしたのを改めた)。HE-AAC v2(PS)は、m4a と同じく切り出さない。デコーダはモノラルの HE-AAC も 2 チャンネルで出すので、呼ぶ側は、チャンネル数がヘッダと違えば左右を比べ、まったく同じなら PS のないモノラルの HE-AAC として切り出す(PR のレビューで見つかった)。kiln はその m4a に PS がないことを書く。`AudioDecoder` に渡すフレームの位置は kiln で読む(`aac.frames`。Loop Points で ADTS のヘッダを読み直さないよう、PR のレビューで足した)
 - **書く m4a**: ftyp は afconvert の m4a と同じ。AudioSpecificConfig は、中心の方式の後ろに SBR の有無を明示する拡張を付ける(AAC-LC は ffmpeg、HE-AAC は afconvert の m4a と同じ形)。書き出した m4a は kiln の `m4a.probe` でも SBR の有無が分かり、もう一度切り出せる。ID3 などのタグは書かない
-- **扱わない入力**: raw_data_block が 2 つ以上のフレームがあるもの(m4a の 1 サンプルにできない。`aac.probe` の `trimmable` が false)。HE-AAC で、出力のレート(ヘッダの 2 倍)をレートの表に書けないもの
+- **扱わない入力**: raw_data_block が 2 つ以上のフレームがあるもの(m4a の 1 サンプルにできない。`aac.probe` の `trimmable` が false)。HE-AAC で、出力のレート(ヘッダの 2 倍)をレートの表に書けないもの(`aac.probe` の `sbrTrimmable` が false。使う側が書き出す前に判定できるよう、PR のレビューで足した)
 - **確かめた事実**: Chromium(`decodeAudioData`)、ffmpeg、Apple のデコーダ(afconvert)は、ADTS の先頭を捨てずにデコードし、長さはフレームの数 × 1024(HE-AAC は 2048)になる。Chromium の `AudioDecoder` は、ADTS のフレームをそのまま渡すと、HE-AAC と HE-AAC v2 の実際のレートとチャンネル数を返す。書き出した m4a は、3 つのどれでも区間どおりの長さになる(`aac.md` §5.3)
 
 ## 3. まだ決めていないこと

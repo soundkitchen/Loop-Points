@@ -48,7 +48,7 @@ export async function sourceRate(fileName: string, bytes: Uint8Array<ArrayBuffer
   const k = await loadKiln();
   const head = headOf(bytes);
   let d = k.detect(head);
-  if (d?.format === 'aac') return inRange((await aacOutput(bytes))?.sampleRate ?? null);
+  if (d?.format === 'aac') return inRange((await aacOutput(k, head))?.sampleRate ?? null);
   // ヘッダーが先頭に入っていないことがあるのは、WAV (fmt チャンクが後ろ) と m4a (moov が後ろ。ffmpeg の既定) だけ。
   // そのときだけ全体を渡し直す。形式を判定できない音源は渡し直さない (全体から mp3 のフレームを探すと、偶然それらしい
   // 並びを拾うことがある)。SBR があるか分からない m4a は、全体を渡しても分からないが、moov が後ろの m4a と見分けられない
@@ -61,52 +61,53 @@ const inRange = (rate: number | null) => (rate !== null && rate >= MIN_RATE && r
 // AudioDecoder に渡す、ADTS の先頭のフレームの数。デコーダーは最初の数フレームを出さないことがあるので、少し多めに渡す
 const AAC_PROBE_FRAMES = 8;
 
-// ADTS (.aac) をデコードしたときのレートとチャンネル数。HE-AAC はヘッダーの 2 倍のレート、HE-AAC v2 は 2 チャンネルになる。
-// ヘッダーには中心の方式 (AAC-LC など) しか書けないので、WebCodecs の AudioDecoder に先頭のフレームをそのまま渡し、
-// 最初の出力から読む (kiln/docs/aac.md §3)。デコードできなければ null。クロップの準備 (cropRender.ts) でも、
-// HE-AAC かどうかを知るのに使う
-export async function aacOutput(bytes: Uint8Array<ArrayBuffer>): Promise<{ sampleRate: number; channels: number } | null> {
-  // 先頭の ID3v2 タグを飛ばし、同じ形のヘッダーが続くフレームを集める (kiln の aac.probe と違い、途中のゴミは読み飛ばさない)
-  let pos = id3v2Size(bytes);
-  const frames: Uint8Array[] = [];
-  const header = (p: number) => p + 7 <= bytes.length && bytes[p] === 0xff && (bytes[p + 1] & 0xf6) === 0xf0;
-  if (!header(pos)) return null;
-  const profile = bytes[pos + 2] >> 6, rateIndex = (bytes[pos + 2] >> 2) & 0xf;
-  const channelConfig = ((bytes[pos + 2] & 1) << 2) | (bytes[pos + 3] >> 6);
-  const ADTS_RATES = [96000, 88200, 64000, 48000, 44100, 32000, 24000, 22050, 16000, 12000, 11025, 8000, 7350];
-  if (rateIndex >= ADTS_RATES.length || channelConfig === 0) return null;
-  while (frames.length < AAC_PROBE_FRAMES && header(pos)) {
-    const len = ((bytes[pos + 3] & 3) << 11) | (bytes[pos + 4] << 3) | (bytes[pos + 5] >> 5);
-    if (len < 7 || pos + len > bytes.length) break;
-    frames.push(bytes.subarray(pos, pos + len));
-    pos += len;
+// ADTS (.aac) をデコードしたときのレートとチャンネル数。HE-AAC はヘッダーの 2 倍のレートになり、HE-AAC v2 とモノラルの
+// HE-AAC は 2 チャンネルになる (モノラルの HE-AAC は、PS があるかもしれないとして 2 チャンネルで出す)。ヘッダーには
+// 中心の方式 (AAC-LC など) しか書けないので、WebCodecs の AudioDecoder に先頭のフレームをそのまま渡し、最初の出力から
+// 読む (kiln/docs/aac.md §3)。フレームの区切りとヘッダーの値は kiln で読む。デコードできなければ null。Chromium の
+// AudioDecoder は Main、SSR、LTP のプロファイルを受け付けないので、それらも null
+async function aacOutput(k: Kiln, head: Uint8Array<ArrayBuffer>): Promise<{ sampleRate: number; channels: number } | null> {
+  let info, frames;
+  try {
+    info = k.aac.probe(head);
+    frames = k.aac.frames(head, AAC_PROBE_FRAMES);
+  } catch {
+    return null;
   }
-  const sampleRate = ADTS_RATES[rateIndex];
   const config: AudioDecoderConfig = {
-    codec: `mp4a.40.${profile + 1}`,   // オブジェクトタイプ (Main: 1、LC: 2 など)
-    sampleRate,
-    numberOfChannels: channelConfig === 7 ? 8 : channelConfig,
+    codec: `mp4a.40.${PROFILE_OBJECT_TYPES[info.profile]}`,
+    sampleRate: info.sampleRate,
+    numberOfChannels: info.channels,
   };
   if (typeof AudioDecoder === 'undefined' || !(await AudioDecoder.isConfigSupported(config).catch(() => null))?.supported) return null;
   return new Promise((resolve) => {
     let result: { sampleRate: number; channels: number } | null = null;
+    // 途中のフレームでデコーダーが失敗しても、それより前の出力で分かったものを使う
+    const done = () => {
+      resolve(result);
+      if (decoder.state !== 'closed') decoder.close();
+    };
     const decoder = new AudioDecoder({
       output: (data) => {
         result ??= { sampleRate: data.sampleRate, channels: data.numberOfChannels };
         data.close();
       },
-      error: () => resolve(null),
+      error: done,
     });
     try {
       decoder.configure(config);
       // ADTS のフレームはそれぞれ単独で復号を始められる (重ね合わせの分は無音になるだけ)
-      frames.forEach((f, i) => decoder.decode(new EncodedAudioChunk({ type: 'key', timestamp: Math.round((i * 1024 * 1e6) / sampleRate), data: f })));
-      decoder.flush().then(() => resolve(result), () => resolve(null)).finally(() => {
-        if (decoder.state !== 'closed') decoder.close();
-      });
+      frames.forEach(({ offset, length }, i) => decoder.decode(new EncodedAudioChunk({
+        type: 'key',
+        timestamp: Math.round((i * 1024 * 1e6) / info.sampleRate),
+        data: head.subarray(offset, offset + length),
+      })));
+      decoder.flush().then(done, done);
     } catch {
-      resolve(null);
-      if (decoder.state !== 'closed') decoder.close();
+      done();
     }
   });
 }
+
+// ADTS のヘッダーのプロファイルの、MPEG-4 Audio のオブジェクトタイプ (WebCodecs の codec の `mp4a.40.N` の N)
+const PROFILE_OBJECT_TYPES = { main: 1, lc: 2, ssr: 3, ltp: 4 } as const;

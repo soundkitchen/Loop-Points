@@ -105,6 +105,7 @@ test('aac.probe', async () => {
     samples: 14336,
     duration: 14336 / 22050,
     trimmable: true,
+    sbrTrimmable: true,
   });
 });
 

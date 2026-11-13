@@ -198,14 +198,14 @@ function setMode(next: Mode) {
 // ループモードに戻ったら、読んだバイト列を手放す
 function inspectCropSource() {
   const file = mode === 'crop' && buffer ? files.get(name) : undefined;
-  const decoded = buffer;
+  const audio = buffer, converted = decoded.get(name)?.converted ?? true;
   if (file === inspecting) return;
   inspecting = file;
   cropSource = null;
   cropError = null;
   updateOutFormats();
   if (!file) return;
-  import('./cropRender').then((m) => m.inspect(file, decoded!)).then(
+  import('./cropRender').then((m) => m.inspect(file, audio!, converted)).then(
     (s) => { if (inspecting === file) cropSource = s; },
     (e) => { if (inspecting === file) cropError = `${file.name} を書き出す準備ができませんでした (${e})`; },
   ).finally(() => {

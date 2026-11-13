@@ -33,9 +33,11 @@ pub const Info = struct {
     frames: u64,
     /// 長さ(ヘッダのサンプルレートのサンプル数。フレームあたり 1024)。先頭の遅延も含む
     samples: u64,
-    /// `trim` で切り出せるか(どのフレームも raw_data_block が 1 つで、m4a の 1 サンプルにできるか)。
-    /// HE-AAC で出力のレートを表に書けないもの(`trim` の説明)は含めない
+    /// `trim` で切り出せるか(どのフレームも raw_data_block が 1 つで、m4a の 1 サンプルにできるか)
     trimmable: bool,
+    /// HE-AAC として(`sbr` を付けて)`trim` で切り出せるか。`trimmable` に加えて、出力のレート(ヘッダの 2 倍)を
+    /// レートの表に書けること(ヘッダのレートが 48kHz 以下で、7350Hz でない)
+    sbr_trimmable: bool,
 };
 
 const Header = struct {
@@ -198,7 +200,29 @@ pub fn probe(input: []const u8) ParseError!Info {
         .frames = frames,
         .samples = samples,
         .trimmable = single,
+        .sbr_trimmable = single and sbrRateIndex(first) != null,
     };
+}
+
+/// HE-AAC の出力のレート(ヘッダの 2 倍)の、レートの表の番号。表になければ null
+fn sbrRateIndex(h: Header) ?u4 {
+    // 表の番号は 3 つ前(48kHz 以下で、7350Hz を除く)
+    return if (h.rate_index >= 3 and h.rate_index <= 11) h.rate_index - 3 else null;
+}
+
+/// フレームの位置と長さ(ヘッダを含む)
+pub const FrameSpan = struct { offset: usize, len: usize };
+
+/// 先頭から `out.len` 個までのフレームの位置(解析と同じ数え方。ゴミは読み飛ばす)。WebCodecs の `AudioDecoder` に
+/// フレームをそのまま渡して、実際のレートとチャンネル数を調べるのに使う(§3)
+pub fn firstFrames(input: []const u8, out: []FrameSpan) ParseError![]FrameSpan {
+    var it = try Frames.init(input);
+    var n: usize = 0;
+    while (n < out.len) : (n += 1) {
+        const f = it.next() orelse break;
+        out[n] = .{ .offset = f.pos, .len = f.header.len };
+    }
+    return out[0..n];
 }
 
 fn channelCount(h: Header) u8 {
@@ -236,8 +260,9 @@ pub const TrimError = ParseError || Io.Writer.Error || error{
 /// 前の 2 フレームと後ろの 1 フレームと一緒にコピーして、前後の余分を編集リストと iTunSMPB で捨てさせる。
 /// タイムスケールはヘッダのレートなので、AAC-LC はサンプル単位、HE-AAC は 2 サンプル単位(docs/aac.md §5)。
 /// 先頭の遅延はないものとする(ブラウザも ffmpeg も ADTS の先頭を捨てずにデコードする)。ID3 などのタグは書かない。
-/// raw_data_block が 2 つ以上のフレームがあるもの(m4a の 1 サンプルにできない)と、HE-AAC で出力のレートを
-/// 表に書けないもの(ヘッダのレートが 7350Hz や 48kHz を超えるもの)は UnsupportedFormat。`w.flush()` は呼び出し側が行う
+/// raw_data_block が 2 つ以上のフレームがあるもの(m4a の 1 サンプルにできない。`Info.trimmable` が false)と、HE-AAC で
+/// 出力のレートを表に書けないもの(`Info.sbr_trimmable` が false)は UnsupportedFormat。モノラルの HE-AAC は、PS がない
+/// ものとして書く(HE-AAC v2 は渡さないこと)。`w.flush()` は呼び出し側が行う
 pub fn trim(gpa: std.mem.Allocator, input: []const u8, options: TrimOptions, w: *Io.Writer) TrimError!TrimResult {
     const frames = try Frames.init(input);
     const first = frames.first;
@@ -337,8 +362,8 @@ const Bitrates = struct { buffer_size: u32, max_bitrate: u32, avg_bitrate: u32 }
 
 /// サンプルの説明(stsd)。mp4a と esds(ISO/IEC 14496-1 の ES_Descriptor)を、afconvert の m4a と同じ形で書く
 fn writeStsd(b: *m4a_trim.Builder, h: Header, sbr: bool, br: Bitrates) TrimError!void {
-    var asc: [5]u8 = undefined;
-    try audioSpecificConfig(&asc, h, sbr);
+    var asc_buf: [7]u8 = undefined;
+    const asc = try audioSpecificConfig(&asc_buf, h, sbr);
     const rate = rates[h.rate_index];
 
     const stsd = try b.begin("stsd");
@@ -371,7 +396,7 @@ fn writeStsd(b: *m4a_trim.Builder, h: Header, sbr: bool, br: Bitrates) TrimError
     try b.int(u32, br.avg_bitrate);
     // DecoderSpecificInfo(タグ 5): AudioSpecificConfig
     try descriptorHeader(b, 5, asc.len);
-    try b.raw(&asc);
+    try b.raw(asc);
     try descriptorHeader(b, 6, 1);
     try b.int(u8, 2);
     b.end(esds);
@@ -387,8 +412,10 @@ fn descriptorHeader(b: *m4a_trim.Builder, tag: u8, len: usize) error{OutOfMemory
 /// AudioSpecificConfig(ISO/IEC 14496-3 §1.6.2.1)。中心の方式(ヘッダのプロファイル、レート、チャンネル構成)の後ろに、
 /// SBR の有無を明示する拡張(同期語 0x2B7、オブジェクトタイプ 5、sbrPresentFlag と、あれば出力のレート)を付ける。
 /// SBR がないことも書くので、kiln の `m4a.probe` も含めて、デコーダが音声データを見ずにレートを決められる
-/// (AAC-LC は ffmpeg、HE-AAC は afconvert の m4a と同じ形)
-fn audioSpecificConfig(out: *[5]u8, h: Header, sbr: bool) error{UnsupportedFormat}!void {
+/// (AAC-LC は ffmpeg、HE-AAC は afconvert の m4a と同じ形)。モノラルの HE-AAC には、PS がないこと(同期語 0x548 と
+/// psPresentFlag)も付ける(書かないと、デコーダは PS があるかもしれないとして 2 チャンネルで出し、`m4a.probe` も PS が
+/// 分からないとする)。PS のあるもの(HE-AAC v2)は扱わないので、PS があるとは書かない
+fn audioSpecificConfig(buf: *[7]u8, h: Header, sbr: bool) error{UnsupportedFormat}![]const u8 {
     var bits: u64 = 0;
     bits = bits << 5 | (@as(u64, @intFromEnum(h.profile)) + 1);
     bits = bits << 4 | h.rate_index;
@@ -399,16 +426,21 @@ fn audioSpecificConfig(out: *[5]u8, h: Header, sbr: bool) error{UnsupportedForma
     bits = bits << 5 | 5;
     var n: u6 = 33;
     if (sbr) {
-        // 出力のレートはヘッダの 2 倍。表の番号は 3 つ前(48kHz 以下で、7350Hz を除く)
-        if (h.rate_index < 3 or h.rate_index > 11) return error.UnsupportedFormat;
         bits = bits << 1 | 1;
-        bits = bits << 4 | (h.rate_index - 3);
+        bits = bits << 4 | (sbrRateIndex(h) orelse return error.UnsupportedFormat);
         n += 4;
+        if (h.channel_config == 1) {
+            bits = bits << 11 | 0x548;
+            bits = bits << 1;
+            n += 12;
+        }
     } else {
         bits = bits << 1;
     }
-    bits <<= 40 - n;
-    std.mem.writeInt(u40, out, @intCast(bits), .big);
+    const len = (@as(usize, n) + 7) / 8;
+    bits <<= @intCast(len * 8 - n);
+    for (0..len) |i| buf[i] = @truncate(bits >> @intCast((len - 1 - i) * 8));
+    return buf[0..len];
 }
 
 const testdata = @import("testdata");
@@ -564,6 +596,40 @@ test "trim: 範囲外と、扱えない入力" {
     var it = try Frames.init(src);
     while (it.next()) |f| fast[f.pos + 2] = (fast[f.pos + 2] & 0xC3) | (2 << 2);
     try std.testing.expectEqual(64000, (try probe(fast)).sample_rate);
+    try std.testing.expect((try probe(fast)).trimmable);
+    try std.testing.expect(!(try probe(fast)).sbr_trimmable);
+    try std.testing.expect((try probe(src)).sbr_trimmable);
     try std.testing.expectError(error.UnsupportedFormat, trim(gpa, fast, .{ .sbr = true }, &out.writer));
     _ = try trim(gpa, fast, .{}, &out.writer);
+}
+
+test "audioSpecificConfig: モノラルの HE-AAC には PS がないことも書く" {
+    var buf: [7]u8 = undefined;
+    const mono: Header = .{ .mpeg_version = 4, .profile = .lc, .rate_index = 7, .channel_config = 1, .len = 100, .blocks = 1, .header_len = 7 };
+    const asc = try audioSpecificConfig(&buf, mono, true);
+    const c = try @import("m4a/asc.zig").parse(asc);
+    try std.testing.expectEqual(true, c.sbr);
+    try std.testing.expectEqual(false, c.ps);
+    try std.testing.expectEqual(44100, c.sbr_rate);
+    // ステレオと AAC-LC には付けない(PS はモノラルにしかない)
+    var stereo = mono;
+    stereo.channel_config = 2;
+    try std.testing.expectEqual(5, (try audioSpecificConfig(&buf, stereo, true)).len);
+    try std.testing.expectEqual(5, (try audioSpecificConfig(&buf, mono, false)).len);
+}
+
+test firstFrames {
+    const src = testdata.lc_ffmpeg_aac;
+    var spans: [4]FrameSpan = undefined;
+    const got = try firstFrames(src, &spans);
+    try std.testing.expectEqual(4, got.len);
+    var it = try Frames.init(src);
+    for (got) |g| {
+        const f = it.next().?;
+        try std.testing.expectEqual(FrameSpan{ .offset = f.pos, .len = f.header.len }, g);
+    }
+    // フレームの数より多く求めても、あるだけ返す
+    var many: [100]FrameSpan = undefined;
+    try std.testing.expectEqual((try probe(src)).frames, (try firstFrames(src, &many)).len);
+    try std.testing.expectError(error.NotAac, firstFrames("junk", &spans));
 }

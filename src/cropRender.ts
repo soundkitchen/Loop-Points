@@ -11,7 +11,7 @@ import { OUT_FORMATS, extFormat, formatsFor, isOgg, type OutFormat } from './cro
 import type { BytesKind, CropJob, CropResult } from './cropJob';
 import type { CropReply, CropRequest } from './cropWorker';
 import { loadKiln } from './kilnLoader';
-import { aacOutput, hasMp3Ext, sourceFormat } from './sourceDetect';
+import { hasMp3Ext, sourceFormat } from './sourceDetect';
 
 const NOT_READABLE = new Set<KilnErrorCode>(['NotMp3', 'NotWav', 'NotFlac', 'NotOgg', 'NotM4a', 'NotAac', 'UnsupportedFormat', 'InvalidWav', 'InvalidFlac', 'InvalidOgg', 'InvalidM4a']);
 
@@ -76,7 +76,8 @@ export interface CropSource {
 // m4a に入れ替えて切り出せる aac。sampleRate と samples はデコード結果のもの (HE-AAC はヘッダーの 2 倍)
 interface AacSource { sampleRate: number; samples: number; sbr: boolean }
 
-export async function inspect(file: File, decoded: AudioBuffer): Promise<CropSource> {
+// decoded はブラウザでデコードした音源。converted は、元のレートが分からず、出力の機器のレートに変換してデコードしたものか
+export async function inspect(file: File, decoded: AudioBuffer, converted: boolean): Promise<CropSource> {
   const k = await loadKiln();
   const bytes = new Uint8Array(await file.arrayBuffer());
   const { wav, mp3, flac, ogg: oggInfo, m4a: m4aInfo, aac: aacInfo } = probeSource(k, file.name, bytes);
@@ -90,18 +91,19 @@ export async function inspect(file: File, decoded: AudioBuffer): Promise<CropSou
   const ogg = oggInfo?.trimmable && sameLength(oggInfo.samples, oggInfo.sampleRate) ? oggInfo : null;
   // m4a も同じ。kiln が切り出せるのは AAC で、ALAC (ブラウザで開けない) と HE-AAC v2 などは WAV か FLAC だけになる
   const m4a = m4aInfo?.trimmable && sameLength(m4aInfo.samples, m4aInfo.sampleRate) ? m4aInfo : null;
-  // aac (ADTS) は m4a に入れ替えて切り出す。ヘッダーからは HE-AAC かどうかが分からないので、音源を開くときと同じく
-  // WebCodecs でデコードして調べる。デコード結果のレートがヘッダーの 1 倍 (AAC-LC) か 2 倍 (HE-AAC) で、チャンネル数が
-  // ヘッダーと同じ (HE-AAC v2 は PS で 2 チャンネルになる。m4a と同じく切り出さない) で、波形 (decoded) が同じレートの
-  // ままで、ブラウザと長さが合うときだけ。それ以外は WAV か FLAC だけにする
+  // aac (ADTS) は m4a に入れ替えて切り出す。ヘッダーからは HE-AAC かどうかが分からないが、音源を開くときに WebCodecs で
+  // 調べたレートのままデコードしてある (sourceDetect.ts) ので、decoded のレートとチャンネル数がデコード結果のもの。
+  // レートがヘッダーの 1 倍 (AAC-LC) か 2 倍 (HE-AAC) で、kiln がそのレートで切り出せて、ブラウザと長さが合うときだけ。
+  // チャンネル数は、ヘッダーと同じか、モノラルの HE-AAC で左右がまったく同じ (PS がない) こと。HE-AAC v2 (PS) は左右が
+  // 違い、m4a と同じく切り出さない (途中から復号すると左右が元と違う)。それ以外は WAV か FLAC だけにする
   let aac: AacSource | null = null;
-  if (aacInfo?.trimmable) {
-    const out = await aacOutput(bytes);
-    const scale = out ? out.sampleRate / aacInfo.sampleRate : 0;
+  if (aacInfo && !converted) {
+    const scale = decoded.sampleRate / aacInfo.sampleRate;
+    const sbr = scale === 2;
+    const trimmable = sbr ? aacInfo.sbrTrimmable : scale === 1 && aacInfo.trimmable;
     const samples = aacInfo.samples * scale;
-    if (out && (scale === 1 || scale === 2) && out.channels === aacInfo.channels && out.sampleRate === decoded.sampleRate && sameLength(samples, out.sampleRate)) {
-      aac = { sampleRate: out.sampleRate, samples, sbr: scale === 2 };
-    }
+    const channels = decoded.numberOfChannels === aacInfo.channels || (sbr && aacInfo.channels === 1 && decoded.numberOfChannels === 2 && sameChannels(decoded));
+    if (trimmable && channels && sameLength(samples, decoded.sampleRate)) aac = { sampleRate: decoded.sampleRate, samples, sbr };
   }
   const native: OutFormat | null = mp3 ? 'mp3' : flac ? 'flac' : ogg ? (ogg.codec === 'opus' && extFormat(file.name) === 'opus' ? 'opus' : 'ogg') : m4a || aac ? 'm4a' : null;
   return { file, formats: formatsFor(native, decoded.numberOfChannels), mp3Start: mp3 ? mp3.minStart / mp3.sampleRate : 0, bytes, wav, mp3, flac, ogg, m4a, aac, lengthMismatch };
@@ -202,6 +204,13 @@ export async function renderCrop(source: CropSource, decoded: AudioBuffer, start
   const clipped = job.kind === 'wav' && job.float && job.output === 'flac' ? countClipped(decoded, range(decoded.sampleRate, decoded.length)) : 0;
   const r = await runInWorker(job);
   return { blob: new Blob([r.data], { type: OUT_FORMATS[format].mime }), start: r.start, invalidFrames: r.invalidFrames, clipped };
+}
+
+// 2 チャンネルの左右がまったく同じか
+function sameChannels(decoded: AudioBuffer): boolean {
+  const l = decoded.getChannelData(0), r = decoded.getChannelData(1);
+  for (let i = 0; i < l.length; i++) if (l[i] !== r[i]) return false;
+  return true;
 }
 
 function countClipped(decoded: AudioBuffer, { startSample, endSample }: { startSample: number; endSample: number }): number {

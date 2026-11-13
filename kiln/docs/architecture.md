@@ -117,7 +117,7 @@ const nch = try dec.decodeFrame(frame_bytes, &pcm); // pcm: [2][1152]f32。扱�
 - `wav.encode` のサンプルは、`kiln_alloc_f32` で確保した領域(4 バイト境界)にチャンネルごとに続けて書き、`kiln_wav_encode` に渡す。形式は `kiln.pcm.Format` の番号でやり取りする(JS 側の `FORMATS` と並びを合わせる)
 - `mp3.trim` / `mp3.decode` / `mp3.toWav` / `mp3.toFlac` / `wav.trim` / `wav.toFlac` / `flac.trim` / `flac.decode` / `flac.toWav` / `ogg.trim` / `m4a.trim` / `aac.trim` は、秒で指定されたときだけ、サンプルレートを知るために先に `kiln_mp3_probe` / `kiln_wav_probe` / `kiln_flac_format` / `kiln_ogg_probe` / `kiln_m4a_probe` / `kiln_aac_probe` を呼ぶ(FLAC はメタデータだけを読む。aac はヘッダのレートなので、`sbr` なら 2 倍にして使う)。サンプル数だけの指定では、`trim`(`flac.trim`、`ogg.trim`、`m4a.trim`、`aac.trim` を含む)と `toWav` と `toFlac` と `flac.decode` は入力の解析が 1 回で済む(戻り値の秒は各 export が返すサンプルレートで計算する)。`kiln_mp3_decode` は、出力の大きさを決めるために中で probe してから復号するので、サンプル数だけの指定でも解析は 2 回(`kiln_flac_decode` はフレームの一覧 `kiln.flac.Index` を使い回すので 1 回)
 - `detect(bytes)` は、ヘッダーから形式とサンプルレートを読み、`{ format, sampleRate }` か null を返す(§2.2.1)。`format` は `'mp3'` / `'wav'` / `'flac'` / `'ogg'` / `'m4a'` / `'aac'`、`sampleRate` は読めなければ null。失敗はなく、`KilnError` を投げない。`kiln_detect` はいつも true を返し、`kiln_value` に 0: 形式が分かったか、1: 形式(`kiln.Format` の番号。JS 側の `DETECT_FORMATS` と並びを合わせる)、2: サンプルレート(0 は読めなかった)を置く。入力は、ほかの関数と同じく渡された分をまるごと linear memory に写すので、大きなファイルでは呼ぶ側が先頭の一部だけを渡す
-- `ogg.probe` / `m4a.probe` / `aac.probe` は解析(§2.7)。Ogg、m4a、aac は切り出しの `ogg.trim`(`kiln_ogg_trim`。Opus と Vorbis)、`m4a.trim`(`kiln_m4a_trim`。AAC)、`aac.trim`(`kiln_aac_trim`。AAC を m4a に入れ替える。最後の引数が `sbr`)も持つ。`aac.probe` は `kiln_value(6)` に切り出せるか(`trimmable`)を置く。`kiln_value` が足りないので 10 個に増やした(export は `setValues` で、使わない分は 0 にする)。SBR / PS の 3 値は 0: なし、1: あり、2: 不明でやり取りし、JS では `false` / `true` / `null` にする。`m4a.probe` は AudioSpecificConfig を出力のバイト列で返す
+- `ogg.probe` / `m4a.probe` / `aac.probe` は解析(§2.7)。Ogg、m4a、aac は切り出しの `ogg.trim`(`kiln_ogg_trim`。Opus と Vorbis)、`m4a.trim`(`kiln_m4a_trim`。AAC)、`aac.trim`(`kiln_aac_trim`。AAC を m4a に入れ替える。最後の引数が `sbr`)も持つ。`aac.probe` は `kiln_value(6)` に切り出せるか(`trimmable`)を、`kiln_value(7)` に HE-AAC として切り出せるか(`sbrTrimmable`)を置く。`aac.frames`(`kiln_aac_frames`)は先頭のフレームの位置と長さを、u32 の組で出力のバイト列に置く。`kiln_value` が足りないので 10 個に増やした(export は `setValues` で、使わない分は 0 にする)。SBR / PS の 3 値は 0: なし、1: あり、2: 不明でやり取りし、JS では `false` / `true` / `null` にする。`m4a.probe` は AudioSpecificConfig を出力のバイト列で返す
 - `startSample` / `endSample` に BigInt を渡すときは 0 以上 2^64 未満でなければ `RangeError` にする(u64 の引数で桁あふれしないように)
 - サンプル位置は u64 なので、export 関数の引数・戻り値は JS では BigInt になる
 
@@ -221,7 +221,8 @@ const o = try kiln.ogg.probe(input);  // codec(.vorbis / .opus), sample_rate, in
 const m = try kiln.m4a.probe(input);  // codec(.aac / .alac), object_type, sbr, ps, sample_rate, channels, bits_per_sample,
                                       // samples, encoder_delay, audio_specific_config, trimmable(m4a.trim で切り出せるか)
 const a = try kiln.aac.probe(input);  // profile, mpeg_version, sample_rate, channels, frames, samples(ヘッダの値)、
-                                      // trimmable(aac.trim で切り出せるか)
+                                      // trimmable / sbr_trimmable(aac.trim で、AAC-LC / HE-AAC として切り出せるか)
+const spans = try kiln.aac.firstFrames(input, &buf);  // 先頭のフレームの位置と長さ(AudioDecoder に渡す)
 // Opus / Vorbis を再エンコードせずに切り出す(位置は再生位置のサンプル数。Opus は 48kHz)。trimAlloc は一括版。
 // Vorbis の r.start は、パケットの区切りに寄せた実際の切り始め(指定以下)
 const r = try kiln.ogg.trim(gpa, input, .{ .start = 48000, .end = 96000 }, writer);  // r.start / r.end / r.sample_rate
@@ -235,7 +236,7 @@ const p = try kiln.aac.trim(gpa, input, .{ .start = 44100, .end = 88200, .sbr = 
 - `probe` はアロケータを使わず、入力全体の `[]const u8` を受け取る。切り出しは Ogg の Opus と Vorbis、m4a の AAC、aac(ADTS)の AAC(m4a に入れ替える)([`draft.md`](draft.md) §2.10〜§2.12、§2.16)。`ogg.trim` はパケットの一覧とページの組み立てに、`m4a.trim` と `aac.trim` はサンプルの表と moov の組み立てにアロケータを使う。moov の組み立て(`src/m4a/trim.zig`)は、サンプルを順に返す値と、ボックスの部品(m4a は元のもの、aac は作ったもの)を受け取る。方式は [`ogg.md`](ogg.md) §6(Opus)、§7(Vorbis)、[`m4a.md`](m4a.md) §5(AAC)、[`aac.md`](aac.md) §5(ADTS)
 - 長さ(`samples`)は再生される長さ。Ogg は先頭と末尾の切り詰め(Opus の pre-skip を含む)、m4a は編集リストか iTunSMPB の遅延と詰め物を除く。aac(ADTS)には書く場所がないので含む
 - サンプルレートとチャンネル数はデコード結果のもの(Opus は 48kHz、HE-AAC は SBR / PS の後)。ただし aac(ADTS)はヘッダの値で、HE-AAC かどうかは分からない(音声データを読まないため。[`aac.md`](aac.md) §3)。m4a でもファイルから分からなければ `sbr` / `ps` が null
-- JS は `ogg.probe` / `ogg.trim` / `m4a.probe` / `m4a.trim` / `aac.probe` / `aac.trim`。`ogg.trim` と `m4a.trim` は `mp3.trim` と同じ形で、`kiln_ogg_trim` と `kiln_m4a_trim` の `kiln_value` は 0: start、1: end、2: サンプルレート。`aac.trim` は、区間に加えて `sbr` を必ず受け取り(`kiln_aac_trim` の最後の引数)、秒の区間はヘッダのレートの `sbr` なら 2 倍で数える。`kiln_value` は `m4a.trim` と同じ。`aac.probe` の `sbr` は常に null。`m4a.probe` の `audioSpecificConfig` は WebCodecs の `AudioDecoder` の `description` に使える
+- JS は `ogg.probe` / `ogg.trim` / `m4a.probe` / `m4a.trim` / `aac.probe` / `aac.frames` / `aac.trim`。`ogg.trim` と `m4a.trim` は `mp3.trim` と同じ形で、`kiln_ogg_trim` と `kiln_m4a_trim` の `kiln_value` は 0: start、1: end、2: サンプルレート。`aac.trim` は、区間に加えて `sbr` を必ず受け取り(`kiln_aac_trim` の最後の引数)、秒の区間はヘッダのレートの `sbr` なら 2 倍で数える。`kiln_value` は `m4a.trim` と同じ。`aac.probe` の `sbr` は常に null。`m4a.probe` の `audioSpecificConfig` は WebCodecs の `AudioDecoder` の `description` に使える
 - 設計と検証は [`ogg.md`](ogg.md) / [`m4a.md`](m4a.md) / [`aac.md`](aac.md)
 
 ## 3. Zig 0.17.1 で確認したこと
