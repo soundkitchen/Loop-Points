@@ -41,16 +41,72 @@ export function sourceFormat(k: Kiln, fileName: string, bytes: Uint8Array<ArrayB
 
 // 音源の元のサンプルレート (デコード結果のレート。Opus は常に 48kHz)。分からなければ null で、呼ぶ側で出力の機器のレートを使う。
 // kiln.detect はヘッダーだけを読むので、kiln が中身を扱えない音源 (MPEG-2 の mp3、μ-law の WAV、連結した Ogg など) でも分かる。
-// 分からないのは、.aac の ADTS (ヘッダーから HE-AAC かどうかが分からない)、SBR があるか分からない m4a (レートが実際の
-// 半分のことがある)、形式を判定できない音源
+// .aac の ADTS は、ヘッダーから HE-AAC かどうか (レートが 2 倍か) が分からないので、WebCodecs でデコードして調べる (aacOutput)。
+// 分からないのは、SBR があるか分からない m4a (レートが実際の半分のことがある)、WebCodecs でデコードできなかった ADTS、
+// 形式を判定できない音源
 export async function sourceRate(fileName: string, bytes: Uint8Array<ArrayBuffer>): Promise<number | null> {
   const k = await loadKiln();
   const head = headOf(bytes);
   let d = k.detect(head);
+  if (d?.format === 'aac') return inRange((await aacOutput(bytes))?.sampleRate ?? null);
   // ヘッダーが先頭に入っていないことがあるのは、WAV (fmt チャンクが後ろ) と m4a (moov が後ろ。ffmpeg の既定) だけ。
   // そのときだけ全体を渡し直す。形式を判定できない音源は渡し直さない (全体から mp3 のフレームを探すと、偶然それらしい
   // 並びを拾うことがある)。SBR があるか分からない m4a は、全体を渡しても分からないが、moov が後ろの m4a と見分けられない
   if (d !== null && d.sampleRate === null && (d.format === 'wav' || d.format === 'm4a') && head.length < bytes.length) d = k.detect(bytes);
-  const rate = accept(d, fileName)?.sampleRate ?? null;
-  return rate !== null && rate >= MIN_RATE && rate <= MAX_RATE ? rate : null;
+  return inRange(accept(d, fileName)?.sampleRate ?? null);
+}
+
+const inRange = (rate: number | null) => (rate !== null && rate >= MIN_RATE && rate <= MAX_RATE ? rate : null);
+
+// AudioDecoder に渡す、ADTS の先頭のフレームの数。デコーダーは最初の数フレームを出さないことがあるので、少し多めに渡す
+const AAC_PROBE_FRAMES = 8;
+
+// ADTS (.aac) をデコードしたときのレートとチャンネル数。HE-AAC はヘッダーの 2 倍のレート、HE-AAC v2 は 2 チャンネルになる。
+// ヘッダーには中心の方式 (AAC-LC など) しか書けないので、WebCodecs の AudioDecoder に先頭のフレームをそのまま渡し、
+// 最初の出力から読む (kiln/docs/aac.md §3)。デコードできなければ null。クロップの準備 (cropRender.ts) でも、
+// HE-AAC かどうかを知るのに使う
+export async function aacOutput(bytes: Uint8Array<ArrayBuffer>): Promise<{ sampleRate: number; channels: number } | null> {
+  // 先頭の ID3v2 タグを飛ばし、同じ形のヘッダーが続くフレームを集める (kiln の aac.probe と違い、途中のゴミは読み飛ばさない)
+  let pos = id3v2Size(bytes);
+  const frames: Uint8Array[] = [];
+  const header = (p: number) => p + 7 <= bytes.length && bytes[p] === 0xff && (bytes[p + 1] & 0xf6) === 0xf0;
+  if (!header(pos)) return null;
+  const profile = bytes[pos + 2] >> 6, rateIndex = (bytes[pos + 2] >> 2) & 0xf;
+  const channelConfig = ((bytes[pos + 2] & 1) << 2) | (bytes[pos + 3] >> 6);
+  const ADTS_RATES = [96000, 88200, 64000, 48000, 44100, 32000, 24000, 22050, 16000, 12000, 11025, 8000, 7350];
+  if (rateIndex >= ADTS_RATES.length || channelConfig === 0) return null;
+  while (frames.length < AAC_PROBE_FRAMES && header(pos)) {
+    const len = ((bytes[pos + 3] & 3) << 11) | (bytes[pos + 4] << 3) | (bytes[pos + 5] >> 5);
+    if (len < 7 || pos + len > bytes.length) break;
+    frames.push(bytes.subarray(pos, pos + len));
+    pos += len;
+  }
+  const sampleRate = ADTS_RATES[rateIndex];
+  const config: AudioDecoderConfig = {
+    codec: `mp4a.40.${profile + 1}`,   // オブジェクトタイプ (Main: 1、LC: 2 など)
+    sampleRate,
+    numberOfChannels: channelConfig === 7 ? 8 : channelConfig,
+  };
+  if (typeof AudioDecoder === 'undefined' || !(await AudioDecoder.isConfigSupported(config).catch(() => null))?.supported) return null;
+  return new Promise((resolve) => {
+    let result: { sampleRate: number; channels: number } | null = null;
+    const decoder = new AudioDecoder({
+      output: (data) => {
+        result ??= { sampleRate: data.sampleRate, channels: data.numberOfChannels };
+        data.close();
+      },
+      error: () => resolve(null),
+    });
+    try {
+      decoder.configure(config);
+      // ADTS のフレームはそれぞれ単独で復号を始められる (重ね合わせの分は無音になるだけ)
+      frames.forEach((f, i) => decoder.decode(new EncodedAudioChunk({ type: 'key', timestamp: Math.round((i * 1024 * 1e6) / sampleRate), data: f })));
+      decoder.flush().then(() => resolve(result), () => resolve(null)).finally(() => {
+        if (decoder.state !== 'closed') decoder.close();
+      });
+    } catch {
+      resolve(null);
+      if (decoder.state !== 'closed') decoder.close();
+    }
+  });
 }
