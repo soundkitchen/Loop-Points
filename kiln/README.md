@@ -13,7 +13,8 @@ Loop Points の音源の解析とクロップの書き出しを受け持つ、Zi
 - Ogg の Opus を Opus のまま、サンプル単位で切り出す(パケットをコピーし、pre-skip とグラニュール位置で前後の余分を捨てさせる)
 - Ogg の Vorbis を Vorbis のまま切り出す(パケットをコピーし、末尾はグラニュール位置でサンプル単位に。先頭はパケットの区切りに寄せる)
 - m4a の AAC を AAC のまま切り出す(フレームをコピーし、編集リストと iTunSMPB で前後の余分を捨てさせる。AAC-LC はサンプル単位、HE-AAC は 2 サンプル単位。ALAC と HE-AAC v2 は扱わない)
-- Ogg(Vorbis / Opus)・m4a(AAC / ALAC)・aac(ADTS)のサンプルレートや長さを調べる(probe)。aac(ADTS)の切り出しはまだです
+- aac(ADTS)の AAC を、m4a に入れ替えて AAC のまま切り出す(ADTS には前後の余分を捨てる指定を書けないため。m4a と同じく AAC-LC はサンプル単位、HE-AAC は 2 サンプル単位。HE-AAC かどうかは呼ぶ側が渡す)
+- Ogg(Vorbis / Opus)・m4a(AAC / ALAC)・aac(ADTS)のサンプルレートや長さを調べる(probe)
 
 ## ビルドとテスト
 
@@ -54,6 +55,7 @@ const pcmFlac = kiln.flac.encode(audioBuffer, { compression: 8 });
 const oggInfo = kiln.ogg.probe(oggBytes);                   // Opus のサンプルレートは 48000。元のレートは inputSampleRate
 const { data: opusCut } = kiln.ogg.trim(opusBytes, { start: 1.5, end: 10 }); // Opus / Vorbis のまま切り出す(Vorbis の start は区切りに寄せた位置)
 const { data: aacCut } = kiln.m4a.trim(m4aBytes, { start: 1.5, end: 10 });    // AAC のまま切り出す(m4a.probe の trimmable が true のもの)
+const { data: adtsCut } = kiln.aac.trim(aacBytes, { start: 1.5, end: 10, sbr: false }); // ADTS を m4a にして切り出す(sbr は HE-AAC か)
 ```
 
 - `detect` は、ヘッダーから形式とデコード結果のサンプルレートを読みます。音声のデータをたどらないので軽く、kiln が扱えない種類(MPEG-2 の MP3、μ-law の WAV、連結した Ogg など)でもレートを返します。先頭の一部を渡して `sampleRate` が null のときは、全体を渡すと読めることがあります(moov が後ろにある m4a など)。aac(ADTS)と、SBR があるか分からない m4a は、いつも null です

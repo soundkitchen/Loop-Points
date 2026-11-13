@@ -272,6 +272,13 @@ export interface AacInfo {
   samples: number;
   /** 秒 */
   duration: number;
+  /** `aac.trim` で切り出せるか。raw_data_block が 2 つ以上のフレーム(m4a の 1 サンプルにできない)があれば false */
+  trimmable: boolean;
+  /**
+   * HE-AAC として(`sbr: true` で)`aac.trim` で切り出せるか。`trimmable` に加えて、出力のレート(ヘッダの 2 倍)を
+   * レートの表に書けること(ヘッダのレートが 48kHz 以下で、7350Hz でない)
+   */
+  sbrTrimmable: boolean;
 }
 
 export interface Ogg {
@@ -301,6 +308,23 @@ export interface M4a {
 
 export interface Aac {
   probe(input: BytesInput): AacInfo;
+  /**
+   * 先頭から `limit` 個までのフレームの位置と長さ(ヘッダを含む。`probe` と同じ数え方で、ゴミは読み飛ばす)。
+   * WebCodecs の `AudioDecoder` にフレームをそのまま渡して、実際のレートとチャンネル数を調べるのに使う
+   */
+  frames(input: BytesInput, limit: number): { offset: number; length: number }[];
+  /**
+   * AAC を再エンコードせずに切り出し、m4a に入れ替えて書く(ADTS には前後の余分を捨てる指定を書く場所がないため)。
+   * 結果は m4a のバイト列で、`m4a.trim` と同じく、区間を含むフレームを前の 2 フレームと後ろの 1 フレームと
+   * 一緒にコピーし、前後の余分を編集リストと iTunSMPB で捨てさせる。AAC-LC はサンプル単位、HE-AAC は 2 サンプル単位
+   * (`start` は指定以下、`end` は指定以上に寄せる)。先頭の遅延はないものとして数える(ブラウザも ffmpeg も ADTS の
+   * 先頭を捨てずにデコードする)。
+   * `sbr` は HE-AAC か(デコード結果のレートがヘッダの 2 倍か)。ヘッダからは分からないので、WebCodecs の
+   * `AudioDecoder` などで確かめて渡す。区間はデコード結果のレートで数える。HE-AAC v2(PS)は渡さないこと
+   * (途中から復号すると左右が元と違う)。モノラルの HE-AAC は、PS がないものとして書く。
+   * `trimmable`(`sbr` なら `sbrTrimmable`)が false のものは `UnsupportedFormat`
+   */
+  trim(input: BytesInput, options: RangeOptions & { sbr: boolean }): RangeResult & { data: Uint8Array<ArrayBuffer> };
 }
 
 /** 入力の形式(`kiln.detect` の結果) */
@@ -395,6 +419,8 @@ interface Exports {
   kiln_m4a_probe: ProbeExport;
   kiln_m4a_trim: RangeExport;
   kiln_aac_probe: ProbeExport;
+  kiln_aac_trim: (ptr: Ptr, len: number, start: bigint, end: bigint, hasEnd: boolean, sbr: boolean) => number;
+  kiln_aac_frames: (ptr: Ptr, len: number, limit: number) => number;
 }
 
 // ---- 実装 ----
@@ -498,13 +524,14 @@ export async function load(source: WasmBytes): Promise<Kiln> {
    * 区間を指定する処理の共通部分。秒(start / end)かサンプル数(startSample / endSample)を
    * サンプル位置の BigInt にして fn(ptr, len, start, end | null) を呼ぶ。fn は実際の区間を kiln_value(0, 1) に、
    * サンプルレートを kiln_value(2) に置く export を呼び、戻り値に区間を足して返す。
-   * probeExport は、秒を位置に直すためのサンプルレートを kiln_value(0) に置く関数
+   * probeExport は、秒を位置に直すためのサンプルレートを kiln_value(0) に置く関数(rateScale 倍して使う)
    */
   function rangeWith<T extends object>(
     probeExport: ProbeExport,
     input: BytesInput,
     options: RangeOptions,
     fn: (ptr: Ptr, len: number, start: bigint, end: bigint | null) => T,
+    rateScale = 1,
   ): T & RangeResult {
     const { start, end, startSample, endSample } = options;
     if (start !== undefined && startSample !== undefined) {
@@ -518,7 +545,8 @@ export async function load(source: WasmBytes): Promise<Kiln> {
       let sampleRate = 0;
       if (start !== undefined || end !== undefined) {
         check(probeExport(ptr, len));
-        sampleRate = Number(e.kiln_value(0));
+        // rateScale: 解析のレートに掛けると、区間を数えるレートになる倍率(HE-AAC の aac は 2)
+        sampleRate = Number(e.kiln_value(0)) * rateScale;
       }
       const s = start !== undefined ? toSamples(start, sampleRate, 'start')
         : startSample !== undefined ? toSampleIndex(startSample, 'startSample') : 0n;
@@ -836,8 +864,28 @@ export async function load(source: WasmBytes): Promise<Kiln> {
           frames: Number(e.kiln_value(3)),
           samples,
           duration: samples / sampleRate,
+          trimmable: e.kiln_value(6) === 1n,
+          sbrTrimmable: e.kiln_value(7) === 1n,
         };
       });
+    },
+
+    frames(input, limit) {
+      if (!Number.isInteger(limit) || limit < 0 || limit > 0xFFFF) throw new RangeError('kiln: limit must be an integer from 0 to 65535');
+      return withInput(input, (ptr, len) => {
+        check(e.kiln_aac_frames(ptr, len, limit));
+        const bytes = takeOutput();
+        const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+        return Array.from({ length: bytes.byteLength / 8 }, (_, i) => ({ offset: view.getUint32(i * 8, true), length: view.getUint32(i * 8 + 4, true) }));
+      });
+    },
+
+    trim(input, options) {
+      const { sbr, ...range } = options;
+      return rangeWith(e.kiln_aac_probe, input, range, (ptr, len, s, t) => {
+        check(e.kiln_aac_trim(ptr, len, s, t ?? 0n, t !== null, sbr));
+        return { data: takeOutput() };
+      }, sbr ? 2 : 1);
     },
   };
 

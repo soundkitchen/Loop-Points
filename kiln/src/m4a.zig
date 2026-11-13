@@ -83,6 +83,8 @@ const Analysis = struct {
     info: Info,
     /// 切り出せるときだけ
     source: ?trim_impl.Source,
+    /// サンプルの表のボックスの中身(切り出せるときだけ使う)
+    stbl: []const u8,
     /// デコード結果の 1 サンプルあたりの、メディアのタイムスケールの単位の数の逆数
     /// (デコード結果のレート / タイムスケール。HE-AAC で中心のレートのタイムスケールなら 2)
     scale: u32,
@@ -152,19 +154,34 @@ fn analyze(input: []const u8) ParseError!Analysis {
         scale > 0 and info.sample_rate % timescale == 0 and simple_edit and fits and
         try box.int(u32, (try box.Iterator.find(stbl.body, "stsd")).?.body, 4) == 1 and
         try samplesInInput(input, stbl.body))
-        .{
-            .input = input,
-            .ftyp = ftyp.raw,
-            .trak = trak.body,
-            .stbl = stbl.body,
-            .udta = udta,
-            .timescale = timescale,
-            .delay = delay,
-        }
+        // 部品が読めない(mdhd が短いなど)ものも切り出さない
+        trackSource(input, ftyp.raw, trak.body, stbl.body, udta, timescale, delay) catch null
     else
         null;
     info.trimmable = source != null;
-    return .{ .info = info, .source = source, .scale = scale };
+    return .{ .info = info, .source = source, .stbl = stbl.body, .scale = scale };
+}
+
+/// 切り出しに使う部品を、元のトラックのボックスから集める(どれも元のままコピーする)
+fn trackSource(input: []const u8, ftyp: []const u8, trak: []const u8, stbl: []const u8, udta: ?box.Box, timescale: u32, delay: u64) ParseError!trim_impl.Source {
+    const mdhd = try box.findPath(trak, &.{ "mdia", "mdhd" }) orelse return error.InvalidM4a;
+    const lang_at: usize = if (mdhd.body.len > 0 and mdhd.body[0] == 1) 32 else 20;
+    const hdlr = try box.findPath(trak, &.{ "mdia", "hdlr" }) orelse return error.InvalidM4a;
+    const smhd = try box.findPath(trak, &.{ "mdia", "minf", "smhd" });
+    const dinf = try box.findPath(trak, &.{ "mdia", "minf", "dinf" });
+    const stsd = try box.Iterator.find(stbl, "stsd") orelse return error.InvalidM4a;
+    return .{
+        .input = input,
+        .ftyp = ftyp,
+        .language = try box.int(u16, mdhd.body, lang_at),
+        .hdlr = hdlr.raw,
+        .smhd = if (smhd) |b| b.raw else null,
+        .dinf = if (dinf) |b| b.raw else null,
+        .stsd = stsd.raw,
+        .udta = udta,
+        .timescale = timescale,
+        .delay = delay,
+    };
 }
 
 /// サンプルの表をたどれ、どのサンプルのデータも入力の中にあるか(stz2 は扱わないので false)
@@ -209,7 +226,8 @@ pub fn trim(gpa: std.mem.Allocator, input: []const u8, options: TrimOptions, w: 
     // タイムスケールの単位に直す(先頭は切り捨て、終わりは切り上げ。長さはタイムスケールの単位の整数倍なので収まる)
     const s = options.start / a.scale;
     const e = std.math.divCeil(u64, end, a.scale) catch unreachable;
-    try trim_impl.trim(gpa, src, s, e, w);
+    const samples = try trim_impl.Samples.init(a.stbl) orelse return error.UnsupportedFormat;
+    try trim_impl.trim(gpa, src, samples, s, e, w);
     return .{ .start = s * a.scale, .end = e * a.scale, .sample_rate = a.info.sample_rate };
 }
 

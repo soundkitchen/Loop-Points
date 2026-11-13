@@ -198,14 +198,14 @@ function setMode(next: Mode) {
 // ループモードに戻ったら、読んだバイト列を手放す
 function inspectCropSource() {
   const file = mode === 'crop' && buffer ? files.get(name) : undefined;
-  const decoded = buffer;
+  const audio = buffer, converted = decoded.get(name)?.converted ?? true;
   if (file === inspecting) return;
   inspecting = file;
   cropSource = null;
   cropError = null;
   updateOutFormats();
   if (!file) return;
-  import('./cropRender').then((m) => m.inspect(file, decoded!)).then(
+  import('./cropRender').then((m) => m.inspect(file, audio!, converted)).then(
     (s) => { if (inspecting === file) cropSource = s; },
     (e) => { if (inspecting === file) cropError = `${file.name} を書き出す準備ができませんでした (${e})`; },
   ).finally(() => {
@@ -516,7 +516,7 @@ addEventListener('drop', (e) => {
 // 開いている音源で選べる形式を入れる。kiln で調べ終わるまでは拡張子から決め、選べないようにする
 function updateOutFormats() {
   // 調べる前の仮の形式。.ogg と .m4a は中身が何か (Opus か Vorbis か、AAC か ALAC かなど) 分からないので、
-  // 元の形式は出さない (kiln で調べてから出す)
+  // 元の形式は出さない (kiln で調べてから出す)。.aac も、m4a に入れ替えて切り出せるかを調べてから m4a を出す
   const ext = extFormat(name);
   const formats = cropSource?.formats ?? formatsFor(ext === 'ogg' || ext === 'm4a' ? null : ext, buffer?.numberOfChannels ?? 0);
   outFormat.replaceChildren(...formats.map((f) => new Option(formatLabel(f, formats), f)));

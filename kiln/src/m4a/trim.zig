@@ -107,15 +107,20 @@ pub const Samples = struct {
     }
 };
 
-/// 切り出しに使う、元のファイルの部品
+/// 切り出しに使う部品。m4a からは元のボックスを、aac(ADTS)からは作ったボックスを渡す
 pub const Source = struct {
     input: []const u8,
     /// ftyp ボックス全体
     ftyp: []const u8,
-    /// トラックの中身(mdia などを探す)
-    trak: []const u8,
-    /// サンプルの表のボックスの中身
-    stbl: []const u8,
+    /// mdhd の言語(ISO 639-2/T の 3 文字を 5 ビットずつ詰めた値)
+    language: u16,
+    /// hdlr ボックス全体
+    hdlr: []const u8,
+    /// smhd と dinf のボックス全体。なければ null(作る)
+    smhd: ?[]const u8,
+    dinf: ?[]const u8,
+    /// サンプルの説明(stsd ボックス全体)
+    stsd: []const u8,
     /// moov の直下の udta(タグ)。なければ null
     udta: ?box.Box,
     /// メディアのタイムスケール(出力もこのまま使う)
@@ -125,8 +130,10 @@ pub const Source = struct {
 };
 
 /// 再生位置 `[start, end)`(メディアのタイムスケールの単位)を切り出して `w` に書く。範囲は呼び出し側が丸めておく
-/// (`start < end`、`delay + end` がメディアの長さ以下)。サンプルのデータが入力の外を指していれば InvalidM4a
-pub fn trim(gpa: std.mem.Allocator, src: Source, start: u64, end: u64, w: *Io.Writer) Error!void {
+/// (`start < end`、`delay + end` がメディアの長さ以下)。`frames` はサンプル(AAC のフレーム)を順に返す
+/// `next() !?Sample` を持つ値で、写して 2 回たどる(`Samples` か、aac の ADTS のフレーム)。
+/// サンプルのデータが入力の外を指していれば InvalidM4a
+pub fn trim(gpa: std.mem.Allocator, src: Source, frames: anytype, start: u64, end: u64, w: *Io.Writer) Error!void {
     const ms = std.math.add(u64, start, src.delay) catch return error.InvalidM4a;
     const me = std.math.add(u64, end, src.delay) catch return error.InvalidM4a;
 
@@ -135,7 +142,7 @@ pub fn trim(gpa: std.mem.Allocator, src: Source, start: u64, end: u64, w: *Io.Wr
     var last: u32 = 0;
     var count: u32 = 0;
     {
-        var it = try Samples.init(src.stbl) orelse return error.InvalidM4a;
+        var it = frames;
         var pos: u64 = 0;
         while (try it.next()) |smp| : (count += 1) {
             if (pos <= ms) first = count;
@@ -159,7 +166,7 @@ pub fn trim(gpa: std.mem.Allocator, src: Source, start: u64, end: u64, w: *Io.Wr
     var media: u64 = 0;
     var payload: u64 = 0;
     {
-        var it = (try Samples.init(src.stbl)).?;
+        var it = frames;
         var i: u32 = 0;
         while (try it.next()) |smp| : (i += 1) {
             if (i < k) {
@@ -277,34 +284,25 @@ fn writeMoov(b: *Builder, src: Source, m: Moov) Error!void {
 
         const mdia = try b.begin("mdia");
         {
-            const orig_mdhd = try box.findPath(src.trak, &.{ "mdia", "mdhd" }) orelse return error.InvalidM4a;
-            const lang_at: usize = if (orig_mdhd.body.len > 0 and orig_mdhd.body[0] == 1) 32 else 20;
-            const lang = try box.int(u16, orig_mdhd.body, lang_at);
             const mdhd = try beginTimes(b, "mdhd", src.timescale, m.media);
-            try b.int(u16, lang);
+            try b.int(u16, src.language);
             try b.int(u16, 0);
             b.end(mdhd);
 
-            const hdlr = try box.findPath(src.trak, &.{ "mdia", "hdlr" }) orelse return error.InvalidM4a;
-            try b.raw(hdlr.raw);
+            try b.raw(src.hdlr);
 
             const minf = try b.begin("minf");
-            if (try box.findPath(src.trak, &.{ "mdia", "minf", "smhd" })) |smhd| {
-                try b.raw(smhd.raw);
+            if (src.smhd) |smhd| {
+                try b.raw(smhd);
             } else {
                 const smhd = try b.begin("smhd");
                 try b.zeros(8);
                 b.end(smhd);
             }
-            if (try box.findPath(src.trak, &.{ "mdia", "minf", "dinf" })) |dinf| {
-                try b.raw(dinf.raw);
-            } else {
-                // データはこのファイルの中にある(url の flags が 1)
-                try b.raw("\x00\x00\x00\x24dinf\x00\x00\x00\x1cdref\x00\x00\x00\x00\x00\x00\x00\x01\x00\x00\x00\x0curl \x00\x00\x00\x01");
-            }
+            // データはこのファイルの中にある(url の flags が 1)
+            try b.raw(src.dinf orelse "\x00\x00\x00\x24dinf\x00\x00\x00\x1cdref\x00\x00\x00\x00\x00\x00\x00\x01\x00\x00\x00\x0curl \x00\x00\x00\x01");
             const stbl = try b.begin("stbl");
-            const stsd = try box.Iterator.find(src.stbl, "stsd") orelse return error.InvalidM4a;
-            try b.raw(stsd.raw);
+            try b.raw(src.stsd);
             const stts = try b.begin("stts");
             try b.int(u32, 0);
             try b.int(u32, @intCast(m.stts.len));
@@ -442,32 +440,32 @@ fn writeSmpb(b: *Builder, m: Moov) Error!void {
 }
 
 /// ボックスを組み立てる(長さは閉じるときに書く)
-const Builder = struct {
+pub const Builder = struct {
     gpa: std.mem.Allocator,
     list: std.ArrayList(u8) = .empty,
 
-    fn begin(b: *Builder, kind: *const [4]u8) error{OutOfMemory}!usize {
+    pub fn begin(b: *Builder, kind: *const [4]u8) error{OutOfMemory}!usize {
         const at = b.list.items.len;
         try b.list.appendSlice(b.gpa, "\x00\x00\x00\x00");
         try b.list.appendSlice(b.gpa, kind);
         return at;
     }
 
-    fn end(b: *Builder, at: usize) void {
+    pub fn end(b: *Builder, at: usize) void {
         std.mem.writeInt(u32, b.list.items[at..][0..4], @intCast(b.list.items.len - at), .big);
     }
 
-    fn int(b: *Builder, comptime T: type, v: T) error{OutOfMemory}!void {
+    pub fn int(b: *Builder, comptime T: type, v: T) error{OutOfMemory}!void {
         var buf: [@sizeOf(T)]u8 = undefined;
         std.mem.writeInt(T, &buf, v, .big);
         try b.list.appendSlice(b.gpa, &buf);
     }
 
-    fn zeros(b: *Builder, n: usize) error{OutOfMemory}!void {
+    pub fn zeros(b: *Builder, n: usize) error{OutOfMemory}!void {
         try b.list.appendNTimes(b.gpa, 0, n);
     }
 
-    fn raw(b: *Builder, bytes: []const u8) error{OutOfMemory}!void {
+    pub fn raw(b: *Builder, bytes: []const u8) error{OutOfMemory}!void {
         try b.list.appendSlice(b.gpa, bytes);
     }
 

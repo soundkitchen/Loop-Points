@@ -1,6 +1,6 @@
 # aac(ADTS)
 
-aac(ADTS のフレームを並べた AAC。拡張子 `.aac`)の読み込み(`src/aac.zig`)の設計と検証の記録。今は解析(`kiln.aac.probe`)だけで、切り出しは後の PR で足す。決定事項は [`draft.md`](draft.md) §2.8。
+aac(ADTS のフレームを並べた AAC。拡張子 `.aac`)の解析(`kiln.aac.probe`)と、m4a に入れ替えての切り出し(`kiln.aac.trim`)の設計と検証の記録(`src/aac.zig`)。決定事項は [`draft.md`](draft.md) §2.8、§2.16。
 
 ## 1. 扱う範囲と出所
 
@@ -22,10 +22,39 @@ ADTS のヘッダのプロファイルには、中心の方式(AAC-LC など)し
 見分けるには、最初のフレームの音声データをスペクトルまで読み(AAC デコーダの前半)、その後ろの SBR / PS の印を探す必要がある。kiln はそれをしない(2026-11-10 の決定。[`draft.md`](draft.md) §2.8)。代わりに:
 
 - `probe` はヘッダの値を返し、JS の `aac.probe` は `sbr: null`(分からない)を返す
-- ブラウザでは、WebCodecs の `AudioDecoder` に最初の数フレームを渡すと、実際のレートとチャンネル数が分かる。Chrome 157 で、afconvert の HE-AAC / HE-AAC v2 の ADTS を `codec: 'mp4a.40.2'` とヘッダの値で設定してフレームをそのまま渡すと、最初の出力が 44.1kHz・2 チャンネル(フレームあたり 2048 サンプル)になった。`decodeAudioData` は AudioContext のレートに変換するので、元のレートは分からない
+- 切り出し(§5)は、HE-AAC かどうかを呼び出し側から受け取る(`sbr`)
+- ブラウザでは、WebCodecs の `AudioDecoder` に最初の数フレームを渡すと、実際のレートとチャンネル数が分かる(Loop Points は、音源を開くときにこれで調べる)。フレームの位置は `firstFrames`(JS は `aac.frames`。解析と同じ数え方で、ゴミは読み飛ばす)で得る。Chrome 157 で、afconvert の HE-AAC / HE-AAC v2 の ADTS を `codec: 'mp4a.40.2'` とヘッダの値で設定してフレームをそのまま渡すと、最初の出力が 44.1kHz・2 チャンネル(フレームあたり 2048 サンプル)になった。モノラルの HE-AAC(PS なし)も 2 チャンネルで出る(PS があるかもしれないとして、左右に同じ値を出す)ので、チャンネル数だけでは HE-AAC v2 と見分けられない。左右がまったく同じなら PS はない(HE-AAC v2 は左右が違う)。`codec` は、ヘッダのプロファイルのオブジェクトタイプ(`mp4a.40.1`〜`.4`)で設定する。Chrome 157 の `AudioDecoder.isConfigSupported` が受け付けるのは、そのうち AAC-LC の `mp4a.40.2` だけ(ほかに HE-AAC の `.5` と `.29`)で、Main、SSR、LTP は受け付けないので、実際のレートは分からない(Main と LTP の ADTS は手元の ffmpeg で作れず、デコードは確かめていない)。`decodeAudioData` は AudioContext のレートに変換するので、元のレートは分からない
 
 ## 4. 検証
 
 - テスト用のファイル(`testdata/` の ffmpeg と afconvert の AAC-LC、afconvert の HE-AAC。0.5 秒)で、フレーム数とレートが ffprobe と一致する。HE-AAC はヘッダでは 22.05kHz の AAC-LC に見える
 - テストで、先頭の ID3v2、途中のゴミ、末尾の途切れたフレームと ID3v1 を足した入力のフレーム数が、元と同じになることを確かめる。MP3 を aac と見間違えないことも確かめる
 - テスト用のファイルを壊したり途中で切ったりした入力で、Debug ビルドが止まらない
+
+## 5. 切り出し(2026-11-13)
+
+`kiln.aac.trim` / `trimAlloc`(JS は `aac.trim`)。ADTS には先頭の遅延と末尾の詰め物を書く場所がないので、ADTS のままでは前後の余分を捨てさせられない。そこで、フレームを m4a に入れ替え、m4a の切り出し([`m4a.md`](m4a.md) §5)と同じ方法で切る。出力は m4a。
+
+### 5.1 先に確かめたこと
+
+10 秒の曲(44.1kHz ステレオ)を、afconvert の AAC-LC・HE-AAC・HE-AAC v2、ffmpeg の AAC-LC(44.1kHz ステレオと 48kHz モノラル)の ADTS にして確かめた。
+
+- Chromium 157(`decodeAudioData`)、ffmpeg 9.0、Apple のデコーダ(afconvert)は、ADTS の先頭を捨てずにデコードする。長さはどれもフレームの数 × 1024(HE-AAC は 2048)で、Chromium と ffmpeg のデコード結果は同じ値(差は 2×10⁻⁷ 以下)。そのため、切り出しでは先頭の遅延を 0 として数える
+- Chromium の `AudioDecoder` に、ヘッダの値(`codec: 'mp4a.40.2'`、ヘッダのレートとチャンネル数)で設定してフレームをそのまま渡すと、最初の出力から実際のレートとチャンネル数が分かる。AAC-LC はヘッダのとおり、HE-AAC と HE-AAC v2 は 44.1kHz・2 チャンネル(ヘッダは 22.05kHz、v2 は 1 チャンネル)
+- PR のレビューのあとに、モノラルの HE-AAC(afconvert。ヘッダは 22.05kHz・1 チャンネル)も確かめた。Chromium の `AudioDecoder` と `decodeAudioData`、ffmpeg、Apple のデコーダは、どれも 2 チャンネルで左右に同じ値を出す(HE-AAC v2 は左右が違う。§3)
+
+### 5.2 方式
+
+- **サンプル**: ADTS のフレーム(解析と同じ数え方。ゴミ、末尾のタグ、途切れた最後のフレームは除く)のヘッダ(CRC があれば 9 バイト、なければ 7 バイト)を外し、残り(raw_data_block)を m4a の 1 サンプルにする。長さは 1024(タイムスケールの単位)。raw_data_block が 2 つ以上のフレームがあれば、1 サンプルにできないので切り出さない(`probe` の `trimmable` が false、`trim` は `UnsupportedFormat`)
+- **選ぶフレームと位置**: m4a と同じ(前の 2 フレームと後ろの 1 フレームを残し、入力の末尾では最後のフレームを繰り返す。前後の余分は編集リストと iTunSMPB で捨てさせる)。先頭の遅延は 0。moov の組み立ては `src/m4a/trim.zig` を使い、m4a の元のボックスの代わりに、次の部品を渡す
+- **タイムスケール**: ヘッダのレート。HE-AAC(呼び出し側が `sbr` を渡す)はデコード結果のレートがその 2 倍なので、m4a の HE-AAC と同じく 2 サンプル単位になる(先頭は切り捨て、終わりは切り上げ)
+- **ボックス**: ftyp は afconvert の m4a と同じ(`M4A `、互換に `M4A ` `mp42` `isom`)。mdhd の言語は `und`、hdlr は `soun`。サンプルの説明は mp4a(チャンネル数とレートはヘッダの値)と esds(バッファの大きさとビットレートは、入力全体のフレームの大きさから計算する)。AudioSpecificConfig は、ヘッダのプロファイル(オブジェクトタイプ − 1)、レート、チャンネル構成の後ろに、SBR の有無を明示する拡張(同期語 0x2B7、オブジェクトタイプ 5、sbrPresentFlag、あれば出力のレートの番号)を付ける。AAC-LC は ffmpeg、HE-AAC は afconvert の m4a と同じ形で、kiln の `m4a.probe` でも SBR の有無が分かる。モノラルの HE-AAC には、PS がないこと(同期語 0x548 と psPresentFlag)も付ける。書かないと、デコーダは PS があるかもしれないとして 2 チャンネルで出し、`m4a.probe` も PS が分からない(`trimmable` が false)とする。書くと、Chromium、ffmpeg、Apple のデコーダのどれも 1 チャンネルで出す。ID3 などのタグは書かない(iTunSMPB だけの udta を作る)
+- **扱わない入力**: raw_data_block が 2 つ以上のフレームがあるもの(`probe` の `trimmable` が false)。HE-AAC で、出力のレートをレートの表に書けないもの(ヘッダが 64kHz 以上か 7350Hz。`probe` の `sbr_trimmable` が false)。HE-AAC v2(PS)は kiln では見分けられないので、呼び出し側が渡さない(モノラルの HE-AAC は PS がないものとして書く)(m4a と同じく、途中から復号すると左右が元と違う。[`m4a.md`](m4a.md) §5.1)
+
+### 5.3 検証
+
+- §5.1 の AAC-LC 3 本と HE-AAC を、区間の途中、先頭と末尾の近く、全体、1〜2 サンプル、奇数の位置、末尾の 1〜5000 サンプルなど 88 通り切り出した。Chromium、ffmpeg、Apple のデコーダのどれでも、長さはすべて実際の区間どおり
+- 元の ADTS をそれぞれのデコーダでデコードしたものの区間の部分との差は、afconvert の AAC-LC で 0、ffmpeg の AAC-LC で最大 0.009(PNS。[`m4a.md`](m4a.md) §5.1)、HE-AAC で、入力の末尾を含む区間を除いて最大 0.003。入力の末尾を含む区間では、最後の 400 サンプルほど(44.1kHz で 10ms)が最大 0.03 違う。後ろに残すフレームがないので最後のフレームを繰り返して置いており、元のファイルの終わり(次のフレームがない)とは復号の結果が変わるため(m4a では末尾の詰め物が編集リストで捨てられ、ここまで再生されない。ADTS には詰め物の情報がないので、元の最後のフレームの終わりまでが区間に入る)
+- モノラルの HE-AAC(§5.1)を 7 通り切り出し、Chromium、ffmpeg、Apple のデコーダのどれでも、1 チャンネルで、長さは区間どおり。元の ADTS をデコードしたものの片方のチャンネルとの差は、入力の末尾を含む区間を除いて最大 0.003(末尾を含む区間は、上と同じく最後の部分が最大 0.026)
+- テスト: testdata の AAC-LC 2 本で、いくつかの区間の長さ、先頭の遅延(最初にコピーしたフレームから区間の先頭まで)、AudioSpecificConfig、フレームが元のバイト列のまま(ヘッダを外したもの)であること、書き出した m4a をもう一度 `m4a.trim` で切り出せること。HE-AAC で 2 サンプル単位になること。範囲外、raw_data_block が 2 つのフレーム、出力のレートを書けない HE-AAC(`sbr_trimmable` が false)。モノラルの HE-AAC の AudioSpecificConfig に PS がないことを書くこと。`firstFrames` が解析と同じフレームを返すこと
+- **未確認**: Safari と Firefox
