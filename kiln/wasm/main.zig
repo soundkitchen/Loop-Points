@@ -437,10 +437,26 @@ fn tristate(v: ?bool) u64 {
     return if (v) |b| @intFromBool(b) else 2;
 }
 
+/// aac(ADTS)を、再エンコードせずに m4a に入れ替えて切り出す。start / end は再生位置のサンプル数(デコード結果のレート。
+/// sbr(HE-AAC)ならヘッダの 2 倍のレート)。成功すると出力を kiln_output_* に、kiln_value に 0: start、1: end、
+/// 2: サンプルレートを置く
+export fn kiln_aac_trim(ptr: [*]const u8, len: usize, start: u64, end: u64, has_end: bool, sbr: bool) bool {
+    kiln_output_free();
+    const t = kiln.aac.trimAlloc(gpa, ptr[0..len], .{
+        .start = start,
+        .end = if (has_end) end else null,
+        .sbr = sbr,
+    }) catch |err| return fail(err);
+    output = t.data;
+    setValues(.{ t.start, t.end, t.sample_rate, 0, 0 });
+    return true;
+}
+
 /// aac(ADTS)を解析する。成功すると kiln_value に 0: ヘッダのサンプルレート、1: ヘッダのチャンネル数、
-/// 2: サンプル数、3: フレーム数、4: プロファイル(0: Main、1: LC、2: SSR、3: LTP)、5: MPEG の版(2 か 4)を置く
+/// 2: サンプル数、3: フレーム数、4: プロファイル(0: Main、1: LC、2: SSR、3: LTP)、5: MPEG の版(2 か 4)、
+/// 6: 切り出せるか(0: いいえ、1: はい)を置く
 export fn kiln_aac_probe(ptr: [*]const u8, len: usize) bool {
     const i = kiln.aac.probe(ptr[0..len]) catch |err| return fail(err);
-    setValues(.{ i.sample_rate, i.channels, i.samples, i.frames, @backingInt(i.profile), i.mpeg_version });
+    setValues(.{ i.sample_rate, i.channels, i.samples, i.frames, @backingInt(i.profile), i.mpeg_version, @intFromBool(i.trimmable) });
     return true;
 }
