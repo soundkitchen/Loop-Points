@@ -1,4 +1,4 @@
-import { OUT_FORMATS, croppedName, extFormat, formatLabel, formatsFor, sameContent, type OutFormat } from './cropFormat';
+import { OUT_FORMATS, croppedName, extFormat, extMatches, formatLabel, formatsFor, type OutFormat } from './cropFormat';
 import type { CropSource } from './cropRender';
 import { canWrite, isAbort, pickAudioToSave, pickJsonToOpen, pickJsonToSave, writeContent } from './jsonFile';
 import { parseLoops, serializeLoops, type LoopMap, type LoopPoints } from './loops';
@@ -518,7 +518,7 @@ function updateOutFormats() {
   // 調べる前の仮の形式。.ogg と .m4a は中身が何か (Opus か Vorbis か、AAC か ALAC かなど) 分からないので、
   // 元の形式は出さない (kiln で調べてから出す)。.aac も、m4a に入れ替えて切り出せるかを調べてから m4a を出す
   const ext = extFormat(name);
-  const formats = cropSource?.formats ?? formatsFor(ext === 'ogg' || ext === 'm4a' ? null : ext, buffer?.numberOfChannels ?? 0);
+  const formats = cropSource?.formats ?? formatsFor(ext === 'ogg' || ext === 'm4a' ? null : ext, { channels: buffer?.numberOfChannels ?? 0, sampleRate: sr() });
   outFormat.replaceChildren(...formats.map((f) => new Option(formatLabel(f, formats), f)));
   outFormat.disabled = formats.length < 2 || !cropSource;
 }
@@ -555,18 +555,18 @@ $('export-crop').addEventListener('click', () => void whileWriting('音源を書
   // 書き出しの処理の間に変わらないよう、ここで控える
   const audio = buffer, from = crop.start, to = crop.end;
   const sourceLoop = loops[name], rate = audio.sampleRate, loopStart = start / rate, loopEnd = end / rate;
-  // 拡張子と中身が食い違うと、開き直したときやゲームエンジンで形式を読み違えるので、この音源から書ける形式なら、
-  // 選んだ名前の拡張子の形式で書く。ただし、その形式でループの開始が削れるならセレクトの形式で書く。
+  // 拡張子と中身が食い違うと、開き直したときやゲームエンジンで形式を読み違えるので、選んだ名前の拡張子がセレクトの
+  // 形式のものでなければ、この音源から書ける形式のうち、その拡張子のもので書く (.ogg は、元の Ogg のまま切り出せるなら
+  // それを、切り出せなければエンコードした Ogg Vorbis を選ぶ)。ただし、その形式でループの開始が削れるならセレクトの形式で書く。
   // 書き出しを止めると、保存先を選んだ時点で Chromium が作った空のファイル (既存のファイルなら空にしたもの) が残る
-  const named = extFormat(handle.name);
-  // Ogg Opus は、.opus と .ogg のどちらの名前でも書ける
-  const writable = (f: OutFormat) => source.formats.some((g) => sameContent(f, g, source.ogg?.codec === 'opus'));
-  const written = named && writable(named) && !cropCutsLoop(named) ? named : format;
+  const opus = source.ogg?.codec === 'opus';
+  const fits = (f: OutFormat) => extMatches(handle.name, f, opus);
+  const written = fits(format) ? format : source.formats.find((f) => fits(f) && !cropCutsLoop(f)) ?? format;
   const { renderCrop } = await import('./cropRender');
   const out = await renderCrop(source, audio, from, to, written);
   await writeContent(handle, out.blob);
   const notes: string[] = [];
-  if (named !== written) notes.push(`${handle.name} に ${OUT_FORMATS[written].description} で保存しました。拡張子が ${OUT_FORMATS[written].ext} でないので、開くときに形式を読み違えることがあります`);
+  if (!fits(written)) notes.push(`${handle.name} に ${OUT_FORMATS[written].description} で保存しました。拡張子が ${OUT_FORMATS[written].ext} でないので、開くときに形式を読み違えることがあります`);
   // 長さの情報のない mp3 は、先頭のデコーダの遅延 (529 サンプル) より前を無劣化では切れない
   if (written === 'mp3' && out.start - from / rate >= SHIFT_NOTICE) notes.push(`mp3 の先頭は無劣化では切り出せないので、${formatTime(out.start)} から切り出しました`);
   // Ogg Vorbis は、先頭をパケットの区切り (指定より前) に寄せて切り出す

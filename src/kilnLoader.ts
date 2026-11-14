@@ -20,3 +20,9 @@ export function loadKiln(): Promise<Kiln> {
   }
   return kiln;
 }
+
+// 読み込んだ kiln を捨てる。次に使うときに、wasm のインスタンスを作り直す。wasm が途中で止まった (trap した) あとは、
+// スタックや確保した領域が戻っていないので、そのインスタンスを使い続けない
+export function resetKiln(): void {
+  kiln = null;
+}
