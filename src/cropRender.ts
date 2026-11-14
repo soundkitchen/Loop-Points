@@ -87,16 +87,16 @@ export async function inspect(file: File, decoded: AudioBuffer, converted: boole
   const sameLength = (samples: number, sampleRate: number) => Math.abs(decoded.length - (samples * decoded.sampleRate) / sampleRate) <= 2;
   const lengthMismatch = flac !== null && !sameLength(flac.samples, flac.sampleRate);
   // Ogg は、kiln が切り出せる (trimmable。読めないページがなく、先頭の切り詰めのある Vorbis でない) うえで、
-  // ブラウザと長さが合うときだけ元の形式のまま切り出す。それ以外は WAV か FLAC だけにする (どちらもブラウザのデコードから
+  // ブラウザと長さが合うときだけ元の形式のまま切り出す。それ以外は、元の形式のままでは切り出さない (WAV、FLAC、Ogg Vorbis は、どれもブラウザのデコードから
   // 書くので、波形の位置とずれない)
   const ogg = oggInfo?.trimmable && sameLength(oggInfo.samples, oggInfo.sampleRate) ? oggInfo : null;
-  // m4a も同じ。kiln が切り出せるのは AAC で、ALAC (ブラウザで開けない) と HE-AAC v2 などは WAV か FLAC だけになる
+  // m4a も同じ。kiln が切り出せるのは AAC で、ALAC (ブラウザで開けない) と HE-AAC v2 などは、元の形式のままでは切り出さない
   const m4a = m4aInfo?.trimmable && sameLength(m4aInfo.samples, m4aInfo.sampleRate) ? m4aInfo : null;
   // aac (ADTS) は m4a に入れ替えて切り出す。ヘッダーからは HE-AAC かどうかが分からないが、音源を開くときに WebCodecs で
   // 調べたレートのままデコードしてある (sourceDetect.ts) ので、decoded のレートとチャンネル数がデコード結果のもの。
   // レートがヘッダーの 1 倍 (AAC-LC) か 2 倍 (HE-AAC) で、kiln がそのレートで切り出せて、ブラウザと長さが合うときだけ。
   // チャンネル数は、ヘッダーと同じか、モノラルの HE-AAC で左右がまったく同じ (PS がない) こと。HE-AAC v2 (PS) は左右が
-  // 違い、m4a と同じく切り出さない (途中から復号すると左右が元と違う)。それ以外は WAV か FLAC だけにする
+  // 違い、m4a と同じく切り出さない (途中から復号すると左右が元と違う)。それ以外は、元の形式のままでは切り出さない
   let aac: AacSource | null = null;
   if (aacInfo && !converted) {
     const scale = decoded.sampleRate / aacInfo.sampleRate;
