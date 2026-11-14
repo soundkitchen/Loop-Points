@@ -92,7 +92,16 @@ export interface FlacFormatOptions {
   dither?: Dither;
 }
 
-/** `wav.encode` / `flac.encode` が受け取る PCM。`AudioBuffer` はこの形を満たす */
+/** Ogg Vorbis へのエンコードの指定 */
+export interface VorbisEncodeOptions {
+  /**
+   * 品質(-1〜10。oggenc コマンドの -q と同じ目盛りで、小数も指定できる)。既定は 5。大きいほど音がよく、ファイルが大きい。
+   * ビットレートは音源によって変わる(可変ビットレート)。44.1kHz ステレオの目安は、3 で約 110kbps、5 で約 160kbps
+   */
+  quality?: number;
+}
+
+/** `wav.encode` / `flac.encode` / `ogg.encodeVorbis` が受け取る PCM。`AudioBuffer` はこの形を満たす */
 export interface AudioBufferLike {
   readonly numberOfChannels: number;
   readonly sampleRate: number;
@@ -291,6 +300,17 @@ export interface Ogg {
    *   44.1kHz の oggenc なら最大 1024 サンプル前)。先頭の切り詰めのあるものは `UnsupportedFormat`
    */
   trim(input: BytesInput, options?: RangeOptions): RangeResult & { data: Uint8Array<ArrayBuffer> };
+  /**
+   * AudioBuffer(や同じ形のもの。1〜8 チャンネルで、1 サンプル以上)を Ogg Vorbis にエンコードする(劣化する)。
+   * `sampleRate` を省くと AudioBuffer のもの。長さはサンプル単位で入力と同じになり、先頭に遅延は入らない。
+   * チャンネルの並びは AudioBuffer や WAV と同じ(Vorbis の並びには kiln が入れ替える)。
+   * チャンネル数が範囲外、長さが 0、libvorbis が対応しないサンプルレート(200kHz を超えるものなど)は `InvalidOptions`。
+   * 符号化は libvorbis で行う。libvorbis の中でメモリを確保できないと、エラーを返せずに wasm が止まる
+   * (`WebAssembly.RuntimeError`)。そのときは、この `Kiln` を捨てて `load` し直す
+   */
+  encodeVorbis(source: AudioBufferLike, options?: VorbisEncodeOptions & { sampleRate?: number }): Uint8Array<ArrayBuffer>;
+  /** チャンネルごとの PCM を Ogg Vorbis にエンコードする。どのチャンネルも同じ長さで、`sampleRate` は必須 */
+  encodeVorbis(source: Float32Array[], options: VorbisEncodeOptions & { sampleRate: number }): Uint8Array<ArrayBuffer>;
 }
 
 export interface M4a {
@@ -416,6 +436,7 @@ interface Exports {
   kiln_flac_encode(ptr: Ptr, channels: number, frames: number, sampleRate: number, bits: number, compression: number, dither: number): number;
   kiln_ogg_probe: ProbeExport;
   kiln_ogg_trim: RangeExport;
+  kiln_ogg_encode_vorbis(ptr: Ptr, channels: number, frames: number, sampleRate: number, quality: number): number;
   kiln_m4a_probe: ProbeExport;
   kiln_m4a_trim: RangeExport;
   kiln_aac_probe: ProbeExport;
@@ -811,6 +832,18 @@ export async function load(source: WasmBytes): Promise<Kiln> {
 
     trim(input, options = {}) {
       return trimWith(e.kiln_ogg_probe, e.kiln_ogg_trim, input, options);
+    },
+
+    encodeVorbis(source: AudioBufferLike | Float32Array[], options: VorbisEncodeOptions & { sampleRate?: number } = {}) {
+      const quality = options.quality ?? 5;
+      // 範囲の外と、数でないもの(NaN を含む)を除く
+      if (!(typeof quality === 'number' && quality >= -1 && quality <= 10)) {
+        throw new RangeError('kiln: quality must be a number from -1 to 10');
+      }
+      return withPlanar(source, options, (ptr, nch, frames, sampleRate) => {
+        check(e.kiln_ogg_encode_vorbis(ptr, nch, frames, sampleRate, quality));
+        return takeOutput();
+      });
     },
   };
 

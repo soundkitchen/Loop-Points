@@ -408,6 +408,17 @@ export fn kiln_ogg_trim(ptr: [*]const u8, len: usize, start: u64, end: u64, has_
     return true;
 }
 
+/// チャンネルごとに並べた f32(kiln_wav_encode と同じ並び。1〜8 チャンネル)を Ogg Vorbis にする。
+/// quality は oggenc の -q と同じ目盛り(-1〜10)。成功すると出力を kiln_output_* に置く
+export fn kiln_ogg_encode_vorbis(ptr: [*]const f32, channels: u32, frames: usize, sample_rate: u32, quality: f32) bool {
+    kiln_output_free();
+    if (channels == 0 or channels > kiln.ogg.vorbis_max_channels) return fail(error.InvalidOptions);
+    var slices: [kiln.ogg.vorbis_max_channels][]const f32 = undefined;
+    for (slices[0..channels], 0..) |*c, i| c.* = ptr[i * frames ..][0..frames];
+    output = kiln.ogg.encodeVorbisPlanarAlloc(gpa, slices[0..channels], sample_rate, .{ .quality = quality }) catch |err| return fail(err);
+    return true;
+}
+
 /// m4a(AAC / ALAC)を解析する。成功すると AAC の AudioSpecificConfig を kiln_output_* に(ALAC は空)、
 /// kiln_value に 0: サンプルレート、1: チャンネル数、2: サンプル数、3: コーデック(0: AAC、1: ALAC)、
 /// 4: オブジェクトタイプ、5: SBR、6: PS(どちらも 0: なし、1: あり、2: 不明)、7: 先頭の遅延、

@@ -36,6 +36,8 @@
       .spacer { flex: 1; }
       .dim { color: var(--dim); }
       main { padding: 12px 16px 24px; display: flex; flex-direction: column; gap: 12px; }
+      footer { padding: 0 16px 16px; font-size: 12px; }
+      footer a { color: var(--dim); }
       canvas { display: block; width: 100%; border-radius: 4px; touch-action: none; }
       #wave { height: 300px; }
       #overview { height: 44px; cursor: pointer; }
@@ -179,11 +181,12 @@
           <li>「JSON を書き出す」で保存先を選んで保存する。「JSON をコピー」でクリップボードに写す。どちらも、読み込んだ JSON にある音源の項目も含めて書き出す</li>
           <li>読み込んだ、または保存した JSON に「上書き保存」できる。読み込んだあとにファイルが変更されていたら確認を出す</li>
           <li>JSON の <code>duration</code> と音源の長さが違うと警告を出す</li>
-          <li>「クロップ」では、波形の <b>前端</b>・<b>後端</b> の線で残す範囲を決め、「切り出して保存」で書き出す。mp3、FLAC、Ogg(Opus、Vorbis)、m4a(AAC)は再エンコードせずに元の形式で切り出すか、WAV か FLAC にするかを選べる。aac は再エンコードせずに m4a にして切り出すか、WAV か FLAC にする。WAV は WAV のまま切り出すか、FLAC にする。ほかの形式は WAV か FLAC にする。書き出すと、その音源を開いてループのモードに戻り、ループの秒数も合わせる。JSON の保存は別に行う</li>
+          <li>「クロップ」では、波形の <b>前端</b>・<b>後端</b> の線で残す範囲を決め、「切り出して保存」で書き出す。mp3、FLAC、Ogg(Opus、Vorbis)、m4a(AAC)は再エンコードせずに元の形式で切り出すか、WAV か FLAC にするかを選べる。aac は再エンコードせずに m4a にして切り出すか、WAV か FLAC にする。WAV は WAV のまま切り出すか、FLAC にする。ほかの形式は WAV か FLAC にする。どの音源も、Ogg Vorbis にエンコードして書き出すこともできる(音は劣化する。Vorbis のまま切り出せる音源を除く)。書き出すと、その音源を開いてループのモードに戻り、ループの秒数も合わせる。JSON の保存は別に行う</li>
           <li>クロップの範囲がループ区間にかかっている間は書き出せない。再生は前端から後端まで 1 回で止まり、線を動かすと止まる</li>
         </ul>
       </details>
     </main>
+    <footer><a href="/licenses.txt" target="_blank" rel="noopener">ライセンス</a></footer>
     <script type="module" src="/src/entry.ts"></script>
   </body>
 </html>

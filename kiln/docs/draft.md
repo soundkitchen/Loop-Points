@@ -51,7 +51,7 @@ Loop Points の音源の解析(音源を開くときの、元のサンプルレ�
 - **取り込んでよいもの**: 外部のコードや数表は、次のライセンスのものに限る。どれも義務は元の著作権表示を残すこと(CC0 / Unlicense / パブリックドメインは義務もない)だけで、MIT と両立する
   - MIT、BSD-2-Clause、BSD-3-Clause、ISC、Zlib、CC0-1.0、Unlicense、パブリックドメイン
   - Apache-2.0(全文と NOTICE の内容を残す義務、特許条項がある)、宣伝条項付きの BSD-4-Clause、GPL / LGPL などのコピーレフトは取り込まない
-- **取り込んだときの記録**: 出所・ライセンス・元の著作権表示を `kiln/THIRD_PARTY_NOTICES.md` に書く。取り込んだファイルの先頭にも、出所と元のライセンスの SPDX 識別子を書く(例: `// SPDX-License-Identifier: MIT AND CC0-1.0`)
+- **取り込んだときの記録**: 出所・ライセンス・元の著作権表示を `kiln/THIRD_PARTY_NOTICES.md` に書く。取り込んだファイルの先頭にも、出所と元のライセンスの SPDX 識別子を書く(例: `// SPDX-License-Identifier: MIT AND CC0-1.0`)。`vendor/` に元のまま置くライブラリは、ファイルを変えず、SPDX の識別子も足さない(2026-11-15。§2.17)
 
 ### 2.6 2026-11-10 に決めたこと(FLAC)
 
@@ -143,9 +143,21 @@ Loop Points の音源の解析(音源を開くときの、元のサンプルレ�
 - **扱わない入力**: raw_data_block が 2 つ以上のフレームがあるもの(m4a の 1 サンプルにできない。`aac.probe` の `trimmable` が false)。HE-AAC で、出力のレート(ヘッダの 2 倍)をレートの表に書けないもの(`aac.probe` の `sbrTrimmable` が false。使う側が書き出す前に判定できるよう、PR のレビューで足した)
 - **確かめた事実**: Chromium(`decodeAudioData`)、ffmpeg、Apple のデコーダ(afconvert)は、ADTS の先頭を捨てずにデコードし、長さはフレームの数 × 1024(HE-AAC は 2048)になる。Chromium の `AudioDecoder` は、ADTS のフレームをそのまま渡すと、HE-AAC と HE-AAC v2 の実際のレートとチャンネル数を返す。書き出した m4a は、3 つのどれでも区間どおりの長さになる(`aac.md` §5.3)
 
+### 2.17 2026-11-15 に決めたこと(Ogg Vorbis へのエンコード)
+
+- **エンコーダー**: libvorbis(1.3.7。BSD-3-Clause)を取り込む(Loop Points のユーザーが選んだ。仕様から Zig で書く案もあったが、聴感に合わせた調整まで作ることになり、音質が libvorbis に届かない見込みのため)。kiln に C のコードが入るのは初めて。設計と検証は [`ogg.md`](ogg.md) §8
+- **ソースの置き場所**: リポジトリの `vendor/` にコミットする(Loop Points のユーザーが選んだ。ビルドのたびに取りに行く案もあったが、Cloudflare のビルドが外部に左右されないようにする)。取り込んだファイルは変えない。§2.5 は取り込んだファイルの先頭に SPDX の識別子を書くとしているが、`vendor/` のファイルは元のままにし(どれも先頭に BSD 形式の表示がある)、出所とライセンスは `THIRD_PARTY_NOTICES.md` に書く
+- **libc**: リンクしない。ターゲットは `wasm32-freestanding` のままにし、libvorbis が使う関数は kiln が Zig の標準ライブラリで用意する。Zig に同梱の wasi-libc は使わない(Apache-2.0 のファイルを含み、§2.5 に触れるため)
+- **ページ**: kiln が作る(libogg のページの組み立ては取り込まない)。Vorbis の切り出し(§2.11)と同じ並べ方で、最初の音声パケットを別のページにする
+- **wasm**: 1 つのままにする(Loop Points のユーザーが選んだ。エンコーダーを別の wasm にして、書き出すときだけ読む案もあった)。wasm は 188,594 バイトから 824,716 バイトになる
+- **品質**: oggenc の `-q` と同じ目盛り(-1〜10)で指定し、既定は 5。Loop Points は固定の 5 で使う(Loop Points のユーザーが選んだ。画面で選べるようにするのは後から足せる)
+- **バイナリで配るときの表示**: BSD-3-Clause は、バイナリの配布物にも著作権表示と条件を付けるよう求める。kiln がこれまでに取り込んだもの(CC0 の minimp3 の数表)にはなかった義務。wasm を配る Loop Points が、ライセンスの全文をサイトで配り、画面からリンクする(Loop Points のユーザーが選んだ)。Zig の標準ライブラリ(MIT)も wasm に入るので、その表示も一緒に載せる
+- **確保の失敗**: libvorbis の中での確保の失敗は、エラーとして返せないので wasm を止める(trap)。使う側は、止まったインスタンスを捨てて作り直す([`ogg.md`](ogg.md) §8.2)
+- **確かめた事実**: libvorbis は、ソースを変えずに `wasm32-freestanding` でビルドできる。使う libc の関数は 28 個。出力は、同じ版の oggenc とほぼ同じ(同じ長さ、同じ SNR)。Chromium と ffmpeg で、1 サンプルから長さが入力と同じになる。libvorbis は渡す区切りで先頭のパケットが変わるので、いつも 1024 サンプルずつ渡す
+
 ## 3. まだ決めていないこと
 
-書き出せる形式とその順番、エンコーダを kiln に持たせるか(Ogg Vorbis、mp3)、wasm を形式ごとに分けるかなどは、Loop Points の #16 で扱う。FLAC への変換は、Loop Points がクロップの書き出しで使うようになった(WAV は `wav.toFlac`、mp3 は `mp3.toFlac`、ブラウザでデコードした音源は `flac.encode`)。kiln に変更はない。
+Ogg Vorbis のほかに書き出せる形式とその順番(Opus と AAC、mp3)、mp3 のエンコーダを kiln に持たせるかなどは、Loop Points の #16 で扱う。Ogg Vorbis へのエンコードは libvorbis を取り込んで入れ、wasm は分けないと決めた(§2.17)。FLAC への変換は、Loop Points がクロップの書き出しで使うようになった(WAV は `wav.toFlac`、mp3 は `mp3.toFlac`、ブラウザでデコードした音源は `flac.encode`)。kiln に変更はない。
 
 ## 4. 調べて分かった事実(判断材料)
 

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// mp3 / wav / flac の切り出し・デコード・書き出しと、ogg(Opus / Vorbis)、m4a(AAC)、aac(ADTS。m4a に入れ替える)の切り出しの実行時テスト。wasm/kiln.ts、zig build でできた zig-out/kiln.wasm、testdata/ を読む。
+// mp3 / wav / flac の切り出し・デコード・書き出しと、ogg(Opus / Vorbis)、m4a(AAC)、aac(ADTS。m4a に入れ替える)の切り出し、Ogg Vorbis へのエンコードの実行時テスト。wasm/kiln.ts、zig build でできた zig-out/kiln.wasm、testdata/ を読む。
 // kiln.ts の Exports(wasm の export 関数の型)は wasm/main.zig を手で写したものなので、引数の数や並びがずれると
 // wasm は足りない引数を 0 として黙って動く。各経路を実際に呼び、結果を probe で確かめて、そのずれに気づけるようにする。
 // Loop Points のリポジトリ直下の `npm run kiln:test` で動く
@@ -93,6 +93,41 @@ test('ogg.trim(Vorbis)', async () => {
   // 全体
   const all = kiln.ogg.trim(vorbis);
   assert.deepEqual([all.startSample, all.endSample, kiln.ogg.probe(all.data).samples], [0, 22050, 22050]);
+});
+
+test('ogg.encodeVorbis', () => {
+  const rate = 44100;
+  const tone = (frames, hz) => Float32Array.from({ length: frames }, (_, i) => 0.4 * Math.sin((2 * Math.PI * hz * i) / rate));
+  // 長さはサンプル単位で入力と同じ(1 サンプルでも)
+  for (const frames of [1, 1000, 30000]) {
+    const data = kiln.ogg.encodeVorbis([tone(frames, 440), tone(frames, 660)], { sampleRate: rate });
+    const info = kiln.ogg.probe(data);
+    assert.deepEqual(
+      { codec: info.codec, sampleRate: info.sampleRate, channels: info.channels, samples: info.samples, trimmable: info.trimmable },
+      { codec: 'vorbis', sampleRate: rate, channels: 2, samples: frames, trimmable: true },
+    );
+  }
+  // AudioBuffer の形のものも受け取り、sampleRate を省くとそのレートになる
+  const mono = [tone(5000, 440)];
+  const monoBuffer = { numberOfChannels: 1, sampleRate: 22050, getChannelData: (i) => mono[i] };
+  assert.equal(kiln.ogg.probe(kiln.ogg.encodeVorbis(monoBuffer)).sampleRate, 22050);
+  // 品質が高いほど大きい。同じ入力からは同じ出力になる
+  const noise = Float32Array.from({ length: 20000 }, (_, i) => ((i * 7919) % 1000) / 2000 - 0.25);
+  const low = kiln.ogg.encodeVorbis([noise], { sampleRate: rate, quality: 0 });
+  const high = kiln.ogg.encodeVorbis([noise], { sampleRate: rate, quality: 9.5 });
+  assert.ok(high.length > low.length);
+  assert.deepEqual(kiln.ogg.encodeVorbis([noise], { sampleRate: rate, quality: 0 }), low);
+  // エンコードしたものを、そのまま切り出せる
+  const t = kiln.ogg.trim(kiln.ogg.encodeVorbis([tone(30000, 440)], { sampleRate: rate }), { startSample: 10000, endSample: 20000 });
+  assert.equal(kiln.ogg.probe(t.data).samples, 20000 - t.startSample);
+
+  assert.throws(() => kiln.ogg.encodeVorbis(mono, { sampleRate: rate, quality: 11 }), RangeError);
+  assert.throws(() => kiln.ogg.encodeVorbis(mono, { sampleRate: rate, quality: NaN }), RangeError);
+  assert.throws(() => kiln.ogg.encodeVorbis(mono, { sampleRate: rate, quality: '5' }), RangeError);
+  const invalid = (fn) => assert.throws(fn, (err) => err.code === 'InvalidOptions');
+  invalid(() => kiln.ogg.encodeVorbis([new Float32Array(0)], { sampleRate: rate }));
+  invalid(() => kiln.ogg.encodeVorbis(Array.from({ length: 9 }, () => tone(100, 440)), { sampleRate: rate }));
+  invalid(() => kiln.ogg.encodeVorbis(mono, { sampleRate: 384000 }));
 });
 
 test('m4a.trim', async () => {

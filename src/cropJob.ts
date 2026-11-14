@@ -4,16 +4,18 @@ import type { Kiln } from '../kiln/wasm/kiln';
 
 // kiln で読める音源の種類
 export type BytesKind = 'mp3' | 'flac' | 'ogg' | 'm4a' | 'aac' | 'wav';
-// 書き出す形式。native は元の形式のまま切り出す (mp3、FLAC、Ogg、m4a。aac は AAC のまま m4a に入れ替える)。
-// WAV の音源の wav も、元の形式のまま切り出す
+// kiln で読める音源から書き出す形式。native は元の形式のまま切り出す (mp3、FLAC、Ogg、m4a。aac は AAC のまま m4a に
+// 入れ替える)。WAV の音源の wav も、元の形式のまま切り出す
 export type JobOutput = 'native' | 'wav' | 'flac';
+// ブラウザでデコードした PCM から書き出す形式。vorbis は Ogg Vorbis にエンコードする (どの音源も PCM から書く)
+export type PcmOutput = 'wav' | 'flac' | 'vorbis';
 
 export type CropJob =
   // kiln で読める音源。音源のバイト列の startSample 以上 endSample 未満 (音源のサンプル) を書く。float は浮動小数点の WAV か、
   // sbr は HE-AAC の aac か (デコード結果のレートがヘッダーの 2 倍。ヘッダーからは分からないので、ブラウザで調べて渡す)
   | { kind: BytesKind; output: JobOutput; bytes: Uint8Array<ArrayBuffer>; startSample: number; endSample: number; float: boolean; sbr: boolean }
   // kiln で読めない音源。ブラウザでデコードした PCM (区間だけ) を書く。start は区間の先頭 (秒)
-  | { kind: 'pcm'; output: 'wav' | 'flac'; channels: Float32Array<ArrayBuffer>[]; sampleRate: number; start: number };
+  | { kind: 'pcm'; output: PcmOutput; channels: Float32Array<ArrayBuffer>[]; sampleRate: number; start: number };
 
 export interface CropResult {
   data: Uint8Array<ArrayBuffer>;
@@ -26,6 +28,8 @@ const WAV_SAMPLE_FORMAT = 'i16';
 const BITS = 16;
 // 浮動小数点の WAV を FLAC にするときのビット深度。FLAC は整数しか持てないので、細かさをなるべく残す。±1.0 を超えるサンプルはクリップする
 const FLOAT_WAV_FLAC_BITS = 24;
+// Ogg Vorbis の品質 (oggenc の -q と同じ目盛りで、-1〜10)。44.1kHz のステレオで、およそ 140〜160kbps になる
+const VORBIS_QUALITY = 5;
 
 type BytesSource = Extract<CropJob, { kind: BytesKind }>;
 type Written = { data: Uint8Array<ArrayBuffer>; start: number; invalidFrames?: number };
@@ -58,9 +62,11 @@ const FROM_BYTES: Record<BytesKind, Partial<Record<JobOutput, (k: Kiln, s: Bytes
 };
 
 // ブラウザでデコードした PCM から書く
-const FROM_PCM: Record<'wav' | 'flac', (k: Kiln, channels: Float32Array[], sampleRate: number) => Uint8Array<ArrayBuffer>> = {
+const FROM_PCM: Record<PcmOutput, (k: Kiln, channels: Float32Array[], sampleRate: number) => Uint8Array<ArrayBuffer>> = {
   wav: (k, channels, sampleRate) => k.wav.encode(channels, { sampleRate, format: WAV_SAMPLE_FORMAT }),
   flac: (k, channels, sampleRate) => k.flac.encode(channels, { sampleRate, bitsPerSample: BITS }),
+  // libvorbis でエンコードする。長さはサンプル単位で入力と同じになり、先頭に遅延は入らない
+  vorbis: (k, channels, sampleRate) => k.ogg.encodeVorbis(channels, { sampleRate, quality: VORBIS_QUALITY }),
 };
 
 export function runCropJob(k: Kiln, job: CropJob): CropResult {

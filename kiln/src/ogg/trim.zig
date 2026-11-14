@@ -188,9 +188,21 @@ pub const PageWriter = struct {
     /// 音声パケットを足す。`n` はパケットの長さ(サンプル数)。1 ページにはおよそ 1 秒(`rate` サンプル)ずつ入れる
     /// (シークの細かさのため)。表に入りきらなければ、パケットの前でページを終える
     pub fn audioPacket(pw: *PageWriter, input: []const u8, pk: stream.Packet, granule: i64, n: u64, rate: u64) Io.Writer.Error!void {
-        if (pw.packets > 0 and (pw.page_samples >= rate or pw.nseg + pk.len / 255 + 1 > 255)) try pw.flush(false);
+        try pw.beforeAudio(pk.len, rate);
         try pw.packetFrom(input, pk, granule);
         pw.page_samples += n;
+    }
+
+    /// `audioPacket` の、パケットをバイト列で受け取る版(エンコーダーが作ったパケット)
+    pub fn audioBytes(pw: *PageWriter, bytes: []const u8, granule: i64, n: u64, rate: u64) Io.Writer.Error!void {
+        try pw.beforeAudio(bytes.len, rate);
+        try pw.packet(bytes, granule);
+        pw.page_samples += n;
+    }
+
+    /// 長さ `len` バイトの音声パケットを足す前に、今のページを終えるかを決める
+    fn beforeAudio(pw: *PageWriter, len: usize, rate: u64) Io.Writer.Error!void {
+        if (pw.packets > 0 and (pw.page_samples >= rate or pw.nseg + len / 255 + 1 > 255)) try pw.flush(false);
     }
 
     /// 入力の中のパケットを、ページをまたいで読みながら足す

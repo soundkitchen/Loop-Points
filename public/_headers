@@ -3,3 +3,7 @@
 # 'wasm-unsafe-eval' は音源の解析とクロップの書き出しに使う kiln (wasm) を動かすために許可する。'unsafe-eval' と違い、JavaScript の eval は許可しない
 /*
   Content-Security-Policy: default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src data:; connect-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'
+
+# ライセンスの全文 (ページの下端からリンクする)。日本語が文字化けしないよう、文字コードを付ける
+/licenses.txt
+  Content-Type: text/plain; charset=utf-8

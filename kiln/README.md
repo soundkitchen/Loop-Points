@@ -12,6 +12,7 @@ Loop Points の音源の解析とクロップの書き出しを受け持つ、Zi
 - MP3 と FLAC をデコードして WAV に、WAV と MP3 を FLAC に書き出す。`AudioBuffer` などの PCM を WAV や FLAC にする
 - Ogg の Opus を Opus のまま、サンプル単位で切り出す(パケットをコピーし、pre-skip とグラニュール位置で前後の余分を捨てさせる)
 - Ogg の Vorbis を Vorbis のまま切り出す(パケットをコピーし、末尾はグラニュール位置でサンプル単位に。先頭はパケットの区切りに寄せる)
+- `AudioBuffer` などの PCM を Ogg Vorbis にエンコードする(符号化は取り込んだ libvorbis。長さはサンプル単位で入力と同じ。品質は oggenc の -q と同じ目盛り)
 - m4a の AAC を AAC のまま切り出す(フレームをコピーし、編集リストと iTunSMPB で前後の余分を捨てさせる。AAC-LC はサンプル単位、HE-AAC は 2 サンプル単位。ALAC と HE-AAC v2 は扱わない)
 - aac(ADTS)の AAC を、m4a に入れ替えて AAC のまま切り出す(ADTS には前後の余分を捨てる指定を書けないため。m4a と同じく AAC-LC はサンプル単位、HE-AAC は 2 サンプル単位。HE-AAC かどうかは呼ぶ側が渡す)
 - Ogg(Vorbis / Opus)・m4a(AAC / ALAC)・aac(ADTS)のサンプルレートや長さを調べる(probe)
@@ -52,6 +53,7 @@ const { data: flacCut } = kiln.flac.trim(flacBytes, { start: 1.5, end: 10 });   
 const { data: wavOfFlac } = kiln.flac.toWav(flacBytes, { start: 1.5, end: 10 }); // format を省くとビット深度を保つ
 const pcmWav = kiln.wav.encode(audioBuffer, { format: 'i16' });                  // 既定は 16bit、TPDF ディザ
 const pcmFlac = kiln.flac.encode(audioBuffer, { compression: 8 });
+const vorbis = kiln.ogg.encodeVorbis(audioBuffer, { quality: 5 });               // Ogg Vorbis にエンコードする(1〜8 チャンネル)
 const oggInfo = kiln.ogg.probe(oggBytes);                   // Opus のサンプルレートは 48000。元のレートは inputSampleRate
 const { data: opusCut } = kiln.ogg.trim(opusBytes, { start: 1.5, end: 10 }); // Opus / Vorbis のまま切り出す(Vorbis の start は区切りに寄せた位置)
 const { data: aacCut } = kiln.m4a.trim(m4aBytes, { start: 1.5, end: 10 });    // AAC のまま切り出す(m4a.probe の trimmable が true のもの)
@@ -68,7 +70,8 @@ const { data: adtsCut } = kiln.aac.trim(aacBytes, { start: 1.5, end: 10, sbr: fa
 
 | パス | 内容 |
 |---|---|
-| `src/` | コア。I/O を持たず、アロケータとバイト列/サンプル列、`std.Io.Reader` / `std.Io.Writer` だけを扱う |
+| `src/` | コア。I/O を持たず、アロケータとバイト列/サンプル列、`std.Io.Reader` / `std.Io.Writer` だけを扱う。`src/c/` は、取り込んだ C のライブラリのためのもの(C から見える最小の libc のヘッダーと、Zig の標準ライブラリで書いたその実装、libvorbis を Zig から呼ぶ薄い包みの `vorbis_enc.c`)。libc はリンクしない |
+| `vendor/` | 取り込んだ libvorbis 1.3.7 と libogg 1.3.6(BSD-3-Clause)。Ogg Vorbis のエンコーダーに要るファイルだけを、元の配置のまま、変えずに置く。`build.zig` の `addVendored` がコアのモジュールに足す。出所とライセンスは [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) |
 | `wasm/` | wasm 向けの export 関数(`main.zig`)、JS 側の包み(`kiln.ts`。型つき)、型の検査の設定(`tsconfig.json`)、テスト(`test/`。実行時のテストと、誤った使い方が型エラーになることの検査) |
 | `testdata/` | テスト用の音声(lame で作った短い MP3、Python で書いた短い WAV、flac で作った短い FLAC、opusenc・oggenc・ffmpeg・afconvert で作った短い Ogg・m4a・aac)。作り方は [`testdata/README.md`](testdata/README.md) |
 | `docs/` | 設計と検証の記録。仕様として扱う |
@@ -80,7 +83,7 @@ const { data: adtsCut } = kiln.aac.trim(aacBytes, { start: 1.5, end: 10, sbr: fa
 - [`docs/lyria-mp3.md`](docs/lyria-mp3.md): Lyria 出力 MP3 の調査と、MP3 の無劣化トリムの方式
 - [`docs/mp3-decoder.md`](docs/mp3-decoder.md): MP3 デコーダの設計と検証
 - [`docs/flac.md`](docs/flac.md): FLAC の設計と検証
-- [`docs/ogg.md`](docs/ogg.md) / [`docs/m4a.md`](docs/m4a.md) / [`docs/aac.md`](docs/aac.md): Ogg・m4a・aac の解析と、Opus・Vorbis・AAC の切り出しの設計と検証
+- [`docs/ogg.md`](docs/ogg.md) / [`docs/m4a.md`](docs/m4a.md) / [`docs/aac.md`](docs/aac.md): Ogg・m4a・aac の解析と、Opus・Vorbis・AAC の切り出しの設計と検証。`ogg.md` の §8 は、Ogg Vorbis へのエンコード(libvorbis の取り込み、libc の用意)の設計と検証
 
 検証の記録には、2026-11-11 に外した CLI(`kiln trim`)を使って確かめたものがあります。
 
@@ -89,3 +92,5 @@ const { data: adtsCut } = kiln.aac.trim(aacBytes, { start: 1.5, end: 10, sbr: fa
 MIT ライセンスです。全文は [`LICENSE`](LICENSE) を参照してください。
 
 外部から取り込んだコードや数表は [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) に記録しています。取り込んでよいライセンスなどの方針は [`docs/draft.md`](docs/draft.md) §2.5 にあります。
+
+Ogg Vorbis へのエンコードに使う libvorbis と libogg(どちらも BSD-3-Clause。[`vendor/`](vendor/))は、ビルドした wasm にも入ります。wasm を配るときは、`THIRD_PARTY_NOTICES.md` にあるその著作権表示と条件を、配布物に付けてください。

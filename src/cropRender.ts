@@ -6,9 +6,10 @@
 //   WAV → WAV: 元の形式のままバイト列を切り出す
 //   mp3、FLAC、WAV → WAV か FLAC: kiln でデコードして (WAV は読んで) 書く
 //   ほかの形式 → WAV か FLAC: ブラウザでデコードしたものを、kiln で書く (元のレートが分かればそのレート)
+//   どの形式も → Ogg Vorbis: ブラウザでデコードしたものを、kiln (libvorbis) でエンコードする
 import { KilnError, type AacInfo, type FlacInfo, type Kiln, type KilnErrorCode, type M4aInfo, type Mp3Info, type OggInfo, type WavInfo } from '../kiln/wasm/kiln';
 import { OUT_FORMATS, extFormat, formatsFor, isOgg, type OutFormat } from './cropFormat';
-import type { BytesKind, CropJob, CropResult } from './cropJob';
+import type { BytesKind, CropJob, CropResult, PcmOutput } from './cropJob';
 import type { CropReply, CropRequest } from './cropWorker';
 import { loadKiln } from './kilnLoader';
 import { hasMp3Ext, sourceFormat } from './sourceDetect';
@@ -59,7 +60,7 @@ function probeSource(k: Kiln, fileName: string, bytes: Uint8Array<ArrayBuffer>):
 // 保存先に元の音源を選ぶと、保存先を選んだ時点で Chromium がそのファイルを空にして、読めなくなるため
 export interface CropSource {
   file: File;
-  formats: OutFormat[];   // 書き出せる形式。先頭が初期値。元の形式 (kiln で無劣化で切れる mp3、FLAC、Ogg、m4a のときだけ。aac は m4a)、WAV、FLAC
+  formats: OutFormat[];   // 書き出せる形式。先頭が初期値。元の形式 (kiln で無劣化で切れる mp3、FLAC、Ogg、m4a のときだけ。aac は m4a)、WAV、FLAC、Ogg Vorbis (エンコード)
   mp3Start: number;       // mp3 で書き出すときに切り始められる最初の位置 (秒)。長さの情報のない mp3 は 529 サンプル
   bytes: Uint8Array<ArrayBuffer>;
   wav: WavInfo | null;
@@ -86,16 +87,16 @@ export async function inspect(file: File, decoded: AudioBuffer, converted: boole
   const sameLength = (samples: number, sampleRate: number) => Math.abs(decoded.length - (samples * decoded.sampleRate) / sampleRate) <= 2;
   const lengthMismatch = flac !== null && !sameLength(flac.samples, flac.sampleRate);
   // Ogg は、kiln が切り出せる (trimmable。読めないページがなく、先頭の切り詰めのある Vorbis でない) うえで、
-  // ブラウザと長さが合うときだけ元の形式のまま切り出す。それ以外は WAV か FLAC だけにする (どちらもブラウザのデコードから
+  // ブラウザと長さが合うときだけ元の形式のまま切り出す。それ以外は、元の形式のままでは切り出さない (WAV、FLAC、Ogg Vorbis は、どれもブラウザのデコードから
   // 書くので、波形の位置とずれない)
   const ogg = oggInfo?.trimmable && sameLength(oggInfo.samples, oggInfo.sampleRate) ? oggInfo : null;
-  // m4a も同じ。kiln が切り出せるのは AAC で、ALAC (ブラウザで開けない) と HE-AAC v2 などは WAV か FLAC だけになる
+  // m4a も同じ。kiln が切り出せるのは AAC で、ALAC (ブラウザで開けない) と HE-AAC v2 などは、元の形式のままでは切り出さない
   const m4a = m4aInfo?.trimmable && sameLength(m4aInfo.samples, m4aInfo.sampleRate) ? m4aInfo : null;
   // aac (ADTS) は m4a に入れ替えて切り出す。ヘッダーからは HE-AAC かどうかが分からないが、音源を開くときに WebCodecs で
   // 調べたレートのままデコードしてある (sourceDetect.ts) ので、decoded のレートとチャンネル数がデコード結果のもの。
   // レートがヘッダーの 1 倍 (AAC-LC) か 2 倍 (HE-AAC) で、kiln がそのレートで切り出せて、ブラウザと長さが合うときだけ。
   // チャンネル数は、ヘッダーと同じか、モノラルの HE-AAC で左右がまったく同じ (PS がない) こと。HE-AAC v2 (PS) は左右が
-  // 違い、m4a と同じく切り出さない (途中から復号すると左右が元と違う)。それ以外は WAV か FLAC だけにする
+  // 違い、m4a と同じく切り出さない (途中から復号すると左右が元と違う)。それ以外は、元の形式のままでは切り出さない
   let aac: AacSource | null = null;
   if (aacInfo && !converted) {
     const scale = decoded.sampleRate / aacInfo.sampleRate;
@@ -106,7 +107,8 @@ export async function inspect(file: File, decoded: AudioBuffer, converted: boole
     if (trimmable && channels && sameLength(samples, decoded.sampleRate)) aac = { sampleRate: decoded.sampleRate, samples, sbr };
   }
   const native: OutFormat | null = mp3 ? 'mp3' : flac ? 'flac' : ogg ? (ogg.codec === 'opus' && extFormat(file.name) === 'opus' ? 'opus' : 'ogg') : m4a || aac ? 'm4a' : null;
-  return { file, formats: formatsFor(native, decoded.numberOfChannels), mp3Start: mp3 ? mp3.minStart / mp3.sampleRate : 0, bytes, wav, mp3, flac, ogg, m4a, aac, lengthMismatch };
+  const formats = formatsFor(native, { channels: decoded.numberOfChannels, sampleRate: decoded.sampleRate, vorbisNative: ogg?.codec === 'vorbis' });
+  return { file, formats, mp3Start: mp3 ? mp3.minStart / mp3.sampleRate : 0, bytes, wav, mp3, flac, ogg, m4a, aac, lengthMismatch };
 }
 
 export interface Rendered {
@@ -171,9 +173,20 @@ export async function renderCrop(source: CropSource, decoded: AudioBuffer, start
   const fromBytes = (kind: BytesKind, output: 'native' | 'wav' | 'flac', info: { sampleRate: number; samples: number }): CropJob =>
     ({ kind, output, bytes, ...range(info.sampleRate, info.samples), float: kind === 'wav' && (wav!.format === 'f32' || wav!.format === 'f64'), sbr: kind === 'aac' && aac!.sbr });
   const notNative = (label: string) => new Error(`${source.file.name} は無劣化で切り出せる ${label} ではありません。WAV か FLAC で書き出してください`);
+  // ブラウザでデコードしたものから書く。元のレートが分かった音源は元のレートで、分からなかった音源は出力の機器の
+  // レートでデコードしてある。区間を写して Worker に渡す。波形と同じデータなので、位置は波形で選んだとおりになる
+  const fromPcm = async (output: PcmOutput): Promise<Rendered> => {
+    const { startSample, endSample } = range(decoded.sampleRate, decoded.length);
+    const channels = Array.from({ length: decoded.numberOfChannels }, (_, c) => decoded.getChannelData(c).slice(startSample, endSample));
+    const r = await runInWorker({ kind: 'pcm', output, channels, sampleRate: decoded.sampleRate, start: startSample / decoded.sampleRate }, channels.map((c) => c.buffer));
+    return { blob: new Blob([r.data], { type: OUT_FORMATS[format].mime }), start: r.start, invalidFrames: 0, clipped: 0 };
+  };
 
   let job: CropJob;
-  if (format === 'mp3') {
+  if (format === 'vorbis') {
+    // Ogg Vorbis へのエンコードは、どの音源もブラウザでデコードしたものから行う
+    return fromPcm('vorbis');
+  } else if (format === 'mp3') {
     if (!mp3) throw notNative('mp3');
     job = fromBytes('mp3', 'native', mp3);
   } else if (isOgg(format)) {
@@ -192,12 +205,8 @@ export async function renderCrop(source: CropSource, decoded: AudioBuffer, start
   } else if (flac) {
     job = fromBytes('flac', format, flac);
   } else {
-    // kiln で読めない形式は、ブラウザでデコードしたものから書く。元のレートが分かった音源は元のレートで、
-    // 分からなかった音源は出力の機器のレートでデコードしてある。区間を写して Worker に渡す
-    const { startSample, endSample } = range(decoded.sampleRate, decoded.length);
-    const channels = Array.from({ length: decoded.numberOfChannels }, (_, c) => decoded.getChannelData(c).slice(startSample, endSample));
-    const r = await runInWorker({ kind: 'pcm', output: format, channels, sampleRate: decoded.sampleRate, start: startSample / decoded.sampleRate }, channels.map((c) => c.buffer));
-    return { blob: new Blob([r.data], { type: OUT_FORMATS[format].mime }), start: r.start, invalidFrames: 0, clipped: 0 };
+    // kiln で読めない形式は、ブラウザでデコードしたものから書く
+    return fromPcm(format);
   }
   // 浮動小数点の WAV を FLAC (整数) にすると、±1.0 を超えるサンプルはクリップされるので、数えて知らせる。
   // ブラウザは浮動小数点の WAV をそのままの値でデコードするので、decoded で数えられる

@@ -89,6 +89,7 @@ test {
     _ = ogg;
     _ = m4a;
     _ = aac;
+    _ = @import("c/libc.zig");
 }
 
 test version {
