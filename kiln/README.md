@@ -12,6 +12,7 @@ Loop Points の音源の解析とクロップの書き出しを受け持つ、Zi
 - MP3 と FLAC をデコードして WAV に、WAV と MP3 を FLAC に書き出す。`AudioBuffer` などの PCM を WAV や FLAC にする
 - Ogg の Opus を Opus のまま、サンプル単位で切り出す(パケットをコピーし、pre-skip とグラニュール位置で前後の余分を捨てさせる)
 - Ogg の Vorbis を Vorbis のまま切り出す(パケットをコピーし、末尾はグラニュール位置でサンプル単位に。先頭はパケットの区切りに寄せる)
+- `AudioBuffer` などの PCM を Ogg Vorbis にエンコードする(符号化は取り込んだ libvorbis。長さはサンプル単位で入力と同じ。品質は oggenc の -q と同じ目盛り)
 - m4a の AAC を AAC のまま切り出す(フレームをコピーし、編集リストと iTunSMPB で前後の余分を捨てさせる。AAC-LC はサンプル単位、HE-AAC は 2 サンプル単位。ALAC と HE-AAC v2 は扱わない)
 - aac(ADTS)の AAC を、m4a に入れ替えて AAC のまま切り出す(ADTS には前後の余分を捨てる指定を書けないため。m4a と同じく AAC-LC はサンプル単位、HE-AAC は 2 サンプル単位。HE-AAC かどうかは呼ぶ側が渡す)
 - Ogg(Vorbis / Opus)・m4a(AAC / ALAC)・aac(ADTS)のサンプルレートや長さを調べる(probe)
@@ -52,6 +53,7 @@ const { data: flacCut } = kiln.flac.trim(flacBytes, { start: 1.5, end: 10 });   
 const { data: wavOfFlac } = kiln.flac.toWav(flacBytes, { start: 1.5, end: 10 }); // format を省くとビット深度を保つ
 const pcmWav = kiln.wav.encode(audioBuffer, { format: 'i16' });                  // 既定は 16bit、TPDF ディザ
 const pcmFlac = kiln.flac.encode(audioBuffer, { compression: 8 });
+const vorbis = kiln.ogg.encodeVorbis(audioBuffer, { quality: 5 });               // Ogg Vorbis にエンコードする(1〜8 チャンネル)
 const oggInfo = kiln.ogg.probe(oggBytes);                   // Opus のサンプルレートは 48000。元のレートは inputSampleRate
 const { data: opusCut } = kiln.ogg.trim(opusBytes, { start: 1.5, end: 10 }); // Opus / Vorbis のまま切り出す(Vorbis の start は区切りに寄せた位置)
 const { data: aacCut } = kiln.m4a.trim(m4aBytes, { start: 1.5, end: 10 });    // AAC のまま切り出す(m4a.probe の trimmable が true のもの)
@@ -89,3 +91,5 @@ const { data: adtsCut } = kiln.aac.trim(aacBytes, { start: 1.5, end: 10, sbr: fa
 MIT ライセンスです。全文は [`LICENSE`](LICENSE) を参照してください。
 
 外部から取り込んだコードや数表は [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) に記録しています。取り込んでよいライセンスなどの方針は [`docs/draft.md`](docs/draft.md) §2.5 にあります。
+
+Ogg Vorbis へのエンコードに使う libvorbis と libogg(どちらも BSD-3-Clause。[`vendor/`](vendor/))は、ビルドした wasm にも入ります。wasm を配るときは、`THIRD_PARTY_NOTICES.md` にあるその著作権表示と条件を、配布物に付けてください。

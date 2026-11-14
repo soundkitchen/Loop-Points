@@ -4,7 +4,7 @@
 
 ## 1. 構成
 
-- **コア**: I/O を持たない Zig のライブラリ。ファイルや OS には触れず、アロケータとバイト列/サンプル列、`std.Io.Reader` / `std.Io.Writer` だけを扱う。
+- **コア**: I/O を持たない Zig のライブラリ。ファイルや OS には触れず、アロケータとバイト列/サンプル列、`std.Io.Reader` / `std.Io.Writer` だけを扱う。Ogg Vorbis へのエンコードだけは、取り込んだ C のライブラリ(libvorbis。`vendor/`)を使う。libc はリンクせず、C のコードが使う関数は kiln が用意する([`ogg.md`](ogg.md) §8.2)。
 - **wasm**: `wasm32-freestanding` 向けの薄いラッパー。自前の export 関数(alloc / free / 各処理)に、薄い JS ラッパーを被せる。Loop Points は JS ラッパーをソースから直接 import し、wasm をバイト列で渡す。
 - 当初は CLI もコアの薄いラッパーとして作ったが、2026-11-11 に外した([`draft.md`](draft.md) §2.9)。
 
@@ -16,7 +16,9 @@
 | `src/pcm.zig` | PCM のサンプル形式と、f32 との変換(`kiln.pcm`) | — |
 | `src/mp3.zig`, `src/mp3/` | MP3 の解析と無劣化トリム(`kiln.mp3`)。`frame`(フレームヘッダ)/ `id3` / `xing`(Xing・LAME タグ)/ `stream`(入力の解析)/ `trim` に分ける。デコーダは `bits`(ビット読み取り)/ `huffman` / `layer3`(周波数領域の処理)/ `synth`(IMDCT と合成フィルタ)/ `decoder`(設計は [`mp3-decoder.md`](mp3-decoder.md)) | — |
 | `src/wav.zig`, `src/wav/` | WAV の解析とサンプル精度のトリム、エンコーダ(`kiln.wav`)。`parse`(チャンクの解析)/ `header`(ヘッダの書き出し)/ `encoder` に分ける | — |
-| `src/ogg.zig`, `src/ogg/` | Ogg(Vorbis / Opus)の解析と無劣化の切り出し(`kiln.ogg`)。`page`(ページとパケットの読み出し)/ `vorbis`(識別ヘッダと設定ヘッダ、音声パケットの長さ)/ `opus`(ID ヘッダとパケットの長さ)/ `stream`(パケットを順にたどる。解析と切り出しで共有)/ `trim`(パケットを集めてページを作り直す)に分ける(設計は [`ogg.md`](ogg.md)) | — |
+| `src/ogg.zig`, `src/ogg/` | Ogg(Vorbis / Opus)の解析と無劣化の切り出し、Ogg Vorbis へのエンコード(`kiln.ogg`)。`page`(ページとパケットの読み出し)/ `vorbis`(識別ヘッダと設定ヘッダ、音声パケットの長さ)/ `opus`(ID ヘッダとパケットの長さ)/ `stream`(パケットを順にたどる。解析と切り出しで共有)/ `trim`(パケットを集めてページを作り直す。ページの書き出しの `PageWriter` はエンコードでも使う)/ `encode`(libvorbis で符号化し、ページに詰める)に分ける(設計は [`ogg.md`](ogg.md)) | — |
+| `src/c/` | 取り込んだ C のライブラリのためのもの。`include/`(C から見える最小の libc のヘッダーと、libogg の `config_types.h`)、`libc.zig`(その実装。Zig の標準ライブラリで書く)、`vorbis_enc.c`(libvorbis を Zig から呼ぶ薄い包み)([`ogg.md`](ogg.md) §8.2) | — |
+| `vendor/libvorbis/`, `vendor/libogg/` | 取り込んだ libvorbis 1.3.7 と libogg 1.3.6(BSD-3-Clause)。エンコーダーに要るファイルだけを、元の配置のまま、変えずに置く | — |
 | `src/m4a.zig`, `src/m4a/` | m4a(MP4 コンテナの AAC / ALAC)の解析と、AAC の切り出し(`kiln.m4a`)。`box`(ボックスの読み取り)/ `asc`(AudioSpecificConfig)/ `trim`(サンプルの表の読み取りと切り出し)に分ける(設計は [`m4a.md`](m4a.md)) | — |
 | `src/aac.zig` | aac(ADTS)の解析と、m4a に入れ替えての切り出し(`kiln.aac`。設計は [`aac.md`](aac.md)。moov の組み立ては `src/m4a/trim.zig` を使う) | — |
 | `src/flac.zig`, `src/flac/` | FLAC の解析・復号・書き出し(`kiln.flac`)。`bits`(ビットの読み書き)/ `frame`(フレームヘッダ)/ `metadata`(`fLaC` とメタデータブロック)/ `stream`(フレームの区切り)/ `decoder`(サブフレームの復号)/ `encoder`(エンコーダ)/ `lpc`(線形予測の分析)/ `trim`(FLAC → FLAC の切り出し)に分ける(設計は [`flac.md`](flac.md)) | — |
@@ -31,7 +33,7 @@
 - `zig build`(`zig build wasm` と同じ)は wasm をビルドする。wasm は `-Dtarget` に関係なく常に `wasm32-freestanding` 向けで、最適化モードが debug のときは small でビルドする
 - `zig build test` はコアのテストを実行し、wasm のビルドが通ることも確かめる(wasm はネイティブで実行できないため)。Loop Points のリポジトリ直下の `npm run kiln:test` は、これに加えて kiln.ts の実行時のテストと型の検査を実行する
 - コアのテストは、`testdata` モジュールを import できるテスト専用のモジュール(ルートは同じ `src/root.zig`)で実行する。wasm に入れる `kiln` モジュールには `testdata` を含めない。`src/` の各ファイルはトップレベルに `const testdata = @import("testdata");` を置き、`test` ブロックからだけ参照する(Zig はトップレベルの宣言を参照されたときにだけ解析するため、テスト以外のビルドでは import が解決されない)
-- wasm とテストの各ビルドで使うコアのモジュールは、`build.zig` の `kilnModuleOptions` で同じ定義から作る。テスト用のモジュールは、それに `testdata` の import を足したもの
+- wasm とテストの各ビルドで使うコアのモジュールは、`build.zig` の `kilnModuleOptions` で同じ定義から作る。テスト用のモジュールは、それに `testdata` の import を足したもの。どちらにも、`addVendored` で C のソース(`vendor/` と `src/c/vorbis_enc.c`)とインクルードパスを足す。コアのテストでは、C のコードもネイティブ向けにコンパイルされる
 - バージョンは `build.zig.zon` の `.version` だけを出所にし、ビルドオプション経由でコアの `kiln.version` に渡す
 
 ## 2. コア API の方針
@@ -98,7 +100,7 @@ const nch = try dec.decodeFrame(frame_bytes, &pcm); // pcm: [2][1152]f32。扱�
 
 - JS に返すエラーの名前は、wasm/main.zig の `KilnError`(エラーの集合)に限る。`fail` はこの集合しか受け付けないので、export が新しいエラーを返しうるようになるとコンパイルが通らなくなる。kiln.ts の `KilnErrorCode` も同じ一覧にする(この同期は手作業。両方の定義の横に、もう一方を指すコメントがある)
 - `InternalError` は kiln の不具合(起きるはずのない食い違い。たとえば MP3 → WAV で書いた長さが WAV のヘッダと違う)のときに返す。止めずにエラーとして返すので、wasm のインスタンスはそのまま使い続けられる
-- 型は kiln.ts の中に書き、実装と同じファイルで確かめる(2026-11-11 までは kiln.js と型定義の kiln.d.ts に分けていた。[`draft.md`](draft.md) §2.9)。入力は `ArrayBufferLike | ArrayBufferView`(バイト列として読むものすべて)、出力は `Uint8Array<ArrayBuffer>` / `Float32Array<ArrayBuffer>`(そのまま `Blob` などに渡せる)。`wav.encode` は `AudioBuffer` を構造(`AudioBufferLike`)で受け、`Float32Array[]` を渡すときは `sampleRate` が必須。wasm の export 関数の型は kiln.ts の `Exports` に手で写す(wasm/main.zig の export を変えたら合わせる)。引数の数や並びがずれても tsc は気づかず、wasm は足りない引数を 0 として黙って動くので、`wasm/test/convert.test.mjs` で mp3 / wav / flac / ogg(Opus と Vorbis の切り出し)/ m4a(AAC の切り出し)/ aac(ADTS を m4a に入れ替えての切り出し)の各経路を実際に呼んで確かめる
+- 型は kiln.ts の中に書き、実装と同じファイルで確かめる(2026-11-11 までは kiln.js と型定義の kiln.d.ts に分けていた。[`draft.md`](draft.md) §2.9)。入力は `ArrayBufferLike | ArrayBufferView`(バイト列として読むものすべて)、出力は `Uint8Array<ArrayBuffer>` / `Float32Array<ArrayBuffer>`(そのまま `Blob` などに渡せる)。`wav.encode` は `AudioBuffer` を構造(`AudioBufferLike`)で受け、`Float32Array[]` を渡すときは `sampleRate` が必須。wasm の export 関数の型は kiln.ts の `Exports` に手で写す(wasm/main.zig の export を変えたら合わせる)。引数の数や並びがずれても tsc は気づかず、wasm は足りない引数を 0 として黙って動くので、`wasm/test/convert.test.mjs` で mp3 / wav / flac / ogg(Opus と Vorbis の切り出し、Vorbis へのエンコード)/ m4a(AAC の切り出し)/ aac(ADTS を m4a に入れ替えての切り出し)の各経路を実際に呼んで確かめる
 - `load(source)` の `source` は wasm のバイト列だけで、省けない。URL からは読まない(fetch しない)。Loop Points は CSP の `connect-src 'none'` で fetch を止め、wasm をチャンクに埋め込んでバイト列で渡すため。kiln.ts に `new URL('./kiln.wasm', import.meta.url)` を書くと、Vite や webpack 5 はそれをアセットの参照とみなし、使わない kiln.wasm をビルド結果に出力する(soundkitchen/kiln#11)ので、その書き方も残さない。バイト列でない値(省いたとき、URL、`Response`、`Blob` など)は `TypeError` で reject する(`load` は async なので、投げるのではなく reject した Promise を返す)
 - kiln.ts を変えたら、Loop Points のリポジトリ直下で `npm run kiln:test` を実行する。`kiln/wasm/tsconfig.json` で型を確かめ(Loop Points の `tsconfig.json` の include にも kiln/wasm があるので、`npm run build` でも確かめる)、`wasm/test/` の Node のテストで実行時の振る舞いを確かめる。Node は kiln.ts を型を消すだけで実行するので、型を消すだけで動く書き方にする(`enum`、`namespace`、コンストラクタの引数のプロパティは使わない。`erasableSyntaxOnly` で確かめる)。`wasm/test/types.ts` は、誤った使い方(`start` と `startSample` の同時指定、未知の `format`、`sampleRate` のない `Float32Array[]` など)が型エラーになることを `@ts-expect-error` で確かめる。kiln.ts の型を意図して緩めるときは、ここも直す
 - export 関数は成功なら true を返し、結果(出力のバイト列や数値)をモジュール内の変数に置く。JS 側は `kiln_output_ptr` / `kiln_output_len` / `kiln_value(i)` で読み出し、失敗時は `kiln_error_ptr` / `kiln_error_len` でエラー名を読む
@@ -117,6 +119,7 @@ const nch = try dec.decodeFrame(frame_bytes, &pcm); // pcm: [2][1152]f32。扱�
 - `wav.encode` のサンプルは、`kiln_alloc_f32` で確保した領域(4 バイト境界)にチャンネルごとに続けて書き、`kiln_wav_encode` に渡す。形式は `kiln.pcm.Format` の番号でやり取りする(JS 側の `FORMATS` と並びを合わせる)
 - `mp3.trim` / `mp3.decode` / `mp3.toWav` / `mp3.toFlac` / `wav.trim` / `wav.toFlac` / `flac.trim` / `flac.decode` / `flac.toWav` / `ogg.trim` / `m4a.trim` / `aac.trim` は、秒で指定されたときだけ、サンプルレートを知るために先に `kiln_mp3_probe` / `kiln_wav_probe` / `kiln_flac_format` / `kiln_ogg_probe` / `kiln_m4a_probe` / `kiln_aac_probe` を呼ぶ(FLAC はメタデータだけを読む。aac はヘッダのレートなので、`sbr` なら 2 倍にして使う)。サンプル数だけの指定では、`trim`(`flac.trim`、`ogg.trim`、`m4a.trim`、`aac.trim` を含む)と `toWav` と `toFlac` と `flac.decode` は入力の解析が 1 回で済む(戻り値の秒は各 export が返すサンプルレートで計算する)。`kiln_mp3_decode` は、出力の大きさを決めるために中で probe してから復号するので、サンプル数だけの指定でも解析は 2 回(`kiln_flac_decode` はフレームの一覧 `kiln.flac.Index` を使い回すので 1 回)
 - `detect(bytes)` は、ヘッダーから形式とサンプルレートを読み、`{ format, sampleRate }` か null を返す(§2.2.1)。`format` は `'mp3'` / `'wav'` / `'flac'` / `'ogg'` / `'m4a'` / `'aac'`、`sampleRate` は読めなければ null。失敗はなく、`KilnError` を投げない。`kiln_detect` はいつも true を返し、`kiln_value` に 0: 形式が分かったか、1: 形式(`kiln.Format` の番号。JS 側の `DETECT_FORMATS` と並びを合わせる)、2: サンプルレート(0 は読めなかった)を置く。入力は、ほかの関数と同じく渡された分をまるごと linear memory に写すので、大きなファイルでは呼ぶ側が先頭の一部だけを渡す
+- `ogg.encodeVorbis(source, { sampleRate, quality = 5 })` は、`flac.encode` と同じく AudioBuffer か `Float32Array[]` から Ogg Vorbis のバイト列を作る(`kiln_ogg_encode_vorbis`。`kiln_value` は使わない)。`quality` が -1〜10 の数でなければ JS 側で `RangeError`。チャンネル数(1〜8)、長さ 0、対応しないサンプルレートは `InvalidOptions`。libvorbis の中で確保に失敗すると、エラーを返せずに wasm が止まる(`WebAssembly.RuntimeError`)ので、使う側はその `Kiln` を捨てて `load` し直す([`ogg.md`](ogg.md) §8.2)
 - `ogg.probe` / `m4a.probe` / `aac.probe` は解析(§2.7)。Ogg、m4a、aac は切り出しの `ogg.trim`(`kiln_ogg_trim`。Opus と Vorbis)、`m4a.trim`(`kiln_m4a_trim`。AAC)、`aac.trim`(`kiln_aac_trim`。AAC を m4a に入れ替える。最後の引数が `sbr`)も持つ。`aac.probe` は `kiln_value(6)` に切り出せるか(`trimmable`)を、`kiln_value(7)` に HE-AAC として切り出せるか(`sbrTrimmable`)を置く。`aac.frames`(`kiln_aac_frames`)は先頭のフレームの位置と長さを、u32 の組で出力のバイト列に置く。`kiln_value` が足りないので 10 個に増やした(export は `setValues` で、使わない分は 0 にする)。SBR / PS の 3 値は 0: なし、1: あり、2: 不明でやり取りし、JS では `false` / `true` / `null` にする。`m4a.probe` は AudioSpecificConfig を出力のバイト列で返す
 - `startSample` / `endSample` に BigInt を渡すときは 0 以上 2^64 未満でなければ `RangeError` にする(u64 の引数で桁あふれしないように)
 - サンプル位置は u64 なので、export 関数の引数・戻り値は JS では BigInt になる
@@ -233,6 +236,7 @@ const q = try kiln.m4a.trim(gpa, input, .{ .start = 44100, .end = 88200 }, write
 const p = try kiln.aac.trim(gpa, input, .{ .start = 44100, .end = 88200, .sbr = false }, writer);
 ```
 
+- Ogg Vorbis へのエンコードは `kiln.ogg.VorbisEncoder`(`init(gpa, writer, .{ .sample_rate, .channels, .quality })` → `writePlanarF32` を何度でも → `finish` → `deinit`)と、一括版の `kiln.ogg.encodeVorbisPlanarAlloc(gpa, &.{ left, right }, 44100, .{ .quality = 5 })`。品質は oggenc の `-q` と同じ -1〜10。長さはサンプル単位で入力と同じになる。方式は [`ogg.md`](ogg.md) §8
 - `probe` はアロケータを使わず、入力全体の `[]const u8` を受け取る。切り出しは Ogg の Opus と Vorbis、m4a の AAC、aac(ADTS)の AAC(m4a に入れ替える)([`draft.md`](draft.md) §2.10〜§2.12、§2.16)。`ogg.trim` はパケットの一覧とページの組み立てに、`m4a.trim` と `aac.trim` はサンプルの表と moov の組み立てにアロケータを使う。moov の組み立て(`src/m4a/trim.zig`)は、サンプルを順に返す値と、ボックスの部品(m4a は元のもの、aac は作ったもの)を受け取る。方式は [`ogg.md`](ogg.md) §6(Opus)、§7(Vorbis)、[`m4a.md`](m4a.md) §5(AAC)、[`aac.md`](aac.md) §5(ADTS)
 - 長さ(`samples`)は再生される長さ。Ogg は先頭と末尾の切り詰め(Opus の pre-skip を含む)、m4a は編集リストか iTunSMPB の遅延と詰め物を除く。aac(ADTS)には書く場所がないので含む
 - サンプルレートとチャンネル数はデコード結果のもの(Opus は 48kHz、HE-AAC は SBR / PS の後)。ただし aac(ADTS)はヘッダの値で、HE-AAC かどうかは分からない(音声データを読まないため。[`aac.md`](aac.md) §3)。m4a でもファイルから分からなければ `sbr` / `ps` が null
@@ -253,4 +257,5 @@ const p = try kiln.aac.trim(gpa, input, .{ .start = 44100, .end = 88200, .sbr = 
 - CRC-16/ARC(LAME タグの CRC)は `std.hash.crc.@"CRC-16/ARC"` にある。FLAC のフレームヘッダの CRC-8(多項式 0x07、初期値 0)は `@"CRC-8/SMBUS"`、フレームの CRC-16(多項式 0x8005、初期値 0、反転なし)は `@"CRC-16/UMTS"`。
 - wasm32 の export 関数が返すポインタ・長さ(usize)は、JS には符号付きの i32 として見える。2GiB 以上のアドレスや、長さ 0 の確保で `wasm_allocator` が返すダミーのアドレス(0xFFFFFFFF)が負になるため、JS 側で `>>> 0` して扱う。
 - enum と整数の変換: `@typeInfo(E).@"enum"` のフィールドは `field_names` / `field_values`(`fields` はない)。範囲を確かめて整数から enum にするには `std.enums.fromInt(E, n)`(範囲外なら null)。`@enumFromInt` を書くと、`zig fmt` が `@fromBackingInt(@intCast(...))` に書き換える
+- C のソースは、モジュールに `addCSourceFiles(.{ .root, .files, .flags })` と `addIncludePath` で足す。`@cImport` はないので、C の関数は Zig の側に `extern fn` で宣言する(構造体を渡さずに済むよう、C で薄い包みを書く)。`export fn` は wasm の export になる(`rdynamic`)ので、C から呼ぶだけの関数は `@export` の `.visibility = .hidden` で出す。デバッグのビルドでは C のコードに未定義動作の検査(UBSan)が入り、掛かると panic する([`ogg.md`](ogg.md) §8.2)
 - stdout / stderr は `Io.File.Writer.initStreaming` で書く。`.init` は位置指定書き込みなので、ファイルにリダイレクトすると先頭から書いてしまい、`>>` で追記しても既存の内容を上書きする(macOS で確認)。

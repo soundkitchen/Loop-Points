@@ -10,6 +10,7 @@ const vorbis = @import("ogg/vorbis.zig");
 const opus = @import("ogg/opus.zig");
 const stream = @import("ogg/stream.zig");
 const trim_impl = @import("ogg/trim.zig");
+const encode_impl = @import("ogg/encode.zig");
 
 pub const ParseError = error{
     /// 先頭が Ogg のページ(`OggS`)ではない
@@ -244,6 +245,19 @@ pub fn trimAlloc(gpa: std.mem.Allocator, input: []const u8, options: TrimOptions
     return .{ .data = try out.toOwnedSlice(), .start = r.start, .end = r.end, .sample_rate = r.sample_rate };
 }
 
+/// PCM を Ogg Vorbis にエンコードする、ストリーミングのエンコーダー(符号化は libvorbis。docs/ogg.md §8)
+pub const VorbisEncoder = encode_impl.Encoder;
+pub const VorbisEncoderOptions = encode_impl.Options;
+/// `encodeVorbisPlanarAlloc` の指定(`quality` は oggenc の -q と同じ -1〜10。既定は 5)
+pub const VorbisEncodeOptions = encode_impl.EncodeOptions;
+/// Vorbis にエンコードできるチャンネル数の上限(8)
+pub const vorbis_max_channels = encode_impl.max_channels;
+
+/// チャンネルごとの PCM(WAV や Web Audio と同じ並び。どのチャンネルも同じ長さで、1 サンプル以上)を Ogg Vorbis に
+/// する。長さはサンプル単位で入力と同じになる。チャンネル数(1〜8)・品質が範囲外か、libvorbis が対応しない
+/// サンプルレートなら InvalidOptions。返したバイト列は呼び出し側が `gpa` で解放する
+pub const encodeVorbisPlanarAlloc = encode_impl.encodePlanarAlloc;
+
 /// ヘッダのパケット(Opus のコメント、Vorbis のコメントと設定)を確かめる
 fn headerPacket(
     input: []const u8,
@@ -283,6 +297,7 @@ test {
     _ = opus;
     _ = stream;
     _ = trim_impl;
+    _ = encode_impl;
 }
 
 const testdata = @import("testdata");
@@ -627,4 +642,147 @@ test "trim: Vorbis の先頭の切り詰めは扱わず、途中から切り出�
     // 壊れたページがあるものは切り出さない
     buf[buf.len - 1] ^= 0xFF;
     try std.testing.expectError(error.InvalidOgg, trimAlloc(gpa, buf, .{}));
+}
+
+/// テスト用の PCM。チャンネルごとに周波数の違う正弦波
+fn testTone(gpa: std.mem.Allocator, channels: usize, frames: usize, sample_rate: u32) ![][]f32 {
+    const out = try gpa.alloc([]f32, channels);
+    errdefer gpa.free(out);
+    for (out, 0..) |*c, ch| {
+        c.* = try gpa.alloc(f32, frames);
+        const step = 2.0 * std.math.pi * (220.0 * @as(f64, @floatFromInt(ch + 1))) / @as(f64, @floatFromInt(sample_rate));
+        for (c.*, 0..) |*v, i| v.* = @floatCast(0.4 * @sin(step * @as(f64, @floatFromInt(i))));
+    }
+    return out;
+}
+
+fn freeTone(gpa: std.mem.Allocator, tone: [][]f32) void {
+    for (tone) |c| gpa.free(c);
+    gpa.free(tone);
+}
+
+test "encodeVorbis: 長さはサンプル単位で入力と同じで、音声は 2 ページ以上にする" {
+    const gpa = std.testing.allocator;
+    for ([_]usize{ 1, 2, 100, 1000, 4096, 44100, 100_000 }) |frames| {
+        const tone = try testTone(gpa, 2, frames, 44100);
+        defer freeTone(gpa, tone);
+        const data = try encodeVorbisPlanarAlloc(gpa, tone, 44100, .{});
+        defer gpa.free(data);
+        const info = try probe(data);
+        try std.testing.expectEqual(Codec.vorbis, info.codec);
+        try std.testing.expectEqual(44100, info.sample_rate);
+        try std.testing.expectEqual(2, info.channels);
+        try std.testing.expectEqual(frames, info.samples);
+        try std.testing.expectEqual(0, info.invalid_pages);
+        try std.testing.expect(info.trimmable);
+
+        // 識別ヘッダだけの最初のページ(BOS)、コメントと設定のヘッダ、最初の音声パケットだけのページ(グラニュール位置 0)、
+        // 残りの音声の順。最後のページは EOS で、グラニュール位置が長さ
+        const packets = try stream.collectAll(gpa, data);
+        defer gpa.free(packets);
+        try std.testing.expect(packets.len >= 5);
+        try std.testing.expect(packets[0].page.bos());
+        try std.testing.expectEqual(1, packets[0].page.packetsEnded());
+        try std.testing.expect(packets[1].page.sequence != packets[0].page.sequence);
+        const first_audio = packets[3].page;
+        try std.testing.expect(first_audio.sequence != packets[2].end.sequence);
+        try std.testing.expectEqual(1, first_audio.packetsEnded());
+        try std.testing.expectEqual(0, first_audio.granule);
+        try std.testing.expect(packets[4].page.sequence != first_audio.sequence);
+        const last = packets[packets.len - 1].end;
+        try std.testing.expect(last.eos());
+        try std.testing.expectEqual(@as(i64, @intCast(frames)), last.granule);
+    }
+}
+
+test "encodeVorbis: チャンネル数とサンプルレート" {
+    const gpa = std.testing.allocator;
+    for ([_]struct { usize, u32 }{ .{ 1, 8000 }, .{ 1, 44100 }, .{ 2, 22050 }, .{ 2, 96000 }, .{ 2, 192000 }, .{ 3, 44100 }, .{ 6, 48000 }, .{ 8, 48000 } }) |c| {
+        const tone = try testTone(gpa, c[0], 12345, c[1]);
+        defer freeTone(gpa, tone);
+        const data = try encodeVorbisPlanarAlloc(gpa, tone, c[1], .{});
+        defer gpa.free(data);
+        const info = try probe(data);
+        try std.testing.expectEqual(c[1], info.sample_rate);
+        try std.testing.expectEqual(c[0], info.channels);
+        try std.testing.expectEqual(12345, info.samples);
+    }
+}
+
+test "encodeVorbis: 品質が高いほど大きく、同じ入力からは同じ出力になる" {
+    const gpa = std.testing.allocator;
+    const tone = try testTone(gpa, 2, 44100, 44100);
+    defer freeTone(gpa, tone);
+    // 正弦波だけだと差が出にくいので、雑音を足す(種は固定)
+    var prng: std.Random.DefaultPrng = .init(1);
+    for (tone) |c| for (c) |*v| {
+        v.* += (prng.random().float(f32) - 0.5) * 0.2;
+    };
+    var prev: usize = 0;
+    for ([_]f32{ -1, 3, 5, 8, 10 }) |q| {
+        const data = try encodeVorbisPlanarAlloc(gpa, tone, 44100, .{ .quality = q });
+        defer gpa.free(data);
+        try std.testing.expect(data.len > prev);
+        prev = data.len;
+        try std.testing.expectEqual(44100, (try probe(data)).samples);
+        const again = try encodeVorbisPlanarAlloc(gpa, tone, 44100, .{ .quality = q });
+        defer gpa.free(again);
+        try std.testing.expectEqualSlices(u8, data, again);
+    }
+}
+
+test "VorbisEncoder: 分けて書いても、一度に書いたときと同じ出力になる" {
+    const gpa = std.testing.allocator;
+    const tone = try testTone(gpa, 2, 30000, 48000);
+    defer freeTone(gpa, tone);
+    const whole = try encodeVorbisPlanarAlloc(gpa, tone, 48000, .{});
+    defer gpa.free(whole);
+
+    var out: Io.Writer.Allocating = .init(gpa);
+    defer out.deinit();
+    var enc: VorbisEncoder = try .init(gpa, &out.writer, .{ .sample_rate = 48000, .channels = 2 });
+    defer enc.deinit();
+    var pos: usize = 0;
+    for ([_]usize{ 1, 999, 1024, 5000, 22976 }) |n| {
+        try enc.writePlanarF32(&.{ tone[0][pos..][0..n], tone[1][pos..][0..n] });
+        pos += n;
+    }
+    try std.testing.expectEqual(30000, pos);
+    try enc.finish();
+    try std.testing.expectEqualSlices(u8, whole, out.written());
+    // チャンネルの数や長さが合わなければ InvalidOptions
+    var other: Io.Writer.Allocating = .init(gpa);
+    defer other.deinit();
+    var enc2: VorbisEncoder = try .init(gpa, &other.writer, .{ .sample_rate = 48000, .channels = 2 });
+    defer enc2.deinit();
+    try std.testing.expectError(error.InvalidOptions, enc2.writePlanarF32(&.{tone[0]}));
+    try std.testing.expectError(error.InvalidOptions, enc2.writePlanarF32(&.{ tone[0], tone[1][0..10] }));
+}
+
+test "encodeVorbis: 範囲外の指定と、libvorbis が対応しないサンプルレートは InvalidOptions" {
+    const gpa = std.testing.allocator;
+    const tone = try testTone(gpa, 9, 1000, 44100);
+    defer freeTone(gpa, tone);
+    const empty: []const f32 = &.{};
+    try std.testing.expectError(error.InvalidOptions, encodeVorbisPlanarAlloc(gpa, tone[0..0], 44100, .{}));
+    try std.testing.expectError(error.InvalidOptions, encodeVorbisPlanarAlloc(gpa, tone, 44100, .{}));
+    try std.testing.expectError(error.InvalidOptions, encodeVorbisPlanarAlloc(gpa, &.{ empty, empty }, 44100, .{}));
+    try std.testing.expectError(error.InvalidOptions, encodeVorbisPlanarAlloc(gpa, &.{ tone[0], tone[1][0..5] }, 44100, .{}));
+    try std.testing.expectError(error.InvalidOptions, encodeVorbisPlanarAlloc(gpa, tone[0..2], 0, .{}));
+    try std.testing.expectError(error.InvalidOptions, encodeVorbisPlanarAlloc(gpa, tone[0..2], 384000, .{}));
+    try std.testing.expectError(error.InvalidOptions, encodeVorbisPlanarAlloc(gpa, tone[0..2], 44100, .{ .quality = 10.5 }));
+    try std.testing.expectError(error.InvalidOptions, encodeVorbisPlanarAlloc(gpa, tone[0..2], 44100, .{ .quality = -1.5 }));
+    try std.testing.expectError(error.InvalidOptions, encodeVorbisPlanarAlloc(gpa, tone[0..2], 44100, .{ .quality = std.math.nan(f32) }));
+}
+
+test "encodeVorbis: エンコードしたものを、そのまま切り出せる" {
+    const gpa = std.testing.allocator;
+    const tone = try testTone(gpa, 2, 50000, 44100);
+    defer freeTone(gpa, tone);
+    const data = try encodeVorbisPlanarAlloc(gpa, tone, 44100, .{});
+    defer gpa.free(data);
+    const t = try trimAlloc(gpa, data, .{ .start = 12000, .end = 30000 });
+    defer gpa.free(t.data);
+    try std.testing.expect(t.start <= 12000);
+    try std.testing.expectEqual(30000 - t.start, (try probe(t.data)).samples);
 }

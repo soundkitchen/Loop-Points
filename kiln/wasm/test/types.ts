@@ -20,6 +20,8 @@ export function misuse(k: Kiln, bytes: Uint8Array) {
   k.wav.encode([new Float32Array(4)]);
   // @ts-expect-error Float32Array[] のときは sampleRate が要る
   k.flac.encode([new Float32Array(4)]);
+  // @ts-expect-error Float32Array[] のときは sampleRate が要る
+  k.ogg.encodeVorbis([new Float32Array(4)]);
   // @ts-expect-error flac.trim に書き出しの指定はない
   k.flac.trim(bytes, { compression: 5 });
   // @ts-expect-error detect の結果は null のことがある

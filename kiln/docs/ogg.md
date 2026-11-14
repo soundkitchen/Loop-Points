@@ -1,10 +1,10 @@
 # Ogg(Vorbis / Opus)
 
-Ogg の読み込み(`src/ogg.zig`、`src/ogg/` の `page` / `vorbis` / `opus` / `stream`)と、Opus と Vorbis の無劣化の切り出し(`src/ogg/trim.zig`。§6、§7)の設計と検証の記録。決定事項は [`draft.md`](draft.md) §2.8(解析)、§2.10(Opus の切り出し)、§2.11(Vorbis の切り出し)。
+Ogg の読み込み(`src/ogg.zig`、`src/ogg/` の `page` / `vorbis` / `opus` / `stream`)、Opus と Vorbis の無劣化の切り出し(`src/ogg/trim.zig`。§6、§7)、Ogg Vorbis へのエンコード(`src/ogg/encode.zig`。§8)の設計と検証の記録。決定事項は [`draft.md`](draft.md) §2.8(解析)、§2.10(Opus の切り出し)、§2.11(Vorbis の切り出し)、§2.17(Vorbis へのエンコード)。
 
 ## 1. 扱う範囲と出所
 
-- コンテナは RFC 3533(Ogg)、Opus のヘッダとグラニュール位置は RFC 7845(Ogg Opus)、Opus パケットの長さは RFC 6716 §3.1、Vorbis のヘッダは Vorbis I specification から書いた(外部のコードや表は取り込んでいない)
+- コンテナは RFC 3533(Ogg)、Opus のヘッダとグラニュール位置は RFC 7845(Ogg Opus)、Opus パケットの長さは RFC 6716 §3.1、Vorbis のヘッダは Vorbis I specification から書いた(読み込みと切り出しには、外部のコードや表を取り込んでいない。Vorbis へのエンコードだけは libvorbis を使う。§8)
 - ページの CRC-32 は Zig の標準ライブラリの `std.hash.crc.Generic`(多項式 0x04C11DB7、初期値 0、反転なし、最後の XOR なし)
 - 扱うのは、論理ビットストリームが 1 本だけで、中身が Vorbis か Opus のファイル。Ogg FLAC は形式の判定で FLAC になり(`kiln.flac` が `UnsupportedFormat` を返す)、Speex・Theora などは `UnsupportedFormat`
 - 複数のストリームを多重化したもの(先頭に BOS のページが複数)と、連結したもの(EOS の後に新しい BOS)は `UnsupportedFormat`
@@ -100,3 +100,61 @@ Vorbis には、Opus の pre-skip にあたるヘッダの値がない。仕様(
   - ogginfo で警告がない
 - テスト: testdata の 2 本で、いくつかの区間の長さと実際の切り始め(区間の先頭以下で、長いブロックの半分より近い)、パケットが元のバイト列のままであること、2 つ目の音声パケットの開始位置が実際の切り始めであること、最初の音声パケットだけのページ(グラニュール位置 0)を確かめる。ほかに、先頭の切り詰めのあるもの(1・2・100 サンプル。`UnsupportedFormat` で、`trimmable` が false)、途中から切り出したストリーム、壊れたページ
 - **未確認**: Unity・Unreal Engine など、ゲームエンジンのデコーダ(Loop Points の #16)
+
+## 8. Vorbis へのエンコード(2026-11-15)
+
+`kiln.ogg.VorbisEncoder` / `encodeVorbisPlanarAlloc`(`src/ogg/encode.zig`)。JS は `ogg.encodeVorbis`。PCM を Ogg Vorbis にする(劣化する)。Loop Points が、クロップで音源を別の形式に書き出すのに使う(Loop Points の #16)。
+
+### 8.1 方式
+
+- **符号化**: libvorbis 1.3.7 で行う(§8.2)。品質を指定する可変ビットレート(`vorbis_encode_init_vbr`)で、ビットレートの管理は使わない。品質は oggenc の `-q` と同じ目盛り(-1〜10。小数も指定できる)で、既定は 5
+- **ページ**: kiln が作る(`trim.zig` の `PageWriter`。libogg のページの組み立ては使わない)。並べ方は Vorbis の切り出し(§7.2)と同じで、識別ヘッダだけの最初のページ(BOS)、コメントヘッダと設定ヘッダ、最初の音声パケットだけのページ(グラニュール位置 0)、残りの音声の順。音声は 1 ページに 1 秒分(255 セグメントまで)ずつ入れ、最後のページは EOS
+  - 最初の音声パケットを別のページにするのは、音声が 1 ページに収まると、末尾の切り詰めを Chromium と ffmpeg が守らないため(§7.1)。libogg の既定の並べ方で試すと、1〜100 サンプルの入力が ffmpeg で 576 サンプルに、2048 サンプルが 1920 サンプルになった
+- **長さ**: libvorbis が、最後のパケットのグラニュール位置を入力の長さにする。デコーダは末尾の余分をそこで捨てるので、長さはサンプル単位で入力と同じになる。先頭に遅延はなく、位置 0 が入力の先頭
+- **コメントヘッダ**: ベンダー文字列は libvorbis のもの(`Xiph.Org libVorbis I 20200704 (Reducing Environment)`)。コメントは書かない
+- **チャンネルの並び**: 入力は WAV や Web Audio(`AudioBuffer`)と同じ並びで受け取り、Vorbis の並び(Vorbis I §4.3.9)に入れ替えて符号化する(`encode.zig` の `order`)。デコーダは逆に入れ替えるので、デコードすると入力と同じ並びに戻る
+
+  | チャンネル数 | 入力の並び | Vorbis の並び |
+  |---|---|---|
+  | 1、2、4 | そのまま | 同じ |
+  | 3 | 左・右・中央 | 左・中央・右 |
+  | 5 | 左・右・中央・後左・後右 | 左・中央・右・後左・後右 |
+  | 6(5.1) | 左・右・中央・LFE・後左・後右 | 左・中央・右・後左・後右・LFE |
+  | 7(6.1) | 左・右・中央・LFE・後中央・横左・横右 | 左・中央・右・横左・横右・後中央・LFE |
+  | 8(7.1) | 左・右・中央・LFE・後左・後右・横左・横右 | 左・中央・右・横左・横右・後左・後右・LFE |
+
+- **渡す区切り**: libvorbis には、いつも 1024 サンプルずつ渡す(oggenc と同じ)。libvorbis は、ストリームの先頭の処理(先頭より前を線形予測で埋める)に、そのときまでに渡された分をすべて使い、その大きさの作業領域をスタックに取る。そのため、渡す区切りが変わると先頭のパケットが変わり、大きく渡すとスタックがあふれる。`VorbisEncoder.writePlanarF32` をどう分けて呼んでも、出力は同じになる
+- **シリアル番号**: 既定は固定の値(`0x4b494c4e`)。乱数を使わないので、同じ入力からは毎回同じ出力になる
+- **扱わない入力**(`InvalidOptions`): チャンネル数が 1〜8 でないもの(Vorbis の仕様が並びを決めているのは 8 までで、Chromium は 16 チャンネルの Vorbis をデコードできなかった)、品質が範囲外のもの、libvorbis が対応しないサンプルレート(200kHz を超えるもの。1kHz〜200kHz は通ることを確かめた)、一括版(`encodeVorbisPlanarAlloc`)では長さ 0 の入力(長さ 0 の Vorbis は、デコーダによって扱いが違うので作らない)
+
+### 8.2 libvorbis の取り込み
+
+- **置き場所**: `vendor/libvorbis/`(1.3.7)と `vendor/libogg/`(1.3.6)に、エンコーダーに要るファイルだけを、元の配置のまま、変えずに置く(出所と sha256、取り込んだ範囲は `THIRD_PARTY_NOTICES.md`)。libogg は、libvorbis が使うビットの読み書き(`bitwise.c`)と型の定義だけ
+- **ビルド**: `build.zig` の `addVendored` が、C のソースをコアのモジュールに足す(Zig が同梱の clang でコンパイルする)。ターゲットは `wasm32-freestanding` のままで、libc はリンクしない。configure や CMake は使わず、libogg がビルドのときに作る `ogg/config_types.h` は kiln が書いたもの(`src/c/include/ogg/`)を使う
+- **Zig からの呼び方**: `src/c/vorbis_enc.c` の薄い包み越しに呼ぶ。libvorbis の構造体を Zig に見せず、ポインタと数値だけでやり取りする(Zig 0.17 には `@cImport` がない。[`architecture.md`](architecture.md) §3)。包みは、PCM を受け取って Vorbis のパケットを返すところまでを受け持つ
+- **libc**: libvorbis と libogg が使う libc の関数は 28 個で、kiln が用意する(`src/c/`)
+  - ヘッダーは `src/c/include/`(`stdlib.h`、`string.h`、`math.h`、`stdio.h`、`alloca.h`、`sys/types.h`)。インクルードパスの先頭に置く
+  - `malloc`、`calloc`、`realloc`、`free`、`qsort`、`exit`、`acos`、`atan`、`cos`、`exp`、`ldexp`、`log`、`pow`、`rint`、`sin` は、`src/c/libc.zig` が Zig の標準ライブラリで実装する。どの環境の libc とも名前がぶつからないよう、実体は `kiln_c_` で始まる名前にし、ヘッダーのマクロで置き換える(コアのテストは macOS のネイティブで動き、そこでは OS の libc も一緒にリンクされるため)。wasm の export には出さない
+  - `sqrt`、`floor`、`ceil`、`fabs` はコンパイラの組み込み(CPU の命令になる)、`abs`、`labs`、`strlen`、`strcpy`、`strcat` はヘッダーの中の関数
+  - `memcpy`、`memmove`、`memset`、`memcmp` は標準の名前のまま使う(コンパイラも自分で呼ぶ。wasm では Zig の compiler_rt が持つ)
+  - `stdio.h` は何も宣言しない(libvorbis が使うのは、`ANALYSIS` を定義したときのデバッグ用の出力だけ)
+  - Zig に同梱の wasi-libc を使う案は取らなかった(Apache-2.0 のファイルを含み、[`draft.md`](draft.md) §2.5 で取り込まないとしているため)
+- **メモリ**: C のライブラリはアロケータを引数で受け取れないので、エンコーダーが `libc.Heap` を持ち、libvorbis を呼ぶ間だけ渡す(同時に 1 つ。wasm は 1 スレッド)
+  - `Heap` は確保した領域の一覧を持ち、エンコーダーを閉じるときに、libvorbis が解放し忘れた領域もまとめて解放する。libvorbis 1.3.7 は、5.1 チャンネルの設定を作るときに 1 つ解放し忘れる(`vorbisenc.c` の `vorbis_encode_residue_setup` が、短いブロックと長いブロックで共有する残差の設定を 2 回確保する。上流の master でも直っていない)
+  - **確保の失敗**: libvorbis は確保の失敗を確かめずに使うので、null を返すと壊れたまま動き続ける。エラーとして返す道がないので、止める(wasm では trap。JS では `WebAssembly.RuntimeError`)。止まった wasm のインスタンスは、スタックや確保した領域が戻っていないので、使う側が捨てて作り直す。kiln のほかの処理(入力や出力の確保の失敗)は、これまでどおり `OutOfMemory` を返す
+- **スタック**: libvorbis はスタックに作業領域を取る(`alloca`)。1〜8 チャンネル、8kHz〜192kHz、品質 -1〜10 で測って、最大で約 50KB(wasm のスタックは Zig の既定の 1MiB で、線形メモリの先頭にあり、あふれると trap する)
+- **未定義動作の検査**: コアのテスト(デバッグのビルド)では、Zig が C のコードに未定義動作の検査(UBSan)を入れる。libvorbis は次の 2 つに掛かるので、取り込んだコードではこの 2 つの検査だけを外す(`-fno-sanitize=shift-base`、`-fno-sanitize=bounds`。ソースは変えない)
+  - 負の値の左シフト(`psy.c` の `(lo-1)<<16` など)。C99 では未定義だが、どのコンパイラも 2 の補数のシフトにする(C23 で定義された)
+  - 配列の 1 つ先の読み出し(`psy.c` の `_vp_psy_init` が、`noiseoff[j][P_BANDS]` を重み 0 で読む)。同じ構造体の中の隣の値を読むだけで、結果には効かない
+- **大きさ**: wasm は 188,594 バイトから 824,716 バイトになる(gzip で約 82KB から約 228KB。チャンクに埋め込んだ形の gzip では約 104KB から約 295KB)。増える分の多くは符号表。wasm は 1 つのままにし、分けない([`draft.md`](draft.md) §2.17)
+
+### 8.3 検証
+
+- **oggenc との比較**: 163.5 秒の曲(44.1kHz、ステレオ)を品質 5 でエンコードし、同じ libvorbis 1.3.7 の oggenc(vorbis-tools 1.4.3)の `-q 5` と比べた。ffmpeg でデコードした長さはどちらも入力と同じ 7,210,368 サンプル、元の音との SNR はどちらも 26.96dB。ogginfo で警告がない
+- **長さ**: 1・2・100・1000・1024・2048・4096・22050・441000 サンプルと全曲を、ffmpeg 9.0.2 と Chromium(Chrome 157 の `decodeAudioData`。音源のレートの `OfflineAudioContext`)でデコードし、どれも入力と同じ長さ
+- **位置**: 10 秒分を Chromium でデコードし、元の音と比べた SNR は、ずれ 0 で 26.67dB、±1 サンプルで約 24.5dB、±2 サンプルで約 21.2dB(ずれ 0 が最大)。ffmpeg のデコード結果との差は 4e-8 以下
+- **サンプルレートとチャンネル数**: 8kHz モノラル、22.05kHz・96kHz・192kHz のステレオが、ffmpeg と Chromium で入力と同じ長さ。200,000Hz までエンコードでき、200,001Hz からは `InvalidOptions`
+- **チャンネルの並び**: 1〜8 チャンネルで、チャンネルごとに周波数の違う正弦波(6 チャンネル以上の LFE は 60Hz)をエンコードし、ffmpeg と Chromium でデコードして、どのチャンネルも入力と同じ位置に戻る
+- **速さ**: 163.5 秒のステレオを約 1.2 秒(約 140 倍速。Node 24、Apple Silicon)
+- テスト: 長さ(1 サンプルから)とページの並び、チャンネル数とサンプルレート、品質と出力の大きさ、同じ入力から同じ出力になること、分けて書いても同じ出力になること、範囲外の指定、エンコードしたものを kiln で切り出せること。テスト用のアロケータで、libvorbis の確保がすべて解放されることも確かめる
+- **未確認**: Unity・Unreal Engine など、ゲームエンジンでの読み込み(Loop Points の #16)。Safari と Firefox でのデコード。聴いた音質(数値だけを見た)
