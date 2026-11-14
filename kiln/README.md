@@ -70,7 +70,8 @@ const { data: adtsCut } = kiln.aac.trim(aacBytes, { start: 1.5, end: 10, sbr: fa
 
 | パス | 内容 |
 |---|---|
-| `src/` | コア。I/O を持たず、アロケータとバイト列/サンプル列、`std.Io.Reader` / `std.Io.Writer` だけを扱う |
+| `src/` | コア。I/O を持たず、アロケータとバイト列/サンプル列、`std.Io.Reader` / `std.Io.Writer` だけを扱う。`src/c/` は、取り込んだ C のライブラリのためのもの(C から見える最小の libc のヘッダーと、Zig の標準ライブラリで書いたその実装、libvorbis を Zig から呼ぶ薄い包みの `vorbis_enc.c`)。libc はリンクしない |
+| `vendor/` | 取り込んだ libvorbis 1.3.7 と libogg 1.3.6(BSD-3-Clause)。Ogg Vorbis のエンコーダーに要るファイルだけを、元の配置のまま、変えずに置く。`build.zig` の `addVendored` がコアのモジュールに足す。出所とライセンスは [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) |
 | `wasm/` | wasm 向けの export 関数(`main.zig`)、JS 側の包み(`kiln.ts`。型つき)、型の検査の設定(`tsconfig.json`)、テスト(`test/`。実行時のテストと、誤った使い方が型エラーになることの検査) |
 | `testdata/` | テスト用の音声(lame で作った短い MP3、Python で書いた短い WAV、flac で作った短い FLAC、opusenc・oggenc・ffmpeg・afconvert で作った短い Ogg・m4a・aac)。作り方は [`testdata/README.md`](testdata/README.md) |
 | `docs/` | 設計と検証の記録。仕様として扱う |
@@ -82,7 +83,7 @@ const { data: adtsCut } = kiln.aac.trim(aacBytes, { start: 1.5, end: 10, sbr: fa
 - [`docs/lyria-mp3.md`](docs/lyria-mp3.md): Lyria 出力 MP3 の調査と、MP3 の無劣化トリムの方式
 - [`docs/mp3-decoder.md`](docs/mp3-decoder.md): MP3 デコーダの設計と検証
 - [`docs/flac.md`](docs/flac.md): FLAC の設計と検証
-- [`docs/ogg.md`](docs/ogg.md) / [`docs/m4a.md`](docs/m4a.md) / [`docs/aac.md`](docs/aac.md): Ogg・m4a・aac の解析と、Opus・Vorbis・AAC の切り出しの設計と検証
+- [`docs/ogg.md`](docs/ogg.md) / [`docs/m4a.md`](docs/m4a.md) / [`docs/aac.md`](docs/aac.md): Ogg・m4a・aac の解析と、Opus・Vorbis・AAC の切り出しの設計と検証。`ogg.md` の §8 は、Ogg Vorbis へのエンコード(libvorbis の取り込み、libc の用意)の設計と検証
 
 検証の記録には、2026-11-11 に外した CLI(`kiln trim`)を使って確かめたものがあります。
 
